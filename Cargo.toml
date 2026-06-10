@@ -71,6 +71,7 @@ env_logger     = "0.11"
 # Use maturin for building the extension: `maturin build --features python`
 pyo3                = { version = "0.21", optional = true, features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.21", features = ["tokio-runtime"], optional = true }
+primitive-types = "0.12"
  
 
 

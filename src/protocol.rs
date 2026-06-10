@@ -31,12 +31,10 @@ use crate::node::Node;
 use crate::routing::RoutingTable;
 use crate::signature_cache::SignatureCache;
 use crate::storage::{ForgetfulStorage, IStorage};
-use crate::utils::{digest, ID_LEN};
+use crate::utils::{digest, STATUS_LIST_KEY, ID_LEN};
 
 /// Timeout for a single RPC call.
 const RPC_TIMEOUT: Duration = Duration::from_secs(5);
-
-const STATUS_LIST_KEY: &str = "did:iiot:status-list";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RpcMessage {
@@ -949,7 +947,7 @@ impl KademliaProtocol {
     /// Return a random ID for each lonely bucket, constrained to that bucket's
     /// keyspace range (§2.3). Matches Python: `random.randint(*bucket.range).to_bytes(20, 'big')`.
     pub async fn get_refresh_ids(&self) -> Vec<[u8; ID_LEN]> {
-        use rand::Rng;
+        use rand::RngCore;
         self.router
             .read()
             .await
@@ -958,9 +956,17 @@ impl KademliaProtocol {
             .map(|b| {
                 let lo = *b.range.start();
                 let hi = *b.range.end();
-                let r: u128 = rand::thread_rng().gen_range(lo..=hi);
+                // Uniform id in [lo, hi] over the full 160-bit space.
+                let span = hi - lo + primitive_types::U256::one();
+                let mut rand_bytes = [0u8; ID_LEN];
+                rand::thread_rng().fill_bytes(&mut rand_bytes);
+                let r = primitive_types::U256::from_big_endian(&rand_bytes); // in [0, 2^160)
+                let val = lo + (r % span);
+                // `val <= hi < 2^160`, so the top 12 bytes are zero.
+                let mut buf = [0u8; 32];
+                val.to_big_endian(&mut buf);
                 let mut id = [0u8; ID_LEN];
-                id[..16].copy_from_slice(&r.to_be_bytes());
+                id.copy_from_slice(&buf[12..32]);
                 id
             })
             .collect()

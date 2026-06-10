@@ -1,7 +1,7 @@
 //! Integration tests for the Kademlia routing table and node data structures.
 //!
 //! Context: the routing table is the core peer-discovery mechanism.  It
-//! partitions the 128-bit XOR keyspace into K-buckets and uses XOR distance to
+//! partitions the 160-bit XOR keyspace into K-buckets and uses XOR distance to
 //! find the k nodes closest to any given target.  `NodeHeap` is the bounded
 //! priority queue used during iterative lookups (SpiderCrawl).
 //!
@@ -10,6 +10,7 @@
 //! tracking — all critical to correct DHT behaviour.
 
 use auth_kademlia_rs::node::{Node, NodeHeap};
+use primitive_types::U256;
 use auth_kademlia_rs::routing::RoutingTable;
 use auth_kademlia_rs::utils::digest;
 
@@ -90,7 +91,7 @@ fn test_find_neighbors_sorted_by_xor_distance() {
     }
 
     let found = rt.find_neighbors(&target, None);
-    let distances: Vec<u128> = found.iter().map(|n| n.distance_to(&target)).collect();
+    let distances: Vec<U256> = found.iter().map(|n| n.distance_to(&target)).collect();
     let mut sorted = distances.clone();
     sorted.sort_unstable();
     assert_eq!(
@@ -214,7 +215,7 @@ fn test_bucket_not_lonely_after_add() {
 #[test]
 fn test_distance_to_self_is_zero() {
     let n = make_node("x");
-    assert_eq!(n.distance_to(&n), 0);
+    assert_eq!(n.distance_to(&n), U256::zero());
 }
 
 /// XOR distance is symmetric: d(a, b) == d(b, a).
@@ -232,7 +233,7 @@ fn test_distinct_nodes_have_nonzero_distance() {
     let b = make_node("node_b");
     assert_ne!(
         a.distance_to(&b),
-        0,
+        U256::zero(),
         "distinct nodes should have non-zero XOR distance"
     );
 }
@@ -289,7 +290,7 @@ fn test_nodeheap_iter_distance_order() {
     }
 
     let nodes = heap.to_vec();
-    let distances: Vec<u128> = nodes.iter().map(|n| n.distance_to(&pivot)).collect();
+    let distances: Vec<U256> = nodes.iter().map(|n| n.distance_to(&pivot)).collect();
     let mut sorted = distances.clone();
     sorted.sort_unstable();
     assert_eq!(

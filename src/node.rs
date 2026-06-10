@@ -3,9 +3,10 @@
 /// `Node` represents a single peer identified by a 20-byte SHA-1 ID.
 /// `NodeHeap` is a bounded min-heap ordered by XOR distance from a pivot node,
 /// used during iterative lookups.
-use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::HashSet;
 use std::fmt;
+
+use primitive_types::U256;
 
 use crate::utils::ID_LEN;
 
@@ -16,17 +17,18 @@ pub struct Node {
     pub id: [u8; ID_LEN],
     pub ip: Option<String>,
     pub port: Option<u16>,
-    /// The node ID interpreted as a 160-bit unsigned integer for XOR distance
-    /// calculations. Since `u128` holds only 128 bits we fold the 20-byte ID
-    /// by XOR-ing the top 4 bytes into the high 32 bits of the u128, preserving
-    /// all bits without loss.
-    pub long_id: u128,
+    /// The node ID interpreted as a full 160-bit unsigned integer for XOR
+    /// distance calculations. Stored in a `U256` (the smallest fixed-width
+    /// integer that holds 160 bits without loss), matching the Python
+    /// AuthKademlia `int(node_id.hex(), 16)`. All 20 bytes are preserved, so
+    /// the XOR metric and bucket ordering are canonical (no folding).
+    pub long_id: U256,
 }
 
 impl Node {
     /// Create a node with a known address.
     pub fn new(id: [u8; ID_LEN], ip: Option<String>, port: Option<u16>) -> Self {
-        let long_id = Self::id_to_u128(&id);
+        let long_id = Self::id_to_u256(&id);
         Self {
             id,
             ip,
@@ -48,20 +50,15 @@ impl Node {
         Self::from_id(id)
     }
 
-    /// Fold a 20-byte ID into a u128 without discarding any bits.
-    ///
-    /// Layout: bytes [0..16] form the base u128 (big-endian), then bytes
-    /// [16..20] are XOR-ed into the top 32 bits so no information is lost.
-    fn id_to_u128(id: &[u8; ID_LEN]) -> u128 {
-        let mut buf = [0u8; 16];
-        buf.copy_from_slice(&id[..16]);
-        let base = u128::from_be_bytes(buf);
-        let tail = u32::from_be_bytes(id[16..20].try_into().unwrap()) as u128;
-        base ^ (tail << 96)
+    /// Interpret a 20-byte ID as a big-endian 160-bit integer (held in a
+    /// `U256`). No bits are discarded — the top 12 bytes of the `U256` are
+    /// always zero, so the value lies in `[0, 2^160)`.
+    fn id_to_u256(id: &[u8; ID_LEN]) -> U256 {
+        U256::from_big_endian(id)
     }
 
     /// XOR distance to another node (used for Kademlia routing).
-    pub fn distance_to(&self, other: &Node) -> u128 {
+    pub fn distance_to(&self, other: &Node) -> U256 {
         self.long_id ^ other.long_id
     }
 
@@ -92,50 +89,28 @@ impl fmt::Display for Node {
     }
 }
 
-/// An entry in the heap, ordered by XOR distance (ascending).
-///
-/// `BinaryHeap` in Rust is a max-heap, so we invert the ordering so that the
-/// *smallest* distance has the highest priority.
+/// An entry paired with its XOR distance from the heap's pivot node.
 #[derive(Debug, Clone)]
 struct HeapEntry {
-    distance: u128,
+    distance: U256,
     node: Node,
 }
 
-impl PartialEq for HeapEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.node.id == other.node.id
-    }
-}
-impl Eq for HeapEntry {}
-
-impl PartialOrd for HeapEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-/// Inverted so that `BinaryHeap` (max-heap) behaves as a min-heap by distance.
-impl Ord for HeapEntry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Reverse distance: larger distance = lower priority
-        other
-            .distance
-            .cmp(&self.distance)
-            .then_with(|| other.node.id.cmp(&self.node.id))
-    }
-}
-
-/// A bounded min-heap of nodes ordered by XOR distance from a pivot node.
+/// A bounded set of the `k` nodes closest to a pivot, ordered by XOR distance.
 ///
-/// Kademlia lookups maintain a heap of the `k` closest known nodes. This
-/// structure enforces the bound at insertion time and tracks which nodes have
-/// already been contacted during a crawl.
+/// Kademlia lookups maintain the `k` closest known nodes. Backed by a `Vec`
+/// kept sorted by ascending distance: every consumer (`iter`, `popleft`,
+/// `to_vec`) needs the closest-first order, so maintaining the invariant on
+/// mutation is both simpler and cheaper than a `BinaryHeap` that gets
+/// drained and re-sorted on each access. With the full 160-bit metric the
+/// distance order is total (distinct ids never tie), so the ordering is
+/// unambiguous. Mirrors Python's `heapq` + `nsmallest` semantics.
 #[derive(Debug, Clone)]
 pub struct NodeHeap {
     /// The pivot node — all distances are relative to this.
     pub node: Node,
-    heap: BinaryHeap<HeapEntry>,
+    /// The k closest known nodes, sorted by ascending XOR distance.
+    entries: Vec<HeapEntry>,
     /// IDs of nodes that have been marked as contacted.
     pub contacted: HashSet<[u8; ID_LEN]>,
     /// Maximum number of nodes the heap may hold.
@@ -147,7 +122,7 @@ impl NodeHeap {
     pub fn new(node: Node, maxsize: usize) -> Self {
         Self {
             node,
-            heap: BinaryHeap::new(),
+            entries: Vec::new(),
             contacted: HashSet::new(),
             maxsize,
         }
@@ -155,16 +130,21 @@ impl NodeHeap {
 
     /// Insert a batch of nodes, ignoring duplicates.
     ///
-    /// After insertion the heap is trimmed to `maxsize` keeping the closest
-    /// nodes.
+    /// After insertion the set is re-sorted and trimmed to `maxsize`, keeping
+    /// the closest nodes.
     pub fn push(&mut self, nodes: Vec<Node>) {
+        let mut added = false;
         for node in nodes {
             if !self.contains(&node) {
                 let distance = self.node.distance_to(&node);
-                self.heap.push(HeapEntry { distance, node });
+                self.entries.push(HeapEntry { distance, node });
+                added = true;
             }
         }
-        self.enforce_maxsize();
+        if added {
+            self.entries.sort_unstable_by_key(|e| e.distance);
+            self.entries.truncate(self.maxsize);
+        }
     }
 
     /// Insert a single node.
@@ -172,45 +152,32 @@ impl NodeHeap {
         self.push(vec![node]);
     }
 
-    /// Trim the heap to `maxsize`, dropping the farthest nodes.
-    fn enforce_maxsize(&mut self) {
-        if self.heap.len() <= self.maxsize {
-            return;
-        }
-        // Drain, sort by distance ascending, keep only the closest maxsize.
-        let mut entries: Vec<HeapEntry> = self.heap.drain().collect();
-        entries.sort_unstable_by_key(|e| e.distance);
-        entries.truncate(self.maxsize);
-        self.heap = entries.into_iter().collect();
-    }
-
-    /// Remove nodes by ID.
+    /// Remove nodes by ID. Preserves the ascending-distance ordering.
     pub fn remove(&mut self, peers: &[[u8; ID_LEN]]) {
         if peers.is_empty() {
             return;
         }
         let peer_set: HashSet<[u8; ID_LEN]> = peers.iter().cloned().collect();
-        let remaining: Vec<HeapEntry> = self
-            .heap
-            .drain()
-            .filter(|e| !peer_set.contains(&e.node.id))
-            .collect();
-        self.heap = remaining.into_iter().collect();
+        self.entries.retain(|e| !peer_set.contains(&e.node.id));
     }
 
     /// Pop and return the single closest node.
     pub fn popleft(&mut self) -> Option<Node> {
-        self.heap.pop().map(|e| e.node)
+        if self.entries.is_empty() {
+            None
+        } else {
+            Some(self.entries.remove(0).node)
+        }
     }
 
     /// Return `true` if the node is already in the heap.
     pub fn contains(&self, node: &Node) -> bool {
-        self.heap.iter().any(|e| e.node.id == node.id)
+        self.entries.iter().any(|e| e.node.id == node.id)
     }
 
     /// Look up a node by its raw ID.
     pub fn get_node(&self, node_id: &[u8; ID_LEN]) -> Option<Node> {
-        self.heap
+        self.entries
             .iter()
             .find(|e| &e.node.id == node_id)
             .map(|e| e.node.clone())
@@ -228,11 +195,11 @@ impl NodeHeap {
 
     /// Number of nodes in the heap (capped at `maxsize`).
     pub fn len(&self) -> usize {
-        self.heap.len().min(self.maxsize)
+        self.entries.len().min(self.maxsize)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.heap.is_empty()
+        self.entries.is_empty()
     }
 
     /// Mark a node as contacted so it is excluded from future crawl rounds.
@@ -248,15 +215,12 @@ impl NodeHeap {
     }
 
     /// Iterate over nodes in ascending XOR-distance order, limited to `maxsize`.
+    /// `entries` is maintained sorted, so this is a direct view.
     pub fn iter(&self) -> impl Iterator<Item = Node> + '_ {
-        let mut entries: Vec<&HeapEntry> = self.heap.iter().collect();
-        entries.sort_unstable_by_key(|e| e.distance);
-        entries
-            .into_iter()
+        self.entries
+            .iter()
             .take(self.maxsize)
             .map(|e| e.node.clone())
-            .collect::<Vec<_>>()
-            .into_iter()
     }
 
     /// Collect all nodes into a `Vec` (closest first).
@@ -288,7 +252,7 @@ mod tests {
         for i in 0..10 {
             heap.push_one(make_node(&i.to_string()));
         }
-        assert!(heap.heap.len() <= 3);
+        assert!(heap.entries.len() <= 3);
     }
 
     #[test]
@@ -298,7 +262,7 @@ mod tests {
         let node = make_node("a");
         heap.push_one(node.clone());
         heap.push_one(node);
-        assert_eq!(heap.heap.len(), 1);
+        assert_eq!(heap.entries.len(), 1);
     }
 
     #[test]
@@ -310,5 +274,46 @@ mod tests {
         assert!(!heap.have_contacted_all());
         heap.mark_contacted(&node);
         assert!(heap.have_contacted_all());
+    }
+
+    // --- Regression tests for the full 160-bit XOR metric (PORTING_REVIEW §1) ---
+    //
+    // The previous implementation folded the 20-byte (160-bit) id into a u128 by
+    // XOR-ing bytes [16..20] into the high 32 bits. That fold is lossy: it both
+    // inverts distance ordering and lets distinct ids collide. These two tests
+    // pin the canonical behaviour (matching the Python AuthKademlia 160-bit int).
+
+    #[test]
+    fn xor_metric_respects_full_160bit_order() {
+        // `a` differs from the zero pivot only in a low-significance byte
+        // (true XOR distance 2^31); `b` only in the most-significant byte
+        // (true XOR distance 2^152). `a` must rank far closer than `b`.
+        let pivot = Node::from_id([0u8; ID_LEN]);
+        let mut a_id = [0u8; ID_LEN];
+        a_id[16] = 0x80;
+        let mut b_id = [0u8; ID_LEN];
+        b_id[0] = 0x01;
+        let a = Node::from_id(a_id);
+        let b = Node::from_id(b_id);
+        assert!(
+            pivot.distance_to(&a) < pivot.distance_to(&b),
+            "XOR metric must follow the full 160-bit order (u128 folding inverted it)"
+        );
+    }
+
+    #[test]
+    fn distinct_ids_keep_distinct_long_id() {
+        // These two ids differ only in bytes that the old u128 fold collapsed
+        // onto each other (byte[0] vs byte[16] in the high 32 bits).
+        let mut c1 = [0u8; ID_LEN];
+        c1[0] = 0xAA;
+        c1[16] = 0x55;
+        let mut c2 = [0u8; ID_LEN];
+        c2[0] = 0xAA ^ 0x55;
+        assert_ne!(
+            Node::from_id(c1).long_id,
+            Node::from_id(c2).long_id,
+            "distinct 160-bit ids must not collide in long_id"
+        );
     }
 }

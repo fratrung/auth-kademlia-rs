@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::Server;
 use auth_kademlia_rs::node::Node;
+use primitive_types::U256;
 use auth_kademlia_rs::storage::IStorage;
 use auth_kademlia_rs::utils::digest;
 
@@ -249,7 +250,7 @@ async fn verify_xor_correctness(
         let key_node = Node::from_id(dkey);
 
         // Sort all nodes by XOR distance to this key
-        let mut by_dist: Vec<(u128, u16)> = node_ids
+        let mut by_dist: Vec<(U256, u16)> = node_ids
             .iter()
             .map(|(id, port)| (Node::from_id(*id).distance_to(&key_node), *port))
             .collect();

@@ -10,9 +10,7 @@ use crate::node::Node;
 use crate::protocol::KademliaProtocol;
 use crate::signature_cache::SignatureCache;
 use crate::storage::{ForgetfulStorage, IStorage};
-use crate::utils::{digest, digest_bytes, ID_LEN};
-
-const STATUS_LIST_KEY: &str = "did:iiot:status-list";
+use crate::utils::{digest, digest_bytes, STATUS_LIST_KEY, ID_LEN};
 
 pub struct Server {
     pub ksize: usize,

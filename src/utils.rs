@@ -9,6 +9,10 @@ use std::future::Future;
 /// Byte length of a Kademlia node ID (SHA-1 output = 20 bytes = 160 bits).
 pub const ID_LEN: usize = 20;
 
+/// Reserved DHT key for the issuer-signed status list. Operations on this key
+/// use issuer-node signature verification instead of DID-owner verification.
+pub const STATUS_LIST_KEY: &str = "did:iiot:status-list";
+
 /// Compute the SHA-1 digest of a UTF-8 string.
 pub fn digest(s: &str) -> [u8; ID_LEN] {
     digest_bytes(s.as_bytes())

@@ -18,7 +18,7 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 146 tests
+cargo test                           # all 157 tests
 cargo test <name>                    # single test, e.g. test_delete_did_record
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -84,8 +84,8 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/crypto/ed25519.rs` | Ed25519 verifier + signer |
 | `src/crypto/rsa.rs` | RSA verifier + signer |
 | `src/crypto/key_manager.rs` | `KeyManager` — keypair generation, storage, sign/verify helpers |
-| `src/node.rs` | `Node` struct, XOR distance, `from_id`; `Display` shows `ip:port` for real peers, `<key:hex8>` for key-space targets |
-| `src/utils.rs` | `digest()` (SHA-1 → `[u8; 20]`), `digest_bytes()`, `ID_LEN = 20` |
+| `src/node.rs` | `Node` struct, full **160-bit** XOR distance (`long_id: U256`, no folding), `from_id`; `NodeHeap` shortlist backed by a distance-sorted `Vec`; `Display` shows `ip:port` for real peers, `<key:hex8>` for key-space targets |
+| `src/utils.rs` | `digest()` (SHA-1 → `[u8; 20]`), `digest_bytes()`, `ID_LEN = 20`, `STATUS_LIST_KEY` |
 | `scripts/dht_node.rs` | Docker container entry point (`publisher` / `retriever` roles) |
 | `tests/common/mod.rs` | Shared test helpers: `start_node`, `build_did_document`, `build_signed_record`, `generate_did_iiot` |
 
@@ -147,6 +147,12 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
   is stored, an attacker would need to sign with `sk_v2` — which they do not possess.
 - Deletes require `auth_signature = sign(delete_msg, owner_private_key)`.
 - DHT key = `digest(did_uuid_string)` where `digest` is SHA-1 → `[u8; 20]`.
+- XOR distance is computed over the **full 160-bit id** (`Node.long_id: U256`,
+  `primitive-types`) — **no folding**. Distinct ids never collide and the
+  distance order is total/canonical, matching Python's arbitrary-precision
+  `int(node_id.hex(), 16)`. Bucket ranges (`routing.rs`) are `U256` over
+  `[0, 2^160)`. Never reintroduce a `u128` projection — it inverts ordering
+  and collides ids.
 - `STATUS_LIST_KEY = digest("did:iiot:status-list")` uses issuer-node
   verification instead of DID-owner verification.
 - `issuer.bin` is read lazily; if absent, a `log::warn!` is emitted at startup
@@ -165,7 +171,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/scenarios/churn.rs` | 1 | Publisher leaves, record survives for new joiner |
 | `tests/scenarios/worker_pool.rs` | 1 | 40-client burst, all responses delivered |
 | `tests/scenarios/crypto.rs` | 4 | End-to-end crypto invariants (tamper, injection, downgrade, revocation) |
-| `src/**` (inline) | 62 | Module-level `#[test]` blocks (routing.rs adds 5 new tests for TableTraverser / touch_last_updated semantics) |
+| `src/**` (inline) | 73 | Module-level `#[test]` blocks (incl. `node.rs` 160-bit XOR-metric regression tests + `fragmentation.rs` round-trip/out-of-order/inconsistent-total tests) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 
@@ -283,6 +289,9 @@ Keep it concise (≤ 60 lines). The file is ephemeral: delete it once the first
 message of the new session confirms the context has been picked up.
 
 ## What NOT to do
+- Do not reduce `Node.long_id` below the full 160 bits (e.g. a `u128` fold):
+  it silently inverts XOR distance ordering and collides distinct ids. Keep it
+  `U256`.
 - Do not hold a `Mutex` lock across an `.await` — deadlock risk.
 - Do not increase `MAX_MESSAGE_SIZE` without a matching memory-budget review.
 - Do not add `unwrap()` in protocol/network paths — use `?` or log + return.

@@ -16,6 +16,8 @@ use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use primitive_types::U256;
+
 use crate::node::Node;
 
 fn now_secs() -> u64 {
@@ -25,10 +27,18 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
+/// The full 160-bit key space `[0, 2^160 - 1]`, matching the Python
+/// `KBucket(0, 2**160)` (which uses an exclusive upper bound; we use the
+/// inclusive maximum representable 160-bit value, consistent with the rest
+/// of the table operating on concrete ids).
+fn full_keyspace() -> RangeInclusive<U256> {
+    U256::zero()..=((U256::one() << 160) - U256::one())
+}
+
 /// A single K-bucket covering a contiguous range of the XOR keyspace.
 pub struct KBucket {
     /// The inclusive range `[lo, hi]` of `long_id` values this bucket covers.
-    pub range: RangeInclusive<u128>,
+    pub range: RangeInclusive<U256>,
     /// Primary node list in LRU order (least-recently-seen at front).
     nodes: VecDeque<Node>,
     /// Overflow list: nodes that arrived when the bucket was full (§4.1).
@@ -45,7 +55,7 @@ pub struct KBucket {
 }
 
 impl KBucket {
-    pub fn new(range: RangeInclusive<u128>, ksize: usize) -> Self {
+    pub fn new(range: RangeInclusive<U256>, ksize: usize) -> Self {
         Self {
             range,
             nodes: VecDeque::new(),
@@ -117,10 +127,12 @@ impl KBucket {
     pub fn split(self) -> (KBucket, KBucket) {
         let lo = *self.range.start();
         let hi = *self.range.end();
+        // `lo + (hi - lo) / 2` avoids any overflow concern and matches the
+        // Python midpoint `(lo + hi) // 2` for lo <= hi.
         let mid = lo + (hi - lo) / 2;
 
         let mut low = KBucket::new(lo..=mid, self.ksize);
-        let mut high = KBucket::new(mid + 1..=hi, self.ksize);
+        let mut high = KBucket::new(mid + U256::one()..=hi, self.ksize);
 
         for n in self.nodes.into_iter().chain(self.replacement_nodes) {
             if n.long_id <= mid {
@@ -183,7 +195,7 @@ impl KBucket {
         self.nodes.is_empty()
     }
 
-    pub fn covers(&self, long_id: u128) -> bool {
+    pub fn covers(&self, long_id: U256) -> bool {
         self.range.contains(&long_id)
     }
 }
@@ -266,7 +278,7 @@ impl<'a> Iterator for TableTraverser<'a> {
     }
 }
 
-/// Maintains a list of K-buckets that together partition the entire 128-bit
+/// Maintains a list of K-buckets that together partition the entire 160-bit
 /// XOR keyspace.
 pub struct RoutingTable {
     pub node: Node,
@@ -276,7 +288,7 @@ pub struct RoutingTable {
 
 impl RoutingTable {
     pub fn new(node: Node, ksize: usize) -> Self {
-        let bucket = KBucket::new(0..=u128::MAX, ksize);
+        let bucket = KBucket::new(full_keyspace(), ksize);
         Self {
             node,
             ksize,
@@ -330,7 +342,7 @@ impl RoutingTable {
     /// - Collects up to k candidates with early-stop, then sorts by XOR distance.
     /// - Matches Python's `heapq.nsmallest(k, nodes)` result.
     pub fn find_neighbors(&self, target: &Node, exclude: Option<&Node>) -> Vec<Node> {
-        let mut nodes: Vec<(u128, Node)> = Vec::new();
+        let mut nodes: Vec<(U256, Node)> = Vec::new();
 
         for neighbor in TableTraverser::new(self, target) {
             if neighbor.id == target.id {
@@ -366,7 +378,7 @@ impl RoutingTable {
         self.buckets.insert(idx, low);
     }
 
-    fn bucket_index_for(&self, long_id: u128) -> usize {
+    fn bucket_index_for(&self, long_id: U256) -> usize {
         self.buckets
             .iter()
             .position(|b| b.covers(long_id))
@@ -473,7 +485,7 @@ mod tests {
         // "ringiovanire" un bucket che fosse già vecchio.
         // In questo test costruiamo un KBucket direttamente e misuriamo che
         // last_updated non cambi dopo add_node.
-        let mut b = KBucket::new(0..=u128::MAX, 20);
+        let mut b = KBucket::new(full_keyspace(), 20);
         let t_before = b.last_updated.load(Ordering::Relaxed);
         b.add_node(make_node("x"));
         let t_after = b.last_updated.load(Ordering::Relaxed);
@@ -482,7 +494,7 @@ mod tests {
 
     #[test]
     fn touch_last_updated_resets_timer() {
-        let b = KBucket::new(0..=u128::MAX, 20);
+        let b = KBucket::new(full_keyspace(), 20);
         let t_before = b.last_updated.load(Ordering::Relaxed);
         // Simula il passaggio di un secondo.
         std::thread::sleep(std::time::Duration::from_secs(1));
