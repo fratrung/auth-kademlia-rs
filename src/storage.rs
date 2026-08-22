@@ -6,8 +6,8 @@
 use dashmap::DashMap;
 use std::time::{Duration, Instant};
 
-/// One week in seconds — the default TTL used in AuthKademlia.
-pub const DEFAULT_TTL: i64 = 604_800;
+/// Two weeks in seconds — the default record TTL used by AuthKademlia.
+pub const DEFAULT_TTL: i64 = 14 * 24 * 60 * 60;
 
 /// Abstract key-value store interface.
 ///

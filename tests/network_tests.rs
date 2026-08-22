@@ -301,13 +301,17 @@ async fn test_bootstrap_unreachable_peer_returns_empty() {
 /// auth_signature (proving ownership of the old key) but an invalid
 /// self-signature (the embedded public key does not match the signing key).
 ///
-/// This exercises the rpc_update path on a live two-node setup.
+/// This exercises the rpc_update path on a live three-replica setup.
 #[tokio::test]
 async fn test_update_rejected_when_new_record_self_sig_invalid() {
     let mut node1 = start_node(15780).await;
     let node2 = start_node(15781).await;
+    let node3 = start_node(15885).await;
 
     node2
+        .bootstrap(vec![("127.0.0.1".to_string(), 15780)])
+        .await;
+    node3
         .bootstrap(vec![("127.0.0.1".to_string(), 15780)])
         .await;
     sleep(Duration::from_millis(200)).await;
@@ -426,7 +430,7 @@ async fn test_update_rejected_when_auth_signature_uses_wrong_key() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 10. Delete rejected when signature uses a wrong key (port 15785–15786)
+// 10. Delete rejected when signature uses a wrong key (ports 15785–15786, 15884)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// `delete` must return None when the auth_signature is not produced by the
@@ -435,8 +439,12 @@ async fn test_update_rejected_when_auth_signature_uses_wrong_key() {
 async fn test_delete_rejected_when_signature_uses_wrong_key() {
     let mut node1 = start_node(15785).await;
     let node2 = start_node(15786).await;
+    let node3 = start_node(15884).await;
 
     node2
+        .bootstrap(vec![("127.0.0.1".to_string(), 15785)])
+        .await;
+    node3
         .bootstrap(vec![("127.0.0.1".to_string(), 15785)])
         .await;
     sleep(Duration::from_millis(200)).await;

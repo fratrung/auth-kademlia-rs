@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::Server;
+use auth_kademlia_rs::utils::ID_LEN;
 
 pub fn rt() -> tokio::runtime::Runtime {
     let parallelism = std::thread::available_parallelism()
@@ -34,6 +35,18 @@ pub async fn start_node(port: u16) -> Server {
     )));
     let mut srv = Server::new(handler, 20, 3, None, None, false);
     srv.listen(port, "127.0.0.1").await.expect("listen failed");
+    srv
+}
+
+/// Start a node with signature cache disabled and a deterministic node ID.
+pub async fn start_node_with_id(port: u16, node_id: [u8; ID_LEN]) -> Server {
+    let handler = Arc::new(DIDSignatureVerifierHandler::new(PathBuf::from(
+        "issuer_pub_key.bin",
+    )));
+    let mut srv = Server::new(handler, 20, 3, Some(node_id), None, false);
+    srv.listen(port, "127.0.0.1")
+        .await
+        .expect("listen failed");
     srv
 }
 

@@ -101,12 +101,46 @@ By inspecting fragments you can identify the internal composition of a PQC recor
 
 -----
 
+## Record Consistency and Lifetime
+
+AuthKademlia-RS uses a bounded consistency group without adding versions,
+timestamps, or new fields to the wire protocol. With the default
+`alpha = 3`, consistency decisions require a strict **2-of-3 majority** of
+byte-identical records. The Dilithium signature is verified once, after a
+winner has been selected; a split with no strict majority returns no value.
+
+- **Local DID Document GET:** a valid local record is returned immediately.
+  This preserves the low-latency Kademlia fast path and does not trigger a
+  network quorum.
+- **Remote DID Document GET:** when there is no local record, the node follows
+  the normal iterative Kademlia lookup, querying the closest uncontacted peers
+  in rounds and incorporating closer peers returned by misses. At most three
+  record-bearing responses become votes; only a strict majority is returned.
+- **Status List GET:** because the issuer Status List changes more frequently,
+  it always uses the consistency group. A local copy contributes one vote and
+  at most two remote records become additional votes. Discovery remains
+  iterative; the local copy never causes an immediate return by itself.
+- **UPDATE:** updates are propagated best-effort to the nodes discovered by the
+  Kademlia crawl. Success is determined by a strict majority of the primary
+  consistency group, capped at `alpha`. When the local node is a responsible
+  replica, its verified prospective value participates in that group, but the
+  local write is committed only after quorum is reached.
+- **TTL:** records written to the default storage expire lazily after 14 days.
+  Applications that need continued availability must refresh them through a
+  legitimate publish or update before expiry.
+
+This design deliberately keeps the existing RPC and record formats unchanged.
+It reduces the risk of selecting a stale remote replica while avoiding version
+metadata and the associated per-candidate signature verification cost.
+
+-----
+
 ## Performance & Concurrency
 
 | Mechanism | Detail |
 |---|---|
 | **Concurrent storage** | `DashMap` replaces `IndexMap + RwLock`. Storage operations on different keys are fully parallel with no single global lock. |
-| **Lazy TTL expiry** | Expired entries are filtered at read time instead of an O(n) scan on every write. |
+| **Lazy TTL expiry** | Records expire after 14 days by default. Expired entries are filtered at read time instead of an O(n) scan on every write. |
 | **Signature cache** | `SignatureCache` (moka, SHA-256 keyed, TTL 1 h, 4096 entries). Repeated reads of the same record pay full Dilithium cost only once; subsequent reads are O(1). Any byte-level change forces full re-verification. |
 | **Worker pool** | UDP receive loop dispatches via round-robin into `available_parallelism()` workers, each with a dedicated `mpsc::channel(256)`. `try_send` is attempted on each worker in turn; if all are full the loop awaits the base worker, providing backpressure without drops. |
 | **Fire-and-forget routing** | Routing table updates (`welcome_if_new`) are spawned as background tasks in all RPC handlers. RPC responses are sent immediately without waiting for routing convergence. |
@@ -596,3 +630,21 @@ maturin develop --features python
 - [AuthKademlia](https://github.com/fratrung/AuthKademlia) — original Python implementation
 - [did:iiot](https://github.com/fratrung/did-iiot) — DID method for Industrial IoT
 - [did-iiot-dht](https://github.com/fratrung/did-iiot-dht) — end-to-end integration example
+
+-----
+
+## AI-Assisted Development Disclosure
+
+This project was developed with technical support from **GPT-5.6 SOL** and
+**FABLE 5**. These AI agents supported design discussions, implementation, and
+test development; they were not the originators or generators of the project's
+ideas, goals, or core architectural direction. Those originated with the human
+maintainer. Architectural and protocol alternatives were discussed with AI,
+but every design decision was made and accepted by the human maintainer, who
+retains full responsibility for the result.
+
+The resulting code was reviewed at the functional and architectural level.
+Line-by-line human review was focused on critical paths, including protocol
+consistency, cryptographic verification, authenticated mutations, and storage
+behaviour. AI assistance and automated tests support the review process but do
+not constitute a guarantee of correctness or security.

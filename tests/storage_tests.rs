@@ -111,10 +111,10 @@ fn test_entry_survives_within_ttl() {
     assert_eq!(s.get(b"k"), Some(b"v".to_vec()));
 }
 
-/// The DEFAULT_TTL constant is one week (604 800 s), matching Kademlia spec.
+/// The DEFAULT_TTL constant is two weeks (1 209 600 s).
 #[test]
-fn test_default_ttl_constant_is_one_week() {
-    assert_eq!(DEFAULT_TTL, 604_800);
+fn test_default_ttl_constant_is_two_weeks() {
+    assert_eq!(DEFAULT_TTL, 1_209_600);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

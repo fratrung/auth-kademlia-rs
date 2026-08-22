@@ -9,8 +9,8 @@ use crate::crawling::{NodeSpiderCrawl, ValueSpiderCrawl};
 use crate::node::Node;
 use crate::protocol::KademliaProtocol;
 use crate::signature_cache::SignatureCache;
-use crate::storage::{ForgetfulStorage, IStorage};
-use crate::utils::{digest, digest_bytes, STATUS_LIST_KEY, ID_LEN};
+use crate::storage::{ForgetfulStorage, IStorage, DEFAULT_TTL};
+use crate::utils::{digest, digest_bytes, ID_LEN, STATUS_LIST_KEY};
 
 pub struct Server {
     pub ksize: usize,
@@ -44,7 +44,7 @@ impl Server {
         storage: Option<Arc<ForgetfulStorage>>,
         use_cache: bool,
     ) -> Self {
-        let storage = storage.unwrap_or_else(|| Arc::new(ForgetfulStorage::new(-1)));
+        let storage = storage.unwrap_or_else(|| Arc::new(ForgetfulStorage::new(DEFAULT_TTL)));
 
         let node = match node_id {
             Some(id) => Node::from_id(id),
@@ -211,35 +211,49 @@ impl Server {
     pub async fn get(&self, key: &str) -> Option<Vec<u8>> {
         log::info!("get({})", key);
         let dkey = digest(key);
+        let is_status_list = key == STATUS_LIST_KEY;
+        let local_value = self.storage.get(&dkey);
 
-        if let Some(result) = self.storage.get(&dkey) {
-            return if self.verify_value(key, &result).await {
-                Some(result)
-            } else {
-                None
-            };
+        // DID Documents keep the low-latency local fast path. The frequently
+        // updated status list instead uses the local copy as one quorum vote.
+        if !is_status_list {
+            if let Some(result) = local_value.as_ref() {
+                return if self.verify_value(key, result).await {
+                    Some(result.clone())
+                } else {
+                    None
+                };
+            }
         }
 
         let proto = self.protocol.as_ref()?;
-
         let nearest: Vec<Node> = proto
             .router
             .read()
             .await
             .find_neighbors(&Node::from_id(dkey), None);
+
+        let sample_size = self.alpha.max(1);
+        let minimum_votes = sample_size / 2 + 1;
+        let initial_values = if is_status_list {
+            local_value.into_iter().collect::<Vec<_>>()
+        } else {
+            vec![]
+        };
+
         if nearest.is_empty() {
-            log::warn!("get({}): no known neighbours", key);
+            log::warn!("get({}): insufficient neighbours for quorum", key);
             return None;
         }
 
-        let (result, _) = ValueSpiderCrawl::new(
+        let result = ValueSpiderCrawl::new(
             Arc::clone(proto),
             Node::from_id(dkey),
             nearest,
             self.ksize,
             self.alpha,
         )
-        .find()
+        .find_quorum(initial_values, minimum_votes, sample_size)
         .await;
 
         match result {
@@ -456,11 +470,11 @@ impl Server {
         .find()
         .await;
 
-        if let Some(farthest) = nodes.iter().map(|n| n.distance_to(&node)).max() {
-            if self.node.distance_to(&node) < farthest {
-                self.storage.set(dkey.to_vec(), value.clone());
-            }
-        }
+        let should_store_local = nodes
+            .iter()
+            .map(|n| n.distance_to(&node))
+            .max()
+            .is_some_and(|farthest| self.node.distance_to(&node) < farthest);
 
         let is_status_list = key == STATUS_LIST_KEY;
         let mut futs: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>> =
@@ -482,7 +496,40 @@ impl Server {
             }
         }
 
-        futures::future::join_all(futs).await.iter().any(|&r| r)
+        let results = futures::future::join_all(futs).await;
+
+        // The consistency group is the local replica (when applicable) plus
+        // the closest remote peers, capped at alpha. Remaining replicas are
+        // still updated best-effort but do not affect the quorum decision.
+        let local_vote = usize::from(should_store_local);
+        let primary_remote_count = self.alpha.saturating_sub(local_vote).min(results.len());
+        let group_size = local_vote + primary_remote_count;
+        if group_size == 0 {
+            return false;
+        }
+        let required = group_size / 2 + 1;
+        let acknowledgements = local_vote
+            + results
+                .iter()
+                .take(primary_remote_count)
+                .filter(|&&ok| ok)
+                .count();
+        let quorum_met = acknowledgements >= required;
+
+        if quorum_met {
+            if should_store_local {
+                self.storage.set(dkey.to_vec(), value);
+            }
+        } else {
+            log::warn!(
+                "update_digest {}: quorum not reached ({}/{})",
+                key,
+                acknowledgements,
+                required
+            );
+        }
+
+        quorum_met
     }
 
     async fn delete_digest(

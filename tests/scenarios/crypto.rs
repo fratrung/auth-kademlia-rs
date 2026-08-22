@@ -1,7 +1,7 @@
 //! Scenario: cryptographic security invariants end-to-end.
 //!
 //! These tests exercise the full DHT path (set/update) to verify that the
-//! security properties documented in CLAUDE.md hold at the protocol level,
+//! security properties documented in AGENTS.md hold at the protocol level,
 //! not just at the handler unit-test level.
 //!
 //! Covered invariants:
@@ -13,7 +13,7 @@
 //!   4. Key rotation chain: only the current key owner can authorise the next
 //!      rotation — old keys are revoked after each rotation.
 //!
-//! Ports: 15860–15865.
+//! Ports: 15860–15865, 15886–15887.
 
 #[path = "common.rs"]
 mod common;
@@ -81,16 +81,20 @@ fn algorithm_field_injection_rejected() {
 /// substitute v1 back as the "new record". Producing a valid auth_signature
 /// over v1 requires signing with sk2 — which the attacker does not have.
 ///
-/// CLAUDE.md invariant: "downgrade attacks are impossible: to submit record_v1
+/// AGENTS.md invariant: "downgrade attacks are impossible: to submit record_v1
 /// as 'new' when record_v2 is stored, an attacker would need to sign with sk_v2."
 ///
-/// Ports: 15862–15863.
+/// Ports: 15862–15863, 15886.
 #[test]
 fn downgrade_attack_after_rotation_rejected() {
     rt().block_on(async {
         let node_a = start_node(15862).await;
         let node_b = start_node(15863).await;
+        let node_c = start_node(15886).await;
         node_b
+            .bootstrap(vec![("127.0.0.1".to_string(), 15862)])
+            .await;
+        node_c
             .bootstrap(vec![("127.0.0.1".to_string(), 15862)])
             .await;
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -152,13 +156,17 @@ fn downgrade_attack_after_rotation_rejected() {
 ///
 /// Also verifies the positive case: sk2 does authorise v2→v3.
 ///
-/// Ports: 15864–15865.
+/// Ports: 15864–15865, 15887.
 #[test]
 fn revoked_key_cannot_authorise_further_rotation() {
     rt().block_on(async {
         let mut node_a = start_node(15864).await;
         let node_b = start_node(15865).await;
+        let node_c = start_node(15887).await;
         node_b
+            .bootstrap(vec![("127.0.0.1".to_string(), 15864)])
+            .await;
+        node_c
             .bootstrap(vec![("127.0.0.1".to_string(), 15864)])
             .await;
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -190,12 +198,12 @@ fn revoked_key_cannot_authorise_further_rotation() {
             "v1→v2 rotation must succeed"
         );
 
-        // Wait for the v1→v2 UPDATE RPC to propagate to node_b.
+        // Wait for the v1→v2 UPDATE RPC to propagate to both replicas.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         // Build v3; try to authorise with the revoked sk1.
         // node_a is used as the caller: its update_digest sends UPDATE RPCs to
-        // node_b, which holds v2 and can verify the rotation correctly.
+        // the replicas, which hold v2 and can verify the rotation correctly.
         let (pk3, sk3) = dilithium2::keypair();
         let (kpk3, _) = kyber512::keypair();
         let doc_v3 = build_did_document(&did, &pk3, &kpk3);

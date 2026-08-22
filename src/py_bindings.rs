@@ -181,9 +181,11 @@ impl PyServer {
     /// The record is rejected if the key already exists or if the signature
     /// embedded in ``value`` does not verify against its own DID Document.
     ///
-    /// ``value`` must follow the AuthKademlia record format::
+    /// ``value`` must follow the AuthKademlia record format:
     ///
-    ///     algorithm (12 bytes, null-padded) | signature | DID Document JSON
+    /// ```text
+    /// algorithm (12 bytes, null-padded) | signature | DID Document JSON
+    /// ```
     ///
     /// Returns:
     ///     bool | None: ``True`` on success, ``None`` if rejected.

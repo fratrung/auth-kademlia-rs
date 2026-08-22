@@ -15,13 +15,25 @@ mod common;
 
 use std::time::Duration;
 
-use common::{make_record, poll_until, rt, start_node};
+use auth_kademlia_rs::storage::IStorage;
+use auth_kademlia_rs::utils::digest;
+
+use common::{make_record, poll_until, rt, start_node_with_id};
 
 #[test]
 fn welcome_if_new_replicates_to_joining_node() {
     rt().block_on(async {
-        let node_a = start_node(15787).await;
-        let node_b = start_node(15788).await;
+        let (key, record) = make_record();
+        let dkey = digest(&key);
+        let mut node_b_id = dkey;
+        node_b_id[0] ^= 0x80;
+        let mut node_c_id = dkey;
+        node_c_id[0] ^= 0x40;
+
+        // A is closest to the key and C is closer than B, satisfying both
+        // Kademlia §2.5 conditions checked by welcome_if_new.
+        let node_a = start_node_with_id(15787, dkey).await;
+        let node_b = start_node_with_id(15788, node_b_id).await;
 
         node_b
             .bootstrap(vec![("127.0.0.1".to_string(), 15787)])
@@ -29,7 +41,6 @@ fn welcome_if_new_replicates_to_joining_node() {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         // A stores the record with B as a known peer — set() succeeds.
-        let (key, record) = make_record();
         let stored = node_a.set(&key, record.clone()).await;
         assert_eq!(stored, Some(true), "node A must store the record");
 
@@ -37,13 +48,13 @@ fn welcome_if_new_replicates_to_joining_node() {
         let on_b = poll_until(
             Duration::from_secs(3),
             Duration::from_millis(100),
-            || async { node_b.get(&key).await },
+            || async { node_b.storage.get(&dkey) },
         )
         .await;
         assert!(on_b.is_some(), "node B must hold the record before C joins");
 
         // C joins — welcome_if_new fires asynchronously on A (and B) toward C.
-        let node_c = start_node(15789).await;
+        let node_c = start_node_with_id(15789, node_c_id).await;
         node_c
             .bootstrap(vec![("127.0.0.1".to_string(), 15787)])
             .await;
@@ -51,7 +62,7 @@ fn welcome_if_new_replicates_to_joining_node() {
         let result = poll_until(
             Duration::from_secs(5),
             Duration::from_millis(200),
-            || async { node_c.get(&key).await },
+            || async { node_c.storage.get(&dkey) },
         )
         .await;
 

@@ -448,7 +448,6 @@ async fn print_routing_tables(nodes: &[(Arc<Server>, u16)]) {
     }
 }
 
-// ─── latency helpers ─────────────────────────────────────────────────────────
 
 fn percentile(sorted: &[u64], p: f64) -> u64 {
     if sorted.is_empty() {
@@ -479,7 +478,6 @@ fn latency_stats(v: &mut Vec<u64>) -> (f64, u64, u64, u64) {
     (avg, p50, p95, max)
 }
 
-// ─── entry point ─────────────────────────────────────────────────────────────
 
 fn main() {
     let parallelism = std::thread::available_parallelism()
@@ -510,7 +508,6 @@ async fn run() {
     println!("  Records  : {NUM_RECORDS}");
     println!("  Timeout  : {}s/op\n", OP_TIMEOUT.as_secs());
 
-    // ── Start nodes ───────────────────────────────────────────────────────
     print!("Starting {NUM_NODES} nodes... ");
     let mut nodes: Vec<(Arc<Server>, u16)> = Vec::with_capacity(NUM_NODES);
     for i in 0..NUM_NODES {
@@ -519,7 +516,6 @@ async fn run() {
     }
     println!("ok");
 
-    // ── Bootstrap ─────────────────────────────────────────────────────────
     // Two passes: first wires everyone to the seed, second pass lets nodes
     // discover each other's neighbors and fill their routing tables.
     print!("Bootstrapping (2 passes)... ");
@@ -538,7 +534,6 @@ async fn run() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     println!("ok\n");
 
-    // ── Phase 1: Publish ──────────────────────────────────────────────────
     println!("━━━ Phase 1: Publish {NUM_RECORDS} Records ━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let mut published: Vec<(String, String, Vec<u8>)> = Vec::new();
@@ -577,7 +572,6 @@ async fn run() {
     }
     println!("\n  Published: {set_ok}/{NUM_RECORDS}  ({set_fail} failed)\n");
 
-    // ── Phase 2: Retrieve ─────────────────────────────────────────────────
     println!("━━━ Phase 2: Retrieve Records ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     println!("  reader is offset by NUM_NODES/2 from writer — forces a real DHT lookup\n");
 
@@ -631,7 +625,6 @@ async fn run() {
     }
     println!("\n  Retrieved: {get_ok}/{set_ok}  ({get_fail} not found, {get_corrupt} corrupted)\n");
 
-    // ── Latency table ─────────────────────────────────────────────────────
     println!("━━━ Latency Summary ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     let (sa, sp50, sp95, smax) = latency_stats(&mut set_latencies);
     let (ga, gp50, gp95, gmax) = latency_stats(&mut get_latencies);
@@ -648,7 +641,6 @@ async fn run() {
     );
     println!("  └───────┴──────────┴──────────┴──────────┴──────────┘\n");
 
-    // ── Topology diagnostics ──────────────────────────────────────────────
     let key_to_did: HashMap<String, String> = published
         .iter()
         .map(|(did, key_str, _)| {
@@ -664,7 +656,6 @@ async fn run() {
     print_bucket_structure(&nodes).await;
     print_routing_tables(&nodes).await;
 
-    // ── Final verdict ─────────────────────────────────────────────────────
     println!("━━━ Result ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     if get_fail == 0 && get_corrupt == 0 && set_fail == 0 {
         println!("  ALL CHECKS PASSED ✓\n");

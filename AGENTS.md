@@ -1,4 +1,4 @@
-# CLAUDE.md — auth-kademlia-rs
+# AGENTS.md — auth-kademlia-rs
 
 ## What this is
 Kademlia DHT in Rust with **authenticated records**: every stored value is a
@@ -18,7 +18,7 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 157 tests
+cargo test                           # all 169 tests
 cargo test <name>                    # single test, e.g. test_delete_did_record
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -74,7 +74,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/network.rs` | Public `Server` API: `set/get/update/delete`, bootstrap, refresh loop |
 | `src/crawling.rs` | Iterative lookup — `NodeSpiderCrawl` (find nodes) + `ValueSpiderCrawl` (find value) |
 | `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `TableTraverser` visits buckets in XOR-proximity order (mirrors Python AuthKademlia exactly); `touch_last_updated()` is called **only** by `TableTraverser` — bucket staleness reflects lookup activity, not node additions |
-| `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); lazy expiry on read |
+| `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day default TTL, with lazy expiry on read |
 | `src/signature_cache.rs` | `SignatureCache` — moka bounded cache (SHA-256 key, TTL 1 h, 4096 entries) for Dilithium verification results |
 | `src/fragmentation.rs` | KADF fragmentation + reassembly (`encode_fragments`, `parse_fragment`, `ReassemblyMap`) |
 | `src/auth_handler.rs` | `SignatureVerifierHandler` trait + `DIDSignatureVerifierHandler` (DID record verification) |
@@ -171,7 +171,8 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/scenarios/churn.rs` | 1 | Publisher leaves, record survives for new joiner |
 | `tests/scenarios/worker_pool.rs` | 1 | 40-client burst, all responses delivered |
 | `tests/scenarios/crypto.rs` | 4 | End-to-end crypto invariants (tamper, injection, downgrade, revocation) |
-| `src/**` (inline) | 73 | Module-level `#[test]` blocks (incl. `node.rs` 160-bit XOR-metric regression tests + `fragmentation.rs` round-trip/out-of-order/inconsistent-total tests) |
+| `tests/quorum_tests.rs` | 7 | Real-UDP quorum, multi-hop lookup, local fast-path, Status List, and delayed UPDATE commit scenarios |
+| `src/**` (inline) | 78 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 
@@ -185,9 +186,9 @@ All tests are network-clean (loopback only) and run in parallel without interfer
 | 15740–15741 | authenticated delete |
 | 15750 | invalid signature rejection |
 | 15760 | unreachable peer |
-| 15780–15781 | update rejected on invalid new-record self-signature |
+| 15780–15781, 15885 | update rejected on invalid new-record self-signature (three replicas) |
 | 15782–15784 | update rejected when auth_sig uses wrong key |
-| 15785–15786 | delete rejected when signature uses wrong key |
+| 15785–15786, 15884 | delete rejected when signature uses wrong key (three replicas) |
 | 15787–15789 | scenario: welcome_if_new replication (A, B, C) |
 | 15790 | scenario: signature cache hit rate |
 | 15792–15795 | scenario: churn survivability (A seed, B publisher, C stays, D new joiner) |
@@ -195,10 +196,12 @@ All tests are network-clean (loopback only) and run in parallel without interfer
 | 15810–15817 | cache_bench example (Phase 1 + Phase 2 clusters) |
 | 15810–15839 | topology_analysis example (30-node cluster) — **do not run simultaneously with cache_bench** |
 | 15860–15861 | scenario: tampered payload / algorithm injection rejected |
-| 15862–15863 | scenario: downgrade attack after rotation rejected |
-| 15864–15865 | scenario: revoked key cannot authorise further rotation |
+| 15862–15863, 15886 | scenario: downgrade attack after rotation rejected (three replicas) |
+| 15864–15865, 15887 | scenario: revoked key cannot authorise further rotation (three replicas) |
+| 15866–15883 | quorum consistency: DID GET, Status List GET, and UPDATE commit |
+| 15888–15894 | quorum consistency: iterative multi-hop DID GET |
 
-When adding a new integration test use ports **15866+** and document them here.
+When adding a new integration test use ports **15895+** and document them here.
 
 | 15900 | resilience test: Node A victim (host-exposed UDP, Docker only) |
 
