@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::Server;
+use auth_kademlia_rs::storage::{ForgetfulStorage, DEFAULT_MAX_STORAGE_BYTES, DEFAULT_TTL};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Encoding helpers
@@ -129,10 +130,18 @@ pub fn build_did_document(
 /// Uses `issuer_pub_key.bin` as the issuer key path (only needed for
 /// status-list key — not for regular DID record operations).
 pub async fn start_node(port: u16) -> Server {
+    start_node_with_max_storage_bytes(port, DEFAULT_MAX_STORAGE_BYTES).await
+}
+
+pub async fn start_node_with_max_storage_bytes(port: u16, max_storage_bytes: usize) -> Server {
     let handler = Arc::new(DIDSignatureVerifierHandler::new(PathBuf::from(
         "issuer_pub_key.bin",
     )));
-    let mut server = Server::new(handler, 20, 3, None, None, true);
+    let storage = Arc::new(ForgetfulStorage::with_max_storage_bytes(
+        DEFAULT_TTL,
+        max_storage_bytes,
+    ));
+    let mut server = Server::new(handler, 20, 3, None, Some(storage), true);
     server
         .listen(port, "127.0.0.1")
         .await

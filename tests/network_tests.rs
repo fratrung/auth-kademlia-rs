@@ -8,7 +8,7 @@
 //! Covered flows:
 //!   1. Two-node bootstrap — nodes discover each other.
 //!   2. Cross-node publish & retrieve — Node A stores, Node B retrieves.
-//!   3. Duplicate-key rejection — `set` on an existing key returns None.
+//!   3. Idempotent retry and conflicting-value rejection.
 //!   4. Key-rotation update — a DID owner rotates their key (update flow).
 //!   5. Authenticated delete — a DID owner deletes their record.
 //!   6. Invalid-signature rejection — malformed records are refused on `set`.
@@ -22,6 +22,7 @@
 //!   - test 5: 15740–15741
 //!   - test 6: 15750
 //!   - test 7: 15760
+//!   - storage-capacity report: 15895-15896
 
 mod common;
 
@@ -30,7 +31,12 @@ use pqcrypto_kyber::kyber512;
 use pqcrypto_traits::sign::DetachedSignature;
 use tokio::time::{sleep, Duration};
 
-use common::{build_did_document, build_signed_record, generate_did_iiot, start_node};
+use auth_kademlia_rs::network::SetOutcome;
+
+use common::{
+    build_did_document, build_signed_record, generate_did_iiot, start_node,
+    start_node_with_max_storage_bytes,
+};
 
 /// Two nodes bootstrap from each other and end up in each other's routing table.
 #[tokio::test]
@@ -97,9 +103,9 @@ async fn test_set_on_node_a_and_get_from_node_b() {
     node_a.stop().await;
 }
 
-/// `set` on a key that already exists returns `None` (immutable records).
+/// Re-publishing identical bytes is idempotent; different bytes still conflict.
 #[tokio::test]
-async fn test_set_duplicate_key_rejected() {
+async fn test_set_is_idempotent_but_rejects_conflicting_value() {
     let mut node = start_node(15720).await;
     let node_b = start_node(15721).await;
     node_b
@@ -118,11 +124,18 @@ async fn test_set_duplicate_key_rejected() {
     let first = node.set(&key, record.clone()).await;
     assert!(first.unwrap_or(false), "first set must succeed");
 
-    // Second set on the same key must be rejected.
+    // An identical retry acknowledges already-present replicas.
     let second = node.set(&key, record.clone()).await;
+    assert_eq!(second, Some(true), "an identical retry must be idempotent");
+
+    // A different valid record for the same DHT key remains a conflict.
+    let (other_dpk, other_dsk) = dilithium2::keypair();
+    let (other_kpk, _) = kyber512::keypair();
+    let other_doc = build_did_document(&did, &other_dpk, &other_kpk);
+    let conflicting_record = build_signed_record(&other_doc, &other_dsk, "Dilithium-2");
     assert!(
-        second.is_none(),
-        "duplicate set must return None — records are immutable"
+        node.set(&key, conflicting_record).await.is_none(),
+        "immutable records must reject different bytes for an occupied key"
     );
 
     node.stop().await;
@@ -485,4 +498,33 @@ async fn test_delete_rejected_when_signature_uses_wrong_key() {
     );
 
     node1.stop().await;
+}
+
+#[tokio::test]
+async fn test_set_detailed_reports_capacity_degraded_replication() {
+    let mut limited = start_node_with_max_storage_bytes(15895, 0).await;
+    let mut replica = start_node(15896).await;
+    replica
+        .bootstrap(vec![("127.0.0.1".to_string(), 15895)])
+        .await;
+    sleep(Duration::from_millis(200)).await;
+
+    let (dpk, dsk) = dilithium2::keypair();
+    let (kpk, _) = kyber512::keypair();
+    let did = generate_did_iiot();
+    let key = did.split(':').next_back().unwrap().to_string();
+    let record = build_signed_record(&build_did_document(&did, &dpk, &kpk), &dsk, "Dilithium-2");
+
+    let outcome = limited.set_detailed(&key, record.clone()).await;
+    let report = match outcome {
+        SetOutcome::Degraded(report) => report,
+        other => panic!("expected degraded publication, got {other:?}"),
+    };
+    assert_eq!(report.expected_replicas, 2);
+    assert_eq!(report.capacity_rejections, 1);
+    assert_eq!(report.acknowledged_replicas(), 1);
+    assert_eq!(replica.get(&key).await, Some(record));
+
+    limited.stop().await;
+    replica.stop().await;
 }

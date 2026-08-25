@@ -35,18 +35,87 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
+use pyo3::types::{PyBytes, PyDict};
 use tokio::sync::RwLock;
 
 use crate::auth_handler::{DIDSignatureVerifierHandler, SignatureVerifierHandler};
 use crate::crypto::key_manager::{
     DilithiumKeyManager, Ed25519KeyManager, KeyManager, KeyManagerError, KyberKeyManager,
 };
-use crate::network::Server;
+use crate::network::{Server, ServerStats, SetOutcome, SetRejection, SetReport};
+use crate::storage::{ForgetfulStorage, DEFAULT_TTL};
+
+static PY_RUNTIME_INIT: Once = Once::new();
+
+fn configure_runtime() {
+    PY_RUNTIME_INIT.call_once(|| {
+        let parallelism = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(2);
+
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        builder.max_blocking_threads(parallelism).enable_all();
+        pyo3_async_runtimes::tokio::init(builder);
+    });
+}
+
+fn rejection_name(reason: SetRejection) -> &'static str {
+    match reason {
+        SetRejection::ExistingRecord => "existing_record",
+        SetRejection::InvalidRecord => "invalid_record",
+        SetRejection::ReplicaConflict => "replica_conflict",
+        SetRejection::CapacityExceeded => "capacity_exceeded",
+        SetRejection::Unavailable => "unavailable",
+        SetRejection::NoResponsibleNodes => "no_responsible_nodes",
+    }
+}
+
+fn set_report_to_py<'py>(py: Python<'py>, report: &SetReport) -> PyResult<Bound<'py, PyDict>> {
+    let result = PyDict::new_bound(py);
+    result.set_item("expected_replicas", report.expected_replicas)?;
+    result.set_item("stored_replicas", report.stored_replicas)?;
+    result.set_item("already_present", report.already_present)?;
+    result.set_item("acknowledged_replicas", report.acknowledged_replicas())?;
+    result.set_item("capacity_rejections", report.capacity_rejections)?;
+    result.set_item("unavailable_nodes", report.unavailable_nodes)?;
+    result.set_item("conflict_rejections", report.conflict_rejections)?;
+    result.set_item("invalid_rejections", report.invalid_rejections)?;
+    Ok(result)
+}
+
+fn set_outcome_to_py(py: Python<'_>, outcome: SetOutcome) -> PyResult<PyObject> {
+    let result = PyDict::new_bound(py);
+    let (status, rejection) = match &outcome {
+        SetOutcome::Complete(_) => ("complete", None),
+        SetOutcome::Degraded(_) => ("degraded", None),
+        SetOutcome::Rejected { reason, .. } => ("rejected", Some(rejection_name(*reason))),
+    };
+
+    result.set_item("status", status)?;
+    result.set_item("reason", rejection)?;
+    result.set_item("report", set_report_to_py(py, outcome.report())?)?;
+    Ok(result.into_py(py))
+}
+
+fn server_stats_to_py(py: Python<'_>, stats: ServerStats) -> PyResult<PyObject> {
+    let result = PyDict::new_bound(py);
+    result.set_item("node_id", PyBytes::new_bound(py, &stats.node_id))?;
+    result.set_item("listening", stats.listening)?;
+    result.set_item("routing_nodes", stats.routing_nodes)?;
+    result.set_item("storage_records", stats.storage_records)?;
+    result.set_item("storage_bytes", stats.storage_bytes)?;
+    result.set_item("max_storage_bytes", stats.max_storage_bytes)?;
+    result.set_item(
+        "available_storage_bytes",
+        stats.max_storage_bytes.saturating_sub(stats.storage_bytes),
+    )?;
+    result.set_item("signature_cache_entries", stats.signature_cache_entries)?;
+    Ok(result.into_py(py))
+}
 
 fn km_err(e: KeyManagerError) -> PyErr {
     PyRuntimeError::new_err(e.to_string())
@@ -79,15 +148,26 @@ impl PyServer {
     ///                         (self-signed DID records still work).
     ///     node_id (bytes):    Fixed 20-byte node ID.  Pass ``None`` for a
     ///                         random ID (recommended for most deployments).
+    ///     max_storage_bytes (int): Per-node key/value budget. Default: 512 MiB.
     #[new]
-    #[pyo3(signature = (ksize=20, alpha=3, issuer_path=None, node_id=None, sig_cache=false))]
+    #[pyo3(signature = (
+        ksize=20,
+        alpha=3,
+        issuer_path=None,
+        node_id=None,
+        sig_cache=false,
+        max_storage_bytes=536_870_912
+    ))]
     fn new(
         ksize: usize,
         alpha: usize,
         issuer_path: Option<String>,
         node_id: Option<Vec<u8>>,
         sig_cache: bool,
+        max_storage_bytes: usize,
     ) -> PyResult<Self> {
+        configure_runtime();
+
         // When issuer_path is None we pass an empty PathBuf.  The DID handler
         // lazy-loads the key only for status-list verification; all other
         // operations (self-signed DID records) work without it.
@@ -113,7 +193,11 @@ impl PyServer {
             None => None,
         };
 
-        let server = Server::new(handler, ksize, alpha, fixed_id, None, sig_cache);
+        let storage = Arc::new(ForgetfulStorage::with_max_storage_bytes(
+            DEFAULT_TTL,
+            max_storage_bytes,
+        ));
+        let server = Server::new(handler, ksize, alpha, fixed_id, Some(storage), sig_cache);
         Ok(Self {
             inner: Arc::new(RwLock::new(server)),
         })
@@ -188,7 +272,9 @@ impl PyServer {
     /// ```
     ///
     /// Returns:
-    ///     bool | None: ``True`` on success, ``None`` if rejected.
+    ///     bool | None: ``True`` when all discovered responsible replicas
+    ///     acknowledge the record, ``False`` for a degraded/unavailable
+    ///     publication, or ``None`` for an invalid/conflicting record.
     fn set<'py>(
         &self,
         py: Python<'py>,
@@ -202,6 +288,27 @@ impl PyServer {
             // listen/stop (write-lock) calls from racing with network operations.
             let s = inner.read().await;
             Ok(s.set(&key, value).await)
+        })
+    }
+
+    /// Store ``value`` and return exact replica-level publication details.
+    ///
+    /// Returns:
+    ///     dict: ``status`` is ``complete``, ``degraded``, or ``rejected``;
+    ///     ``reason`` is set for rejected publications; ``report`` contains
+    ///     expected, acknowledged, unavailable, conflicting, invalid, and
+    ///     capacity-rejected replica counts.
+    fn set_detailed<'py>(
+        &self,
+        py: Python<'py>,
+        key: String,
+        value: Vec<u8>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let s = inner.read().await;
+            let outcome = s.set_detailed(&key, value).await;
+            Python::with_gil(|py| set_outcome_to_py(py, outcome))
         })
     }
 
@@ -281,6 +388,16 @@ impl PyServer {
         })
     }
 
+    /// Return routing, storage-capacity, and signature-cache counters.
+    fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let s = inner.read().await;
+            let stats = s.stats().await;
+            Python::with_gil(|py| server_stats_to_py(py, stats))
+        })
+    }
+
     /// Save node state (ksize, alpha, ID, neighbours) to a JSON file.
     ///
     /// A no-op if the routing table is empty.
@@ -345,21 +462,29 @@ impl PyDilithiumKeyManager {
         security_level: Option<u8>,
     ) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
         let level = security_level.unwrap_or(self.inner.security_level);
-        DilithiumKeyManager::new(self.inner.keys_dir.clone(), level)
-            .generate_keypair()
+        let keys_dir = self.inner.keys_dir.clone();
+        py.allow_threads(move || DilithiumKeyManager::new(keys_dir, level).generate_keypair())
             .map(|(pk, sk)| (PyBytes::new_bound(py, &pk), PyBytes::new_bound(py, &sk)))
             .map_err(km_err)
     }
 
-    fn store_public_key(&self, key_name: String, public_key: Vec<u8>) -> PyResult<()> {
-        self.inner
-            .store_public_key(&key_name, &public_key)
+    fn store_public_key(
+        &self,
+        py: Python<'_>,
+        key_name: String,
+        public_key: Vec<u8>,
+    ) -> PyResult<()> {
+        py.allow_threads(|| self.inner.store_public_key(&key_name, &public_key))
             .map_err(km_err)
     }
 
-    fn store_private_key(&self, key_name: String, private_key: Vec<u8>) -> PyResult<()> {
-        self.inner
-            .store_private_key(&key_name, &private_key)
+    fn store_private_key(
+        &self,
+        py: Python<'_>,
+        key_name: String,
+        private_key: Vec<u8>,
+    ) -> PyResult<()> {
+        py.allow_threads(|| self.inner.store_private_key(&key_name, &private_key))
             .map_err(km_err)
     }
 
@@ -368,8 +493,7 @@ impl PyDilithiumKeyManager {
         py: Python<'py>,
         key_name: String,
     ) -> PyResult<Bound<'py, PyBytes>> {
-        self.inner
-            .get_public_key(&key_name)
+        py.allow_threads(|| self.inner.get_public_key(&key_name))
             .map(|v| PyBytes::new_bound(py, &v))
             .map_err(km_err)
     }
@@ -379,8 +503,7 @@ impl PyDilithiumKeyManager {
         py: Python<'py>,
         key_name: String,
     ) -> PyResult<Bound<'py, PyBytes>> {
-        self.inner
-            .get_private_key(&key_name)
+        py.allow_threads(|| self.inner.get_private_key(&key_name))
             .map(|v| PyBytes::new_bound(py, &v))
             .map_err(km_err)
     }
@@ -397,8 +520,7 @@ impl PyDilithiumKeyManager {
         private_key: Vec<u8>,
         message: Vec<u8>,
     ) -> PyResult<Bound<'py, PyBytes>> {
-        self.inner
-            .sign(&private_key, &message)
+        py.allow_threads(|| self.inner.sign(&private_key, &message))
             .map(|v| PyBytes::new_bound(py, &v))
             .map_err(km_err)
     }
@@ -406,13 +528,16 @@ impl PyDilithiumKeyManager {
     /// Verify ``signature`` over ``message`` against ``public_key``.
     fn verify_signature(
         &self,
+        py: Python<'_>,
         public_key: Vec<u8>,
         message: Vec<u8>,
         signature: Vec<u8>,
     ) -> PyResult<bool> {
-        self.inner
-            .verify_signature(&public_key, &message, &signature)
-            .map_err(km_err)
+        py.allow_threads(|| {
+            self.inner
+                .verify_signature(&public_key, &message, &signature)
+        })
+        .map_err(km_err)
     }
 }
 
@@ -446,21 +571,29 @@ impl PyKyberKeyManager {
         security_level: Option<u16>,
     ) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
         let level = security_level.unwrap_or(self.inner.security_level);
-        KyberKeyManager::new(self.inner.keys_dir.clone(), level)
-            .generate_keypair()
+        let keys_dir = self.inner.keys_dir.clone();
+        py.allow_threads(move || KyberKeyManager::new(keys_dir, level).generate_keypair())
             .map(|(pk, sk)| (PyBytes::new_bound(py, &pk), PyBytes::new_bound(py, &sk)))
             .map_err(km_err)
     }
 
-    fn store_public_key(&self, key_name: String, public_key: Vec<u8>) -> PyResult<()> {
-        self.inner
-            .store_public_key(&key_name, &public_key)
+    fn store_public_key(
+        &self,
+        py: Python<'_>,
+        key_name: String,
+        public_key: Vec<u8>,
+    ) -> PyResult<()> {
+        py.allow_threads(|| self.inner.store_public_key(&key_name, &public_key))
             .map_err(km_err)
     }
 
-    fn store_private_key(&self, key_name: String, private_key: Vec<u8>) -> PyResult<()> {
-        self.inner
-            .store_private_key(&key_name, &private_key)
+    fn store_private_key(
+        &self,
+        py: Python<'_>,
+        key_name: String,
+        private_key: Vec<u8>,
+    ) -> PyResult<()> {
+        py.allow_threads(|| self.inner.store_private_key(&key_name, &private_key))
             .map_err(km_err)
     }
 
@@ -469,8 +602,7 @@ impl PyKyberKeyManager {
         py: Python<'py>,
         key_name: String,
     ) -> PyResult<Bound<'py, PyBytes>> {
-        self.inner
-            .get_public_key(&key_name)
+        py.allow_threads(|| self.inner.get_public_key(&key_name))
             .map(|v| PyBytes::new_bound(py, &v))
             .map_err(km_err)
     }
@@ -480,8 +612,7 @@ impl PyKyberKeyManager {
         py: Python<'py>,
         key_name: String,
     ) -> PyResult<Bound<'py, PyBytes>> {
-        self.inner
-            .get_private_key(&key_name)
+        py.allow_threads(|| self.inner.get_private_key(&key_name))
             .map(|v| PyBytes::new_bound(py, &v))
             .map_err(km_err)
     }
@@ -513,21 +644,28 @@ impl PyEd25519KeyManager {
         &self,
         py: Python<'py>,
     ) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
-        self.inner
-            .generate_keypair()
+        py.allow_threads(|| self.inner.generate_keypair())
             .map(|(pk, sk)| (PyBytes::new_bound(py, &pk), PyBytes::new_bound(py, &sk)))
             .map_err(km_err)
     }
 
-    fn store_public_key(&self, key_name: String, public_key: Vec<u8>) -> PyResult<()> {
-        self.inner
-            .store_public_key(&key_name, &public_key)
+    fn store_public_key(
+        &self,
+        py: Python<'_>,
+        key_name: String,
+        public_key: Vec<u8>,
+    ) -> PyResult<()> {
+        py.allow_threads(|| self.inner.store_public_key(&key_name, &public_key))
             .map_err(km_err)
     }
 
-    fn store_private_key(&self, key_name: String, private_key: Vec<u8>) -> PyResult<()> {
-        self.inner
-            .store_private_key(&key_name, &private_key)
+    fn store_private_key(
+        &self,
+        py: Python<'_>,
+        key_name: String,
+        private_key: Vec<u8>,
+    ) -> PyResult<()> {
+        py.allow_threads(|| self.inner.store_private_key(&key_name, &private_key))
             .map_err(km_err)
     }
 
@@ -536,8 +674,7 @@ impl PyEd25519KeyManager {
         py: Python<'py>,
         key_name: String,
     ) -> PyResult<Bound<'py, PyBytes>> {
-        self.inner
-            .get_public_key(&key_name)
+        py.allow_threads(|| self.inner.get_public_key(&key_name))
             .map(|v| PyBytes::new_bound(py, &v))
             .map_err(km_err)
     }
@@ -547,8 +684,7 @@ impl PyEd25519KeyManager {
         py: Python<'py>,
         key_name: String,
     ) -> PyResult<Bound<'py, PyBytes>> {
-        self.inner
-            .get_private_key(&key_name)
+        py.allow_threads(|| self.inner.get_private_key(&key_name))
             .map(|v| PyBytes::new_bound(py, &v))
             .map_err(km_err)
     }
@@ -563,45 +699,34 @@ impl PyEd25519KeyManager {
         private_key: Vec<u8>,
         message: Vec<u8>,
     ) -> PyResult<Bound<'py, PyBytes>> {
-        self.inner
-            .sign(&private_key, &message)
+        py.allow_threads(|| self.inner.sign(&private_key, &message))
             .map(|v| PyBytes::new_bound(py, &v))
             .map_err(km_err)
     }
 
     fn verify_signature(
         &self,
+        py: Python<'_>,
         public_key: Vec<u8>,
         message: Vec<u8>,
         signature: Vec<u8>,
     ) -> PyResult<bool> {
-        self.inner
-            .verify_signature(&public_key, &message, &signature)
-            .map_err(km_err)
+        py.allow_threads(|| {
+            self.inner
+                .verify_signature(&public_key, &message, &signature)
+        })
+        .map_err(km_err)
     }
 }
 
-/// Initialise the Tokio runtime with a bounded blocking thread pool.
+/// Ensure the Tokio runtime uses a bounded blocking thread pool.
 ///
-/// Must be called **once** before creating any ``Server`` instance, ideally at
-/// the very start of ``main()`` or the application entry point.
-///
-/// Without this call, ``pyo3-async-runtimes`` creates a default runtime with
-/// ``max_blocking_threads = 512``, which causes excessive context switching
-/// during Dilithium verifications (CPU-bound ``spawn_blocking`` tasks) on
-/// constrained hardware with few physical cores.
-///
-/// After calling this, ``max_blocking_threads`` equals the number of physical
-/// cores reported by the OS — optimal for Dilithium parallelism on edge nodes.
+/// Runtime configuration is automatic at module import and server creation.
+/// This function remains as an idempotent compatibility hook for existing
+/// applications that already call it explicitly.
 #[pyfunction]
 fn init_runtime() {
-    let parallelism = std::thread::available_parallelism()
-        .map(|p| p.get())
-        .unwrap_or(2);
-
-    let mut builder = tokio::runtime::Builder::new_multi_thread();
-    builder.max_blocking_threads(parallelism).enable_all();
-    pyo3_async_runtimes::tokio::init(builder);
+    configure_runtime();
 }
 
 /// Python module entry point.
@@ -612,6 +737,7 @@ fn init_runtime() {
 /// ``pyproject.toml`` to produce the correctly-named ``.so`` file.
 #[pymodule]
 fn authkademlia_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    configure_runtime();
     m.add_function(wrap_pyfunction!(init_runtime, m)?)?;
     m.add_class::<PyServer>()?;
     m.add_class::<PyDilithiumKeyManager>()?;

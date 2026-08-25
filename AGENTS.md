@@ -18,7 +18,7 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 169 tests
+cargo test                           # all 194 tests
 cargo test <name>                    # single test, e.g. test_delete_did_record
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -30,15 +30,19 @@ maturin develop --features python
 
 ### Python binding usage notes (`src/py_bindings.rs`)
 
-- **`init_runtime()`** must be called once before creating any `Server` instance.
-  It builds a Tokio runtime with `max_blocking_threads = available_parallelism()`
-  and passes the `Builder` to `pyo3_async_runtimes::tokio::init`. Without this
-  call the default cap is 512 blocking threads, causing CPU thrashing on low-core
-  nodes during Dilithium `spawn_blocking` calls.
+- The module configures its Tokio runtime automatically at import, with
+  `max_blocking_threads = available_parallelism()`. `init_runtime()` remains an
+  idempotent compatibility hook; callers no longer need to invoke it.
 - All methods returning binary data (`get_public_key`, `get_private_key`, `sign`,
   `generate_keypair`) return `PyBytes` / `(PyBytes, PyBytes)` — Python callers
   receive native `bytes` objects directly, no implicit list conversion.
+- Key generation, signing, verification, and key-file I/O release the Python
+  GIL. Async `Server` methods execute on Tokio and do not hold the GIL while the
+  Rust future is running.
 - `Server.get()` returns `bytes | None` (not `list | None`).
+- `Server.set_detailed()` returns the publication status/reason and replica
+  counters as a Python `dict`; `Server.stats()` exposes routing, storage-budget,
+  and signature-cache counters.
 - `Server(sig_cache=True/False)` controls the Dilithium signature cache (default
   `False`). Pass `sig_cache=True` to enable it in production for repeated-record
   workloads.
@@ -74,7 +78,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/network.rs` | Public `Server` API: `set/get/update/delete`, bootstrap, refresh loop |
 | `src/crawling.rs` | Iterative lookup — `NodeSpiderCrawl` (find nodes) + `ValueSpiderCrawl` (find value) |
 | `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `TableTraverser` visits buckets in XOR-proximity order (mirrors Python AuthKademlia exactly); `touch_last_updated()` is called **only** by `TableTraverser` — bucket staleness reflects lookup activity, not node additions |
-| `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day default TTL, with lazy expiry on read |
+| `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day TTL and configurable byte budget (default 512 MiB), with lazy expiry on read |
 | `src/signature_cache.rs` | `SignatureCache` — moka bounded cache (SHA-256 key, TTL 1 h, 4096 entries) for Dilithium verification results |
 | `src/fragmentation.rs` | KADF fragmentation + reassembly (`encode_fragments`, `parse_fragment`, `ReassemblyMap`) |
 | `src/auth_handler.rs` | `SignatureVerifierHandler` trait + `DIDSignatureVerifierHandler` (DID record verification) |
@@ -117,7 +121,7 @@ entering the reassembly buffer to bound memory usage.
 | Variant | Direction | Purpose |
 |---|---|---|
 | `Ping` / `Pong` | req/resp | Liveness check + node discovery |
-| `Store` / `StoreResult` | req/resp | Store a new authenticated record |
+| `Store` / `StoreResult` | req/resp | Store an authenticated record; result is `Stored`, `AlreadyStored`, `Conflict`, `CapacityExceeded`, or `InvalidRecord` |
 | `Update` / `UpdateResult` | req/resp | Key-rotation update (requires `auth_signature`) |
 | `UpdateStatusList` / `UpdateStatusListResult` | req/resp | Issuer-signed status-list update |
 | `Delete` / `DeleteResult` | req/resp | Authenticated record deletion |
@@ -129,18 +133,24 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 
 ## Concurrency model
 - `ForgetfulStorage` is `Arc<ForgetfulStorage>` (no outer `RwLock`). All `IStorage` methods take `&self`; internal synchronization via `DashMap` shards.
-- `rpc_store` uses `insert_if_absent` (DashMap `Entry` API) — atomic at shard level, closes the TOCTOU race between "does key exist?" and "write it".
+- `rpc_store` uses `insert_if_absent` (DashMap `Entry` API) with atomic global byte reservation. Identical bytes are idempotent; different bytes conflict; active records are never evicted for capacity.
 - All RPC handlers use `self: &Arc<Self>` receiver to enable `tokio::spawn` without cloning the full struct. `welcome_if_new` is always fire-and-forget.
 - UDP receive loop dispatches via round-robin to `available_parallelism()` fixed workers, each with a dedicated `mpsc::channel(256)`. `try_send` is attempted on each worker in order; if all channels are full the receive loop awaits the base worker (backpressure without drops). Zero allocations per datagram beyond the payload copy.
 - Blocking thread pool (`spawn_blocking`) is bounded at the runtime level via `max_blocking_threads(available_parallelism())` in `scripts/dht_node.rs`. This caps concurrent Dilithium verifications to the number of physical cores, covering all call sites uniformly (`verify_for_key`, `verify_value`, `update`, `delete`). `KademliaProtocol` carries no application-level semaphore.
 - `SignatureCache` is keyed on `SHA-256(record_bytes)`. TTL 1 h, capacity 4096 (moka TinyLFU). Eviction = cache miss = full re-verification (never a security bypass). On a cache miss the SHA-256 key is computed once via `compute_key()` and reused for both `get_by_key` and `insert_by_key` — never twice.
 - `welcome_if_new` replication uses two conditions (Kademlia §2.5, matches Python AuthKademlia): `new_node_close` (new node is XOR-closer than the farthest k-neighbor) AND `this_closest` (this node is closer than the nearest k-neighbor). Both must be true to replicate. Neighbors are computed before `add_contact` so the new node is excluded from comparisons.
-- `schedule_stats_log()` emits a `[stats]` log line every 60 s: routing table size, storage record count, and (when the cache is enabled) signature cache entry count. Detects silent failures — routing table collapse, cache regression — on embedded nodes without direct access.
+- `schedule_stats_log()` emits a `[stats]` log line every 60 s: routing table size, storage record count, used/max storage bytes, and (when enabled) signature cache entries.
 - **Routing table internals** (`src/routing.rs`): `KBucket.add_node()` does **not** update `last_updated` — matches Python AuthKademlia behaviour where only lookups reset the timer. `touch_last_updated()` (called by `TableTraverser` on the central bucket during every `find_neighbors`) is the sole update point. `find_neighbors` uses `TableTraverser` with early-stop at k and excludes `target.id` — identical logic to Python's `find_neighbors + heapq.nsmallest`. Split condition §4.2: `covers(local_node) OR depth % 5 != 0`.
 
 ## Key invariants
-- Records are **immutable after creation**: `rpc_store` rejects duplicate keys.
-- `set()` performs a single `ValueSpiderCrawl` (FIND_VALUE): if a valid record is found the store is rejected; if not, the k-closest nodes returned by the crawl are reused directly for STORE, avoiding a second network traversal (Kademlia §2.3).
+- Records are **immutable after creation**: byte-identical STORE retries return `AlreadyStored`; different bytes for the same key return `Conflict`.
+- A new `set()` reuses the nodes from one `ValueSpiderCrawl`. An identical retry performs node discovery so missing replicas can be completed. Remote candidates plus the local node are XOR-sorted and truncated to `k`, preventing `k+1` copies.
+- Remote DID GET quorum is derived from `alpha` and is not independently
+  configurable. With `alpha = 3`, two byte-identical record responses are
+  required. In the diagnostic `k = 3, alpha = 3` topology, reaching only one
+  holder therefore returns `None` even when that copy is valid; occasional
+  randomized GET misses can reflect this narrow quorum plus transient routing
+  convergence rather than an XOR-distance defect.
 - Updates require `auth_signature = sign(new_record_bytes, old_private_key)`.
   `verify_key_rotation()` checks: (1) auth_sig valid under old public key, (2) new record self-signed.
   **Downgrade attacks are impossible**: to submit `record_v1` as "new" when `record_v2`
@@ -161,7 +171,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 ## Test suite structure
 | File | Count | Notes |
 |---|---|---|
-| `tests/network_tests.rs` | 10 | Full multi-node integration tests (real UDP) |
+| `tests/network_tests.rs` | 11 | Full multi-node integration tests (real UDP) |
 | `tests/crypto_tests.rs` | 27 | Crypto layer unit + DID handler unit tests |
 | `tests/routing_tests.rs` | 20 | Routing table unit tests |
 | `tests/storage_tests.rs` | 17 | `ForgetfulStorage` unit tests (includes `insert_if_absent` cases) |
@@ -172,7 +182,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/scenarios/worker_pool.rs` | 1 | 40-client burst, all responses delivered |
 | `tests/scenarios/crypto.rs` | 4 | End-to-end crypto invariants (tamper, injection, downgrade, revocation) |
 | `tests/quorum_tests.rs` | 7 | Real-UDP quorum, multi-hop lookup, local fast-path, Status List, and delayed UPDATE commit scenarios |
-| `src/**` (inline) | 78 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
+| `src/**` (inline) | 102 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 
@@ -181,7 +191,7 @@ All tests are network-clean (loopback only) and run in parallel without interfer
 |---|---|
 | 15700–15701 | two-node bootstrap |
 | 15710–15711 | cross-node set/get |
-| 15720–15721 | duplicate key rejection |
+| 15720–15721 | idempotent SET retry + conflicting value rejection |
 | 15730–15732 | key-rotation update |
 | 15740–15741 | authenticated delete |
 | 15750 | invalid signature rejection |
@@ -200,8 +210,9 @@ All tests are network-clean (loopback only) and run in parallel without interfer
 | 15864–15865, 15887 | scenario: revoked key cannot authorise further rotation (three replicas) |
 | 15866–15883 | quorum consistency: DID GET, Status List GET, and UPDATE commit |
 | 15888–15894 | quorum consistency: iterative multi-hop DID GET |
+| 15895–15896 | degraded SET report when one responsible node is at capacity |
 
-When adding a new integration test use ports **15895+** and document them here.
+When adding a new integration test use ports **15897+** and document them here (15900 is reserved below).
 
 | 15900 | resilience test: Node A victim (host-exposed UDP, Docker only) |
 

@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::Server;
 use auth_kademlia_rs::node::Node;
-use auth_kademlia_rs::protocol::KademliaProtocol;
+use auth_kademlia_rs::protocol::{KademliaProtocol, StoreStatus};
 use auth_kademlia_rs::utils::digest;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -187,7 +187,15 @@ async fn store_phase(
                         let dkey = digest(&k);
                         let t = Instant::now();
                         match timeout(RPC_TIMEOUT, p.call_store_rpc(&v, dkey, record)).await {
-                            Ok(ok) => (false, ok, k, t.elapsed()),
+                            Ok(status) => (
+                                false,
+                                matches!(
+                                    status,
+                                    Some(StoreStatus::Stored | StoreStatus::AlreadyStored)
+                                ),
+                                k,
+                                t.elapsed(),
+                            ),
                             Err(_) => (true, false, k, t.elapsed()),
                         }
                     });

@@ -131,9 +131,62 @@ winner has been selected; a split with no strict majority returns no value.
   Applications that need continued availability must refresh them through a
   legitimate publish or update before expiry.
 
-This design deliberately keeps the existing RPC and record formats unchanged.
-It reduces the risk of selecting a stale remote replica while avoiding version
-metadata and the associated per-candidate signature verification cost.
+The remote-read quorum is currently derived from `alpha`; it is not an
+independent configuration parameter. With the default `alpha = 3`, a GET needs
+two byte-identical record responses out of at most three record-bearing
+responses. A single valid, signed copy is therefore insufficient and the GET
+returns `None` by design.
+
+This matters most in the diagnostic `k = 3, alpha = 3` configuration. The
+replication set and consistency sample are both limited to three nodes, leaving
+very little tolerance for a routing table that is still converging. A lookup
+that reaches only one of the three holders fails quorum even though the record
+exists and the XOR metric is correct. Consequently, an occasional GET miss in
+the randomized topology example can be caused by this deliberately narrow
+configuration and transient convergence; it does not by itself demonstrate a
+routing or distance-ordering defect. The production default `k = 20, alpha = 3`
+provides many more possible holders while retaining the same two-response read
+quorum.
+
+### Bounded storage and publication outcomes
+
+Each node has a storage budget of **512 MiB** by default. The budget counts key
+and value bytes and never evicts active records: expired records are reclaimed
+by the periodic TTL pass, while a write that would exceed the budget returns an
+explicit `CapacityExceeded` result.
+
+STORE responses distinguish `Stored`, `AlreadyStored`, `Conflict`,
+`CapacityExceeded`, and `InvalidRecord`. Byte-identical retries are
+idempotent. `Server::set_detailed()` reports the expected and acknowledged
+replicas and classifies publication as `Complete`, `Degraded`, or
+`Rejected`; the existing `set()` API remains as a compatibility wrapper.
+
+The replica target set is formed from the crawl result plus the local node,
+ordered by the full 160-bit XOR distance and truncated to `k`. A node that is
+full does not evict an active record and the publisher does not substitute a
+farther node, so routing and responsible-node selection remain unchanged.
+
+Configure the budget per process:
+
+```bash
+MAX_STORAGE_BYTES=536870912 cargo run --bin dht_node
+```
+
+Rust callers can supply a bounded storage instance to `Server::new`:
+
+```rust
+let storage = Arc::new(ForgetfulStorage::with_max_storage_bytes(
+    DEFAULT_TTL,
+    512 * 1024 * 1024,
+));
+let server = Server::new(handler, 20, 3, None, Some(storage), false);
+```
+
+The Python constructor accepts `max_storage_bytes` with the same default.
+
+This release changes the bincode representation of `StoreResult`. Nodes in a
+cluster must therefore be upgraded together. The signed record format and the
+Kademlia routing algorithm are unchanged.
 
 -----
 
@@ -141,13 +194,13 @@ metadata and the associated per-candidate signature verification cost.
 
 | Mechanism | Detail |
 |---|---|
-| **Concurrent storage** | `DashMap` replaces `IndexMap + RwLock`. Storage operations on different keys are fully parallel with no single global lock. |
+| **Concurrent storage** | `DashMap` keeps per-key operations parallel; an atomic byte reservation enforces the per-node budget without a global async lock. |
 | **Lazy TTL expiry** | Records expire after 14 days by default. Expired entries are filtered at read time instead of an O(n) scan on every write. |
 | **Signature cache** | `SignatureCache` (moka, SHA-256 keyed, TTL 1 h, 4096 entries). Repeated reads of the same record pay full Dilithium cost only once; subsequent reads are O(1). Any byte-level change forces full re-verification. |
 | **Worker pool** | UDP receive loop dispatches via round-robin into `available_parallelism()` workers, each with a dedicated `mpsc::channel(256)`. `try_send` is attempted on each worker in turn; if all are full the loop awaits the base worker, providing backpressure without drops. |
 | **Fire-and-forget routing** | Routing table updates (`welcome_if_new`) are spawned as background tasks in all RPC handlers. RPC responses are sent immediately without waiting for routing convergence. |
 | **Replication filter** | On node join, only nodes XOR-closer to a key than the new node replicate it (Kademlia §2.5). Prevents redundant store RPCs from far-away nodes. |
-| **Atomic insert** | `rpc_store` uses a DashMap `Entry`-based `insert_if_absent` — eliminates the TOCTOU race window that existed with the old read-then-write pattern. |
+| **Atomic insert** | `rpc_store` uses a DashMap `Entry`-based `insert_if_absent`; identical retries return `AlreadyStored`, different bytes return `Conflict`, and capacity is reserved before insertion. |
 
 -----
 
@@ -316,12 +369,20 @@ to `Server::new` for benchmarking or security auditing.
 The XOR-correctness check is the key invariant: it sorts all nodes by XOR distance to each record's key and verifies that the k-closest nodes are the holders. Each record is labelled `[✓]` (all k-closest hold it), `[~]` (partial), or `[✗]` (none of the k-closest hold it).
 
 ```bash
-# k=3 replication factor, 30 nodes, 100 records (default)
-cargo run --release --example topology_analysis -- 3 30
+# default: k=20, alpha=3, 30 nodes, 100 records
+cargo run --release --example topology_analysis
 
-# smaller cluster for quick inspection
-cargo run --release --example topology_analysis -- 3 10
+# k=3, alpha=3: strict diagnostic profile for XOR placement
+cargo run --release --example topology_analysis -- 3 3
+
+# k=5, alpha=2
+cargo run --release --example topology_analysis -- 5 2
 ```
+
+The `k=3, alpha=3` run is intentionally stringent: remote reads still require
+two identical responses, so incomplete routing convergence can occasionally
+produce a GET miss even when all STORE operations succeeded. Use this mode to
+inspect XOR placement, not as the production availability profile.
 
 The bucket-structure section also reports convergence quality: average buckets per node should approach log₂(N) for a well-converged cluster.
 
@@ -622,6 +683,42 @@ An optional Python extension can be built with [maturin](https://github.com/PyO3
 ```bash
 maturin develop --features python
 ```
+
+The module configures a Tokio runtime automatically, limiting CPU-bound
+`spawn_blocking` work to `available_parallelism()`. Cryptographic key
+generation, signing, verification, and key-file I/O release the GIL, allowing
+independent Python threads and async node operations to execute through the
+Rust core without Python-side serialisation. The legacy `init_runtime()`
+function is still available but is no longer required.
+
+```python
+import asyncio
+import authkademlia_py
+
+async def run_node(signed_record: bytes) -> None:
+    node = authkademlia_py.Server(
+        ksize=20,
+        alpha=3,
+        sig_cache=True,
+        max_storage_bytes=512 * 1024 * 1024,
+    )
+    await node.listen(5678, "127.0.0.1")
+
+    outcome = await node.set_detailed("did-uuid", signed_record)
+    if outcome["status"] != "complete":
+        print(outcome)
+
+    stats = await node.stats()
+    print(stats["storage_bytes"], stats["available_storage_bytes"])
+    await node.stop()
+
+asyncio.run(run_node(signed_record_bytes))
+```
+
+`set()` remains available for compatibility and returns `True` for a complete
+publication, `False` for a degraded or unavailable publication, and `None` for
+an invalid or conflicting record. Prefer `set_detailed()` when replication and
+capacity outcomes affect application behaviour.
 
 > **Note:** The `python` feature builds a `cdylib` target via PyO3. Do **not** enable it in Rust-only deployments — the `cdylib` crate type changes linking behaviour and is unnecessary outside of Python extension builds. The Python bindings are experimental and not covered by the same stability guarantees as the Rust API.
 

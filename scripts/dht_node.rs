@@ -11,12 +11,14 @@
 /// FIXED_DID_UUID  if set, use this string as the DID UUID so the key is deterministic
 ///                 (pass the same value to the retriever via RETRIEVE_KEY)
 /// RETRIEVE_KEY    DHT key to look up (required when ROLE=retriever)
+/// MAX_STORAGE_BYTES  per-node key/value budget (default: 536870912 = 512 MiB)
 /// RUST_LOG        log filter, e.g. "info", "debug", "auth_kademlia_rs=trace"
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::Server;
+use auth_kademlia_rs::storage::{ForgetfulStorage, DEFAULT_MAX_STORAGE_BYTES, DEFAULT_TTL};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use pqcrypto_dilithium::dilithium2;
@@ -123,7 +125,7 @@ fn decode_record(record: &[u8]) -> Option<String> {
     serde_json::to_string_pretty(&doc).ok()
 }
 
-async fn start_server(port: u16) -> Server {
+async fn start_server(port: u16, max_storage_bytes: usize) -> Server {
     let issuer_path = PathBuf::from("issuer.bin");
     if !issuer_path.exists() {
         log::warn!(
@@ -132,7 +134,11 @@ async fn start_server(port: u16) -> Server {
         );
     }
     let handler = Arc::new(DIDSignatureVerifierHandler::new(issuer_path));
-    let mut server = Server::new(handler, 20, 3, None, None, true);
+    let storage = Arc::new(ForgetfulStorage::with_max_storage_bytes(
+        DEFAULT_TTL,
+        max_storage_bytes,
+    ));
+    let mut server = Server::new(handler, 20, 3, None, Some(storage), true);
     server
         .listen(port, "0.0.0.0")
         .await
@@ -302,10 +308,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .parse()?;
 
     let role = std::env::var("ROLE").unwrap_or_else(|_| "publisher".to_string());
+    let max_storage_bytes: usize = std::env::var("MAX_STORAGE_BYTES")
+        .unwrap_or_else(|_| DEFAULT_MAX_STORAGE_BYTES.to_string())
+        .parse()?;
 
-    log::info!("=== DHT node starting | port={} role={} ===", port, role);
+    log::info!(
+        "=== DHT node starting | port={} role={} max_storage_bytes={} ===",
+        port,
+        role,
+        max_storage_bytes
+    );
 
-    let mut server = start_server(port).await;
+    let mut server = start_server(port, max_storage_bytes).await;
 
     if std::env::var("IS_SEED").is_ok() {
         log::info!("Running as SEED node — no bootstrap required");

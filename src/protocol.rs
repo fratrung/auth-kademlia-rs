@@ -32,11 +32,32 @@ use crate::fragmentation::{
 use crate::node::Node;
 use crate::routing::RoutingTable;
 use crate::signature_cache::{SignatureCache, VerificationDomain};
-use crate::storage::{ForgetfulStorage, IStorage};
+use crate::storage::{ForgetfulStorage, IStorage, StorageWriteStatus};
 use crate::utils::{digest, ID_LEN, STATUS_LIST_KEY};
 
 /// Timeout for a single RPC call.
 const RPC_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Explicit result of a STORE request.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+pub enum StoreStatus {
+    Stored,
+    AlreadyStored,
+    Conflict,
+    CapacityExceeded,
+    InvalidRecord,
+}
+
+impl From<StorageWriteStatus> for StoreStatus {
+    fn from(status: StorageWriteStatus) -> Self {
+        match status {
+            StorageWriteStatus::Stored => Self::Stored,
+            StorageWriteStatus::AlreadyStored => Self::AlreadyStored,
+            StorageWriteStatus::Conflict => Self::Conflict,
+            StorageWriteStatus::CapacityExceeded => Self::CapacityExceeded,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RpcMessage {
@@ -52,7 +73,7 @@ pub enum RpcMessage {
         value: Vec<u8>,
     },
     StoreResult {
-        ok: bool,
+        status: StoreStatus,
     },
     Update {
         sender_id: [u8; ID_LEN],
@@ -599,8 +620,8 @@ impl KademliaProtocol {
                 key,
                 value,
             } => {
-                let ok = self.rpc_store(sender_id, sender_addr, key, value).await;
-                Some(RpcMessage::StoreResult { ok })
+                let status = self.rpc_store(sender_id, sender_addr, key, value).await;
+                Some(RpcMessage::StoreResult { status })
             }
             RpcMessage::Update {
                 sender_id,
@@ -676,7 +697,7 @@ impl KademliaProtocol {
         sender_addr: (String, u16),
         key: [u8; ID_LEN],
         value: Vec<u8>,
-    ) -> bool {
+    ) -> StoreStatus {
         // Peer Ban Mechanism
         if !self.verify_for_key(&key, &value).await {
             let strikes = {
@@ -702,17 +723,30 @@ impl KademliaProtocol {
                 );
                 self.schedule_welcome_if_new(source).await;
             }
-            return false;
+            return StoreStatus::InvalidRecord;
         }
 
-        // Atomic insert: rejects duplicate keys without a TOCTOU race window.
-        if !self.storage.insert_if_absent(key.to_vec(), value) {
-            log::error!("rpc_store: record {} already exists", hex::encode(key));
-            return false;
+        let status = StoreStatus::from(self.storage.insert_if_absent(key.to_vec(), value));
+        match status {
+            StoreStatus::Stored | StoreStatus::AlreadyStored => {
+                let source = Node::new(sender_id, Some(sender_addr.0), Some(sender_addr.1));
+                self.schedule_welcome_if_new(source).await;
+            }
+            StoreStatus::Conflict => {
+                log::warn!(
+                    "rpc_store: conflicting record already exists for {}",
+                    hex::encode(key)
+                );
+            }
+            StoreStatus::CapacityExceeded => {
+                log::warn!(
+                    "rpc_store: storage capacity exceeded for {}",
+                    hex::encode(key)
+                );
+            }
+            StoreStatus::InvalidRecord => unreachable!("storage does not verify records"),
         }
-        let source = Node::new(sender_id, Some(sender_addr.0), Some(sender_addr.1));
-        self.schedule_welcome_if_new(source).await;
-        true
+        status
     }
 
     pub async fn rpc_update(
@@ -752,7 +786,13 @@ impl KademliaProtocol {
         }
         let source = Node::new(sender_id, Some(sender_addr.0), Some(sender_addr.1));
         self.schedule_welcome_if_new(source).await;
-        self.storage.set(key.to_vec(), value);
+        if self.storage.set(key.to_vec(), value) == StorageWriteStatus::CapacityExceeded {
+            log::warn!(
+                "rpc_update: storage capacity exceeded for {}",
+                hex::encode(key)
+            );
+            return false;
+        }
         true
     }
 
@@ -792,7 +832,13 @@ impl KademliaProtocol {
         }
         let source = Node::new(sender_id, Some(sender_addr.0), Some(sender_addr.1));
         self.schedule_welcome_if_new(source).await;
-        self.storage.set(key.to_vec(), value);
+        if self.storage.set(key.to_vec(), value) == StorageWriteStatus::CapacityExceeded {
+            log::warn!(
+                "rpc_update_status_list: storage capacity exceeded for {}",
+                hex::encode(key)
+            );
+            return false;
+        }
         true
     }
 
@@ -903,15 +949,14 @@ impl KademliaProtocol {
         }
     }
 
-    pub async fn call_store_rpc(&self, peer: &Node, key: [u8; ID_LEN], value: Vec<u8>) -> bool {
-        let addr = match peer.address() {
-            Some(a) => a,
-            None => return false,
-        };
-        let sock_addr: SocketAddr = match format!("{}:{}", addr.0, addr.1).parse() {
-            Ok(a) => a,
-            Err(_) => return false,
-        };
+    pub async fn call_store_rpc(
+        &self,
+        peer: &Node,
+        key: [u8; ID_LEN],
+        value: Vec<u8>,
+    ) -> Option<StoreStatus> {
+        let addr = peer.address()?;
+        let sock_addr: SocketAddr = format!("{}:{}", addr.0, addr.1).parse().ok()?;
         match self
             .call(
                 sock_addr,
@@ -923,11 +968,11 @@ impl KademliaProtocol {
             )
             .await
         {
-            Some(RpcMessage::StoreResult { ok }) => ok,
+            Some(RpcMessage::StoreResult { status }) => Some(status),
             _ => {
                 log::warn!("no response from {}, removing from router", peer);
                 self.router.write().await.remove_contact(peer);
-                false
+                None
             }
         }
     }
@@ -1287,7 +1332,10 @@ impl SpiderProtocol for KademliaProtocol {
     }
 
     async fn call_store(&self, peer: &Node, key: [u8; ID_LEN], value: Vec<u8>) -> bool {
-        self.call_store_rpc(peer, key, value).await
+        matches!(
+            self.call_store_rpc(peer, key, value).await,
+            Some(StoreStatus::Stored | StoreStatus::AlreadyStored)
+        )
     }
 }
 
@@ -1354,8 +1402,15 @@ mod tests {
         handler: Arc<dyn SignatureVerifierHandler>,
         use_cache: bool,
     ) -> Arc<KademliaProtocol> {
+        test_protocol_with_storage(handler, use_cache, Arc::new(ForgetfulStorage::new(-1))).await
+    }
+
+    async fn test_protocol_with_storage(
+        handler: Arc<dyn SignatureVerifierHandler>,
+        use_cache: bool,
+        storage: Arc<ForgetfulStorage>,
+    ) -> Arc<KademliaProtocol> {
         let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
-        let storage = Arc::new(ForgetfulStorage::new(-1));
         Arc::new(KademliaProtocol::new(
             Node::from_id([1; ID_LEN]),
             socket,
@@ -1417,6 +1472,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rpc_store_reports_idempotence_conflict_capacity_and_invalid_records() {
+        let storage = Arc::new(ForgetfulStorage::with_max_storage_bytes(-1, ID_LEN + 3));
+        let protocol =
+            test_protocol_with_storage(Arc::new(TestHandler::new(true, true)), false, storage)
+                .await;
+        let sender = [2; ID_LEN];
+        let address = ("127.0.0.1".to_string(), 9010);
+        let key = [7; ID_LEN];
+
+        assert_eq!(
+            protocol
+                .rpc_store(sender, address.clone(), key, b"one".to_vec())
+                .await,
+            StoreStatus::Stored
+        );
+        assert_eq!(
+            protocol
+                .rpc_store(sender, address.clone(), key, b"one".to_vec())
+                .await,
+            StoreStatus::AlreadyStored
+        );
+        assert_eq!(
+            protocol
+                .rpc_store(sender, address.clone(), key, b"two".to_vec())
+                .await,
+            StoreStatus::Conflict
+        );
+        assert_eq!(
+            protocol
+                .rpc_store(sender, address, [8; ID_LEN], b"new".to_vec())
+                .await,
+            StoreStatus::CapacityExceeded
+        );
+
+        let invalid_protocol = test_protocol(Arc::new(TestHandler::new(false, false)), false).await;
+        assert_eq!(
+            invalid_protocol
+                .rpc_store(
+                    [3; ID_LEN],
+                    ("127.0.0.1".to_string(), 9011),
+                    [9; ID_LEN],
+                    b"bad".to_vec(),
+                )
+                .await,
+            StoreStatus::InvalidRecord
+        );
+    }
+
+    #[tokio::test]
+    async fn rpc_update_preserves_old_value_when_capacity_is_exceeded() {
+        let key = [10; ID_LEN];
+        let old_value = b"old".to_vec();
+        let storage = Arc::new(ForgetfulStorage::with_max_storage_bytes(
+            -1,
+            ID_LEN + old_value.len(),
+        ));
+        assert_eq!(
+            storage.set(key.to_vec(), old_value.clone()),
+            StorageWriteStatus::Stored
+        );
+        let protocol =
+            test_protocol_with_storage(Arc::new(TestHandler::new(true, true)), false, storage)
+                .await;
+
+        assert!(
+            !protocol
+                .rpc_update(
+                    [4; ID_LEN],
+                    ("127.0.0.1".to_string(), 9012),
+                    key,
+                    b"larger".to_vec(),
+                    vec![],
+                )
+                .await
+        );
+        assert_eq!(protocol.storage.get(&key), Some(old_value));
+    }
+
+    #[tokio::test]
     async fn signature_cache_keeps_issuer_and_self_signed_domains_separate() {
         let handler = Arc::new(TestHandler::new(true, false));
         let protocol = test_protocol(handler.clone(), true).await;
@@ -1465,7 +1599,9 @@ mod tests {
             let frame = Frame {
                 msg_id: 42,
                 is_request: false,
-                message: RpcMessage::StoreResult { ok: true },
+                message: RpcMessage::StoreResult {
+                    status: StoreStatus::Stored,
+                },
             };
             encode_fragments(1, &bincode::serialize(&frame).unwrap())
                 .into_iter()
@@ -1485,7 +1621,12 @@ mod tests {
         protocol
             .handle_datagram(encode_response(), expected_peer)
             .await;
-        assert!(matches!(rx.await, Ok(RpcMessage::StoreResult { ok: true })));
+        assert!(matches!(
+            rx.await,
+            Ok(RpcMessage::StoreResult {
+                status: StoreStatus::Stored
+            })
+        ));
     }
 
     #[tokio::test]
@@ -1617,11 +1758,18 @@ mod tests {
 
         protocol
             .handle_datagram(
-                encode_response(RpcMessage::StoreResult { ok: true }),
+                encode_response(RpcMessage::StoreResult {
+                    status: StoreStatus::Stored,
+                }),
                 expected_peer,
             )
             .await;
-        assert!(matches!(rx.await, Ok(RpcMessage::StoreResult { ok: true })));
+        assert!(matches!(
+            rx.await,
+            Ok(RpcMessage::StoreResult {
+                status: StoreStatus::Stored
+            })
+        ));
     }
 
     #[tokio::test]
