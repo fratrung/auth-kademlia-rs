@@ -10,9 +10,9 @@
 //! tracking — all critical to correct DHT behaviour.
 
 use auth_kademlia_rs::node::{Node, NodeHeap};
-use primitive_types::U256;
 use auth_kademlia_rs::routing::RoutingTable;
 use auth_kademlia_rs::utils::digest;
+use primitive_types::U256;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers

@@ -61,11 +61,11 @@ async fn bootstrap_to(requester: &Server, ports: &[u16]) {
 
 async fn add_known_peer(server: &Server, id: [u8; ID_LEN], port: u16) {
     let protocol = server.protocol.as_ref().expect("node must be listening");
-    protocol
-        .router
-        .write()
-        .await
-        .add_contact(Node::new(id, Some("127.0.0.1".to_string()), Some(port)));
+    protocol.router.write().await.add_contact(Node::new(
+        id,
+        Some("127.0.0.1".to_string()),
+        Some(port),
+    ));
 }
 
 fn id_at_distance(key: [u8; ID_LEN], distance: u8) -> [u8; ID_LEN] {

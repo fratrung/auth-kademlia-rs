@@ -72,7 +72,6 @@ fn build_signed_record(
     record
 }
 
-
 /// Generate a `did:iiot` URI using a random UUID v4.
 fn generate_did_iiot() -> String {
     format!("did:iiot:{}", Uuid::new_v4())

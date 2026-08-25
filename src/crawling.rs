@@ -256,17 +256,14 @@ impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
             self.base.nearest.remove(&to_remove);
 
             if !found_values.is_empty() {
-                let mut counts: HashMap<Vec<u8>, usize> = HashMap::new();
-                for v in &found_values {
-                    *counts.entry(v.clone()).or_insert(0) += 1;
-                }
-                if counts.len() > 1 {
+                let value = strict_quorum_value(&found_values, 1);
+                if value.is_none() {
                     log::warn!(
-                        "Multiple distinct values found for key {:?} — returning majority",
+                        "Multiple equally supported values found for key {:?} — no value selected",
                         self.base.node.long_id
                     );
+                    return (None, self.base.nearest.to_vec());
                 }
-                let value = counts.into_iter().max_by_key(|(_, c)| *c).map(|(v, _)| v);
                 if let Some(ref v) = value {
                     if let Some(peer) = self.nearest_without_value.popleft() {
                         self.base
@@ -457,16 +454,16 @@ mod quorum_tests {
             let mut crawl = SpiderCrawl::new(protocol.clone(), target, peers, 20, 2);
 
             crawl
-                .find_round(|proto, peer, node| async move {
-                    proto.call_find_node(peer, node).await
-                })
+                .find_round(
+                    |proto, peer, node| async move { proto.call_find_node(peer, node).await },
+                )
                 .await;
             assert_eq!(protocol.contacted.lock().unwrap().len(), 2);
 
             crawl
-                .find_round(|proto, peer, node| async move {
-                    proto.call_find_node(peer, node).await
-                })
+                .find_round(
+                    |proto, peer, node| async move { proto.call_find_node(peer, node).await },
+                )
                 .await;
             assert_eq!(
                 protocol.contacted.lock().unwrap().len(),

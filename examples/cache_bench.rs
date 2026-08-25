@@ -19,7 +19,6 @@
 //! Run:
 //!   cargo run --release --example cache_bench
 
-
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -335,7 +334,6 @@ fn main() {
 }
 
 async fn run() {
-
     println!("╔═══════════════════════════════════════════════════════════╗");
     println!("║       AuthKademlia-RS  Signature Cache Benchmark          ║");
     println!("╚═══════════════════════════════════════════════════════════╝");
@@ -364,7 +362,7 @@ async fn run() {
     let _ = std::io::Write::flush(&mut std::io::stdout());
     let uncached_nodes = start_cluster(UNCACHED_SEED, UNCACHED_PEER1, UNCACHED_PEER2, false).await;
     println!("ok");
-    let uncached_set = run_set_workload(&uncached_nodes, DEFAULT_OPS,DEFAULT_CONCURRENCY).await;
+    let uncached_set = run_set_workload(&uncached_nodes, DEFAULT_OPS, DEFAULT_CONCURRENCY).await;
     print_set_table("uncached", &uncached_set, DEFAULT_OPS);
 
     // SET comparison

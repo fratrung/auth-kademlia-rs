@@ -363,14 +363,24 @@ impl PyDilithiumKeyManager {
             .map_err(km_err)
     }
 
-    fn get_public_key<'py>(&self, py: Python<'py>, key_name: String) -> PyResult<Bound<'py, PyBytes>> {
-        self.inner.get_public_key(&key_name)
+    fn get_public_key<'py>(
+        &self,
+        py: Python<'py>,
+        key_name: String,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        self.inner
+            .get_public_key(&key_name)
             .map(|v| PyBytes::new_bound(py, &v))
             .map_err(km_err)
     }
 
-    fn get_private_key<'py>(&self, py: Python<'py>, key_name: String) -> PyResult<Bound<'py, PyBytes>> {
-        self.inner.get_private_key(&key_name)
+    fn get_private_key<'py>(
+        &self,
+        py: Python<'py>,
+        key_name: String,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        self.inner
+            .get_private_key(&key_name)
             .map(|v| PyBytes::new_bound(py, &v))
             .map_err(km_err)
     }
@@ -381,8 +391,14 @@ impl PyDilithiumKeyManager {
     }
 
     /// Sign ``message`` with ``private_key``. Returns raw signature bytes.
-    fn sign<'py>(&self, py: Python<'py>, private_key: Vec<u8>, message: Vec<u8>) -> PyResult<Bound<'py, PyBytes>> {
-        self.inner.sign(&private_key, &message)
+    fn sign<'py>(
+        &self,
+        py: Python<'py>,
+        private_key: Vec<u8>,
+        message: Vec<u8>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        self.inner
+            .sign(&private_key, &message)
             .map(|v| PyBytes::new_bound(py, &v))
             .map_err(km_err)
     }
@@ -448,14 +464,24 @@ impl PyKyberKeyManager {
             .map_err(km_err)
     }
 
-    fn get_public_key<'py>(&self, py: Python<'py>, key_name: String) -> PyResult<Bound<'py, PyBytes>> {
-        self.inner.get_public_key(&key_name)
+    fn get_public_key<'py>(
+        &self,
+        py: Python<'py>,
+        key_name: String,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        self.inner
+            .get_public_key(&key_name)
             .map(|v| PyBytes::new_bound(py, &v))
             .map_err(km_err)
     }
 
-    fn get_private_key<'py>(&self, py: Python<'py>, key_name: String) -> PyResult<Bound<'py, PyBytes>> {
-        self.inner.get_private_key(&key_name)
+    fn get_private_key<'py>(
+        &self,
+        py: Python<'py>,
+        key_name: String,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        self.inner
+            .get_private_key(&key_name)
             .map(|v| PyBytes::new_bound(py, &v))
             .map_err(km_err)
     }
@@ -483,8 +509,12 @@ impl PyEd25519KeyManager {
         }
     }
 
-    fn generate_keypair<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
-        self.inner.generate_keypair()
+    fn generate_keypair<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
+        self.inner
+            .generate_keypair()
             .map(|(pk, sk)| (PyBytes::new_bound(py, &pk), PyBytes::new_bound(py, &sk)))
             .map_err(km_err)
     }
@@ -501,14 +531,24 @@ impl PyEd25519KeyManager {
             .map_err(km_err)
     }
 
-    fn get_public_key<'py>(&self, py: Python<'py>, key_name: String) -> PyResult<Bound<'py, PyBytes>> {
-        self.inner.get_public_key(&key_name)
+    fn get_public_key<'py>(
+        &self,
+        py: Python<'py>,
+        key_name: String,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        self.inner
+            .get_public_key(&key_name)
             .map(|v| PyBytes::new_bound(py, &v))
             .map_err(km_err)
     }
 
-    fn get_private_key<'py>(&self, py: Python<'py>, key_name: String) -> PyResult<Bound<'py, PyBytes>> {
-        self.inner.get_private_key(&key_name)
+    fn get_private_key<'py>(
+        &self,
+        py: Python<'py>,
+        key_name: String,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        self.inner
+            .get_private_key(&key_name)
             .map(|v| PyBytes::new_bound(py, &v))
             .map_err(km_err)
     }
@@ -517,8 +557,14 @@ impl PyEd25519KeyManager {
         self.inner.get_jose_format(&public_key)
     }
 
-    fn sign<'py>(&self, py: Python<'py>, private_key: Vec<u8>, message: Vec<u8>) -> PyResult<Bound<'py, PyBytes>> {
-        self.inner.sign(&private_key, &message)
+    fn sign<'py>(
+        &self,
+        py: Python<'py>,
+        private_key: Vec<u8>,
+        message: Vec<u8>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        self.inner
+            .sign(&private_key, &message)
             .map(|v| PyBytes::new_bound(py, &v))
             .map_err(km_err)
     }

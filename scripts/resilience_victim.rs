@@ -107,11 +107,17 @@ async fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
     let port: u16 = std::env::var("NODE_PORT")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(5678);
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5678);
     let seed_count: usize = std::env::var("SEED_COUNT")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(5);
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
     let lifetime_secs: u64 = std::env::var("LIFETIME_SECS")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(180);
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(180);
 
     println!("╔══════════════════════════════════════════════╗");
     println!("║     AuthKademlia-RS  Resilience Victim       ║");
@@ -121,9 +127,14 @@ async fn run() {
     println!("  Lifetime  : {lifetime_secs}s");
     println!();
 
-    let handler = Arc::new(DIDSignatureVerifierHandler::new(PathBuf::from("issuer.bin")));
+    let handler = Arc::new(DIDSignatureVerifierHandler::new(PathBuf::from(
+        "issuer.bin",
+    )));
     let mut server = Server::new(handler, 20, 3, None, None, false);
-    server.listen(port, "0.0.0.0").await.expect("failed to bind UDP socket");
+    server
+        .listen(port, "0.0.0.0")
+        .await
+        .expect("failed to bind UDP socket");
     println!("[victim] Listening on 0.0.0.0:{port}");
 
     println!("[victim] Waiting for attacker to bootstrap...");

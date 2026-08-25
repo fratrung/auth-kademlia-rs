@@ -3,12 +3,13 @@ use std::time::Duration;
 
 use log;
 use tokio::net::UdpSocket;
+use tokio::sync::mpsc::error::TrySendError;
 
 use crate::auth_handler::SignatureVerifierHandler;
 use crate::crawling::{NodeSpiderCrawl, ValueSpiderCrawl};
 use crate::node::Node;
 use crate::protocol::KademliaProtocol;
-use crate::signature_cache::SignatureCache;
+use crate::signature_cache::{SignatureCache, VerificationDomain};
 use crate::storage::{ForgetfulStorage, IStorage, DEFAULT_TTL};
 use crate::utils::{digest, digest_bytes, ID_LEN, STATUS_LIST_KEY};
 
@@ -112,25 +113,27 @@ impl Server {
         tokio::spawn(async move {
             let mut buf = vec![0u8; 65_536];
             let mut idx = 0usize;
-            loop {
+            'receive: loop {
                 match socket.recv_from(&mut buf).await {
                     Ok((len, peer)) => {
-                        let data = buf[..len].to_vec();
+                        let mut job = (buf[..len].to_vec(), peer);
                         let base = idx;
-                        let mut sent = false;
                         for i in 0..num_workers {
                             let w = (base + i) % num_workers;
-                            if senders[w].try_send((data.clone(), peer)).is_ok() {
-                                idx = (w + 1) % num_workers;
-                                sent = true;
-                                break;
+                            match senders[w].try_send(job) {
+                                Ok(()) => {
+                                    idx = (w + 1) % num_workers;
+                                    continue 'receive;
+                                }
+                                Err(TrySendError::Full(returned))
+                                | Err(TrySendError::Closed(returned)) => {
+                                    job = returned;
+                                }
                             }
                         }
-                        if !sent {
-                            let w = base % num_workers;
-                            let _ = senders[w].send((data, peer)).await;
-                            idx = (w + 1) % num_workers;
-                        }
+                        let w = base % num_workers;
+                        let _ = senders[w].send(job).await;
+                        idx = (w + 1) % num_workers;
                     }
                     Err(e) => log::error!("UDP recv error: {}", e),
                 }
@@ -579,10 +582,15 @@ impl Server {
 
     async fn verify_value(&self, key: &str, value: &[u8]) -> bool {
         let is_status = key == STATUS_LIST_KEY;
+        let domain = if is_status {
+            VerificationDomain::IssuerSigned
+        } else {
+            VerificationDomain::SelfSigned
+        };
         let cache_key = self
             .sig_cache
             .as_ref()
-            .map(|_| SignatureCache::compute_key(value));
+            .map(|_| SignatureCache::compute_key(domain, value));
         if let (Some(cache), Some(ck)) = (&self.sig_cache, &cache_key) {
             if let Some(cached) = cache.get_by_key(ck) {
                 return cached;
@@ -604,10 +612,8 @@ impl Server {
         if result && is_status {
             log::info!("Status-list signature verified");
         }
-        if result {
-            if let (Some(cache), Some(ck)) = (&self.sig_cache, cache_key) {
-                cache.insert_by_key(ck, result);
-            }
+        if let (Some(cache), Some(ck)) = (&self.sig_cache, cache_key) {
+            cache.insert_by_key(ck, result);
         }
         result
     }
@@ -693,6 +699,11 @@ impl Server {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;
+
+                let reclaimed = storage.prune_expired();
+                if reclaimed > 0 {
+                    log::debug!("Pruned {} expired storage records", reclaimed);
+                }
 
                 let routing_size: usize = proto
                     .router

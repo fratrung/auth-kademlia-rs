@@ -81,6 +81,9 @@ fn get_alg_string(value: &[u8]) -> Result<String, AuthHandlerError> {
     }
     let raw = &value[..12];
     let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+    if raw[end..].iter().any(|&byte| byte != 0) {
+        return Err(AuthHandlerError::InvalidFormat);
+    }
     Ok(std::str::from_utf8(&raw[..end])?.to_string())
 }
 
@@ -219,5 +222,24 @@ impl SignatureVerifierHandler for DIDSignatureVerifierHandler {
         let issuer_pub_key = self.load_issuer_pub_key()?;
         let verifier = SignatureVerifierFactory::get_verifier(&alg)?;
         Ok(verifier.verify(&issuer_pub_key, signature, data)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn algorithm_header_requires_null_only_right_padding() {
+        let mut canonical = [0_u8; 12];
+        canonical[..3].copy_from_slice(b"RSA");
+        assert_eq!(get_alg_string(&canonical).unwrap(), "RSA");
+
+        let mut embedded_data = canonical;
+        embedded_data[4] = b'X';
+        assert!(matches!(
+            get_alg_string(&embedded_data),
+            Err(AuthHandlerError::InvalidFormat)
+        ));
     }
 }

@@ -29,39 +29,19 @@ pub trait Signer: Send + Sync {
     fn sign(&self, private_key: &[u8], message: &[u8]) -> Result<Vec<u8>, VerifierError>;
 }
 
-/// Resolve an algorithm string (e.g. `"Dilithium-3"`) into
+/// Resolve a canonical algorithm string (e.g. `"Dilithium-3"`) into
 /// `(base_algorithm_name, signature_byte_length)`.
+///
+/// Record headers must use one of these exact spellings. Accepting whitespace,
+/// zero-padded levels, or other aliases would make distinct byte strings
+/// authenticate as the same logical record.
 pub fn resolve_alg_and_length(algorithm_str: &str) -> Result<(String, usize), VerifierError> {
-    let mut parts = algorithm_str.splitn(2, '-');
-    let alg = parts.next().unwrap_or("").trim();
-    let level_str = parts.next(); // e.g. "2", "3", "5" for Dilithium
-
-    match alg {
+    match algorithm_str {
         "RSA" => Ok(("RSA".to_string(), 256)),
         "Ed25519" => Ok(("Ed25519".to_string(), 64)),
-        "Dilithium" => {
-            let level: u8 = level_str
-                .and_then(|s| s.trim().parse().ok())
-                .ok_or_else(|| {
-                    VerifierError::UnsupportedAlgorithm(format!(
-                        "Dilithium requires a security level suffix, e.g. 'Dilithium-2'. Got: '{}'",
-                        algorithm_str
-                    ))
-                })?;
-            let sig_len = match level {
-                2 => 2420,
-                3 => 3293,
-                5 => 4595,
-                _ => {
-                    return Err(VerifierError::UnsupportedAlgorithm(format!(
-                        "Unknown Dilithium security level: {}",
-                        level
-                    )))
-                }
-            };
-            Ok(("Dilithium".to_string(), sig_len))
-        }
-
+        "Dilithium-2" => Ok(("Dilithium".to_string(), 2420)),
+        "Dilithium-3" => Ok(("Dilithium".to_string(), 3293)),
+        "Dilithium-5" => Ok(("Dilithium".to_string(), 4595)),
         other => Err(VerifierError::UnsupportedAlgorithm(other.to_string())),
     }
 }
@@ -130,6 +110,15 @@ mod tests {
         assert!(resolve_alg_and_length("ECDSA").is_err());
     }
 
+    #[test]
+    fn resolve_noncanonical_aliases_errors() {
+        for alias in ["RSA ", " RSA", "Ed25519\n", "Dilithium-02", "Dilithium-2\0"] {
+            assert!(
+                resolve_alg_and_length(alias).is_err(),
+                "non-canonical alias {alias:?} must be rejected"
+            );
+        }
+    }
     #[test]
     fn pubkey_level_inference() {
         assert_eq!(dilithium_level_from_pubkey_len(1312), Some(2));

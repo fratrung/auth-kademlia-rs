@@ -44,9 +44,7 @@ pub async fn start_node_with_id(port: u16, node_id: [u8; ID_LEN]) -> Server {
         "issuer_pub_key.bin",
     )));
     let mut srv = Server::new(handler, 20, 3, Some(node_id), None, false);
-    srv.listen(port, "127.0.0.1")
-        .await
-        .expect("listen failed");
+    srv.listen(port, "127.0.0.1").await.expect("listen failed");
     srv
 }
 
@@ -61,11 +59,7 @@ pub async fn start_node_cached(port: u16) -> Server {
 }
 
 /// Poll `check` every `interval` until it returns `Some(T)` or `timeout` elapses.
-pub async fn poll_until<F, Fut, T>(
-    timeout: Duration,
-    interval: Duration,
-    mut check: F,
-) -> Option<T>
+pub async fn poll_until<F, Fut, T>(timeout: Duration, interval: Duration, mut check: F) -> Option<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Option<T>>,

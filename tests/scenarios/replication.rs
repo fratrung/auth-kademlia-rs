@@ -70,6 +70,10 @@ fn welcome_if_new_replicates_to_joining_node() {
             result.is_some(),
             "node C must receive the record via welcome_if_new replication"
         );
-        assert_eq!(result.unwrap(), record, "replicated bytes must be identical");
+        assert_eq!(
+            result.unwrap(),
+            record,
+            "replicated bytes must be identical"
+        );
     });
 }

@@ -66,6 +66,21 @@ impl ForgetfulStorage {
         }
         inserted_at.elapsed() > Duration::from_secs(self.ttl as u64)
     }
+
+    /// Remove expired entries and return how many were reclaimed.
+    ///
+    /// Reads remain lazy, while this explicit maintenance pass prevents expired
+    /// records from accumulating indefinitely in the backing `DashMap`.
+    pub fn prune_expired(&self) -> usize {
+        if self.ttl == -1 {
+            return 0;
+        }
+
+        let before = self.data.len();
+        self.data
+            .retain(|_, (_, inserted_at)| !self.is_expired(*inserted_at));
+        before.saturating_sub(self.data.len())
+    }
 }
 
 impl IStorage for ForgetfulStorage {
@@ -190,5 +205,15 @@ mod tests {
         sleep(Duration::from_millis(1100));
         assert!(s.insert_if_absent(b"k".to_vec(), b"new".to_vec()));
         assert_eq!(s.get(b"k"), Some(b"new".to_vec()));
+    }
+
+    #[test]
+    fn prune_expired_reclaims_memory() {
+        let s = ForgetfulStorage::new(1);
+        s.set(b"expired".to_vec(), b"value".to_vec());
+        sleep(Duration::from_millis(1100));
+
+        assert_eq!(s.prune_expired(), 1);
+        assert!(s.data.is_empty());
     }
 }

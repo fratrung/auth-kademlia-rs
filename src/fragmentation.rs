@@ -34,8 +34,16 @@ const FRAG_HEADER_LEN: usize = 4 + 4 + 2 + 2; // 12 bytes
 pub const FRAG_CHUNK_SIZE: usize = 1400;
 /// Reassembly buffers older than this are discarded.
 pub const REASSEMBLY_TTL: Duration = Duration::from_secs(10);
+/// Reassembly garbage collection is amortized instead of running for every
+/// incomplete fragment received.
+pub const REASSEMBLY_GC_INTERVAL: Duration = Duration::from_secs(1);
 /// Hard cap on a logical message size to bound memory usage per peer.
 pub const MAX_MESSAGE_SIZE: usize = 256 * 1024;
+/// Global cap on incomplete logical messages. At the message-size cap this
+/// bounds reassembly payload memory to 16 MiB before allocator overhead.
+pub const MAX_REASSEMBLY_ENTRIES: usize = 64;
+/// Per-peer cap so one sender cannot consume the global reassembly budget.
+pub const MAX_REASSEMBLY_ENTRIES_PER_PEER: usize = 8;
 
 /// Reassembly state for a single in-flight logical message.
 pub struct ReassemblyEntry {
@@ -117,7 +125,7 @@ pub struct FragHeader {
 /// Parse a fragment header. Returns `None` if the datagram is malformed or
 /// does not carry our magic.
 pub fn parse_fragment(data: &[u8]) -> Option<(FragHeader, &[u8])> {
-    if data.len() < FRAG_HEADER_LEN {
+    if !(FRAG_HEADER_LEN..=FRAG_HEADER_LEN + FRAG_CHUNK_SIZE).contains(&data.len()) {
         return None;
     }
     let magic = u32::from_be_bytes(data[0..4].try_into().ok()?);
@@ -221,7 +229,10 @@ mod tests {
     #[test]
     fn entry_rejects_out_of_bounds_index() {
         let mut e = ReassemblyEntry::new(3);
-        assert!(!e.insert(5, vec![0u8; 10]), "index >= total must not complete");
+        assert!(
+            !e.insert(5, vec![0u8; 10]),
+            "index >= total must not complete"
+        );
         assert_eq!(e.received, 0);
     }
 
@@ -245,5 +256,28 @@ mod tests {
         dg.extend_from_slice(&2u16.to_be_bytes());
         dg.extend_from_slice(&2u16.to_be_bytes());
         assert!(parse_fragment(&dg).is_none());
+    }
+
+    #[test]
+    fn parse_enforces_chunk_size_for_single_and_multi_fragment_messages() {
+        let single = encode_fragments(11, &vec![0; FRAG_CHUNK_SIZE])
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(parse_fragment(&single).is_some());
+
+        let mut oversized_single = single;
+        oversized_single.push(0);
+        assert!(parse_fragment(&oversized_single).is_none());
+
+        let multi = encode_fragments(12, &vec![0; FRAG_CHUNK_SIZE + 1])
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(parse_fragment(&multi).is_some());
+
+        let mut oversized_multi = multi;
+        oversized_multi.push(0);
+        assert!(parse_fragment(&oversized_multi).is_none());
     }
 }

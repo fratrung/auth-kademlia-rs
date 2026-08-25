@@ -41,14 +41,15 @@ use uuid::Uuid;
 // the result is counted as timed_out rather than rejected.
 const RPC_TIMEOUT: Duration = Duration::from_millis(4500);
 
-
 struct LatencyStats {
     samples: Vec<Duration>,
 }
 
 impl LatencyStats {
     fn new() -> Self {
-        Self { samples: Vec::new() }
+        Self {
+            samples: Vec::new(),
+        }
     }
 
     fn push(&mut self, d: Duration) {
@@ -72,8 +73,14 @@ impl LatencyStats {
     }
 }
 
-fn print_latency(label: &str, stats: &mut LatencyStats, wall: Duration,
-                 accepted: usize, rejected: usize, timed_out: usize) {
+fn print_latency(
+    label: &str,
+    stats: &mut LatencyStats,
+    wall: Duration,
+    accepted: usize,
+    rejected: usize,
+    timed_out: usize,
+) {
     let (min, avg, p95, max, tps) = stats.report(wall);
     println!(
         "  accepted={accepted}  rejected={rejected}  timeout={timed_out}  \
@@ -86,7 +93,6 @@ fn print_latency(label: &str, stats: &mut LatencyStats, wall: Duration,
         );
     }
 }
-
 
 fn b64url(data: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(data)
@@ -153,7 +159,6 @@ fn make_record() -> (String, Vec<u8>) {
     (key, record)
 }
 
-
 /// Sends every (key, record) pair to `victim` via `call_store_rpc`, bounded by `concurrency`.
 /// Returns `(accepted, rejected, timed_out, accepted_keys, latency_stats)`.
 async fn store_phase(
@@ -183,7 +188,7 @@ async fn store_phase(
                         let t = Instant::now();
                         match timeout(RPC_TIMEOUT, p.call_store_rpc(&v, dkey, record)).await {
                             Ok(ok) => (false, ok, k, t.elapsed()),
-                            Err(_)  => (true, false, k, t.elapsed()),
+                            Err(_) => (true, false, k, t.elapsed()),
                         }
                     });
                 }
@@ -249,14 +254,17 @@ async fn get_phase(
         match jset.join_next().await {
             Some(Ok((found, elapsed))) => {
                 latency.push(elapsed);
-                if found { hits += 1; } else { misses += 1; }
+                if found {
+                    hits += 1;
+                } else {
+                    misses += 1;
+                }
             }
             _ => timed_out += 1,
         }
     }
     (hits, misses, timed_out, latency)
 }
-
 
 fn main() {
     let parallelism = std::thread::available_parallelism()
@@ -273,14 +281,20 @@ fn main() {
 async fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
-    let target_addr = std::env::var("TARGET_ADDR")
-        .unwrap_or_else(|_| "172.21.0.10:5678".to_string());
+    let target_addr =
+        std::env::var("TARGET_ADDR").unwrap_or_else(|_| "172.21.0.10:5678".to_string());
     let attacker_port: u16 = std::env::var("ATTACKER_PORT")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(5679);
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5679);
     let pool_size: usize = std::env::var("POOL_SIZE")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(300);
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(300);
     let concurrency: usize = std::env::var("CONCURRENCY")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(50);
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50);
 
     let inv_size = (pool_size / 50).max(10);
 
@@ -294,9 +308,14 @@ async fn run() {
     println!("  Concurrency : {concurrency}");
     println!();
 
-    let handler = Arc::new(DIDSignatureVerifierHandler::new(PathBuf::from("issuer.bin")));
+    let handler = Arc::new(DIDSignatureVerifierHandler::new(PathBuf::from(
+        "issuer.bin",
+    )));
     let mut server = Server::new(handler, 20, 3, None, None, true);
-    server.listen(attacker_port, "0.0.0.0").await.expect("failed to bind UDP socket");
+    server
+        .listen(attacker_port, "0.0.0.0")
+        .await
+        .expect("failed to bind UDP socket");
     let server = Arc::new(server);
 
     // `depends_on` only guarantees the container started, not that the UDP socket is bound.
@@ -316,10 +335,12 @@ async fn run() {
     }
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    let proto: Arc<KademliaProtocol> = Arc::clone(
-        server.protocol.as_ref().expect("protocol not initialised"),
-    );
-    let victim: Node = proto.router.read().await
+    let proto: Arc<KademliaProtocol> =
+        Arc::clone(server.protocol.as_ref().expect("protocol not initialised"));
+    let victim: Node = proto
+        .router
+        .read()
+        .await
         .find_neighbors(&proto.source_node, None)
         .into_iter()
         .next()
@@ -332,33 +353,58 @@ async fn run() {
     let (valid_pool, invalid_pool): (Vec<(String, Vec<u8>)>, Vec<(String, Vec<u8>)>) =
         tokio::task::spawn_blocking(move || {
             let valid: Vec<_> = (0..pool_size).map(|_| make_record()).collect();
-            let invalid: Vec<_> = (0..inv_size).map(|_| {
-                let (key, mut rec) = make_record();
-                rec[500] ^= 0xFF;
-                (key, rec)
-            }).collect();
+            let invalid: Vec<_> = (0..inv_size)
+                .map(|_| {
+                    let (key, mut rec) = make_record();
+                    rec[500] ^= 0xFF;
+                    (key, rec)
+                })
+                .collect();
             (valid, invalid)
         })
         .await
         .unwrap();
     println!("done ({:.1}s)\n", t.elapsed().as_secs_f64());
 
-    println!("[attacker] Phase 1 — STORE {} valid records  (concurrency={concurrency})",
-             valid_pool.len());
+    println!(
+        "[attacker] Phase 1 — STORE {} valid records  (concurrency={concurrency})",
+        valid_pool.len()
+    );
     let t1 = Instant::now();
     let (accepted, rejected, store_timeout, stored_keys, mut lat1) =
         store_phase(Arc::clone(&proto), victim.clone(), valid_pool, concurrency).await;
     let wall1 = t1.elapsed();
-    print_latency("store-valid", &mut lat1, wall1, accepted, rejected, store_timeout);
+    print_latency(
+        "store-valid",
+        &mut lat1,
+        wall1,
+        accepted,
+        rejected,
+        store_timeout,
+    );
     println!();
 
-    println!("[attacker] Phase 2 — STORE {} invalid records  (concurrency={concurrency})",
-             invalid_pool.len());
+    println!(
+        "[attacker] Phase 2 — STORE {} invalid records  (concurrency={concurrency})",
+        invalid_pool.len()
+    );
     let t2 = Instant::now();
-    let (inv_accepted, inv_rejected, inv_timeout, _, mut lat2) =
-        store_phase(Arc::clone(&proto), victim.clone(), invalid_pool, concurrency).await;
+    let (inv_accepted, inv_rejected, inv_timeout, _, mut lat2) = store_phase(
+        Arc::clone(&proto),
+        victim.clone(),
+        invalid_pool,
+        concurrency,
+    )
+    .await;
     let wall2 = t2.elapsed();
-    print_latency("store-invalid", &mut lat2, wall2, inv_accepted, inv_rejected, inv_timeout);
+    print_latency(
+        "store-invalid",
+        &mut lat2,
+        wall2,
+        inv_accepted,
+        inv_rejected,
+        inv_timeout,
+    );
     println!();
 
     // The victim may have been evicted from the routing table while under load
@@ -366,11 +412,20 @@ async fn run() {
     // Re-bootstrap to restore the routing table before issuing GET requests.
     print!("[attacker] Re-bootstrapping before GET phase... ");
     let rejoined = server.bootstrap(vec![victim_addr]).await;
-    println!("{}", if rejoined.is_empty() { "WARN: no peers" } else { "ok" });
+    println!(
+        "{}",
+        if rejoined.is_empty() {
+            "WARN: no peers"
+        } else {
+            "ok"
+        }
+    );
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    println!("[attacker] Phase 3 — GET {} stored keys  (concurrency={concurrency})",
-             stored_keys.len());
+    println!(
+        "[attacker] Phase 3 — GET {} stored keys  (concurrency={concurrency})",
+        stored_keys.len()
+    );
     let t3 = Instant::now();
     let (hits, misses, get_timeout, mut lat3) =
         get_phase(Arc::clone(&server), stored_keys, concurrency).await;
@@ -398,8 +453,10 @@ async fn run() {
     }
 
     if accepted > 0 {
-        println!("  [✓] Store functional    {accepted}/{} valid records accepted",
-                 accepted + rejected + store_timeout);
+        println!(
+            "  [✓] Store functional    {accepted}/{} valid records accepted",
+            accepted + rejected + store_timeout
+        );
     } else {
         println!("  [!] No valid records stored (connectivity issue?)");
     }
@@ -410,17 +467,29 @@ async fn run() {
         0.0
     };
     if miss_rate < 0.05 {
-        println!("  [✓] Retrieval reliable  miss rate {:.1}%", miss_rate * 100.0);
+        println!(
+            "  [✓] Retrieval reliable  miss rate {:.1}%",
+            miss_rate * 100.0
+        );
     } else {
-        println!("  [!] Retrieval degraded  miss rate {:.1}%", miss_rate * 100.0);
+        println!(
+            "  [!] Retrieval degraded  miss rate {:.1}%",
+            miss_rate * 100.0
+        );
     }
 
     let (_, avg1, p95_1, max1, tps1) = lat1.report(wall1);
     println!("\n  Throughput summary:");
-    println!("    store-valid   {tps1:>6.1} ops/s  avg={avg1:.1}ms  p95={p95_1:.1}ms  max={max1:.1}ms");
+    println!(
+        "    store-valid   {tps1:>6.1} ops/s  avg={avg1:.1}ms  p95={p95_1:.1}ms  max={max1:.1}ms"
+    );
     let (_, avg2, p95_2, max2, tps2) = lat2.report(wall2);
-    println!("    store-invalid {tps2:>6.1} ops/s  avg={avg2:.1}ms  p95={p95_2:.1}ms  max={max2:.1}ms");
-    println!("    get           {tps3:>6.1} ops/s  avg={avg3:.1}ms  p95={p95_3:.1}ms  max={max3:.1}ms");
+    println!(
+        "    store-invalid {tps2:>6.1} ops/s  avg={avg2:.1}ms  p95={p95_2:.1}ms  max={max2:.1}ms"
+    );
+    println!(
+        "    get           {tps3:>6.1} ops/s  avg={avg3:.1}ms  p95={p95_3:.1}ms  max={max3:.1}ms"
+    );
 
     println!();
     if inv_accepted == 0 {
@@ -431,7 +500,7 @@ async fn run() {
     }
 
     // Machine-readable summary — parsed by resilience/run_stats.py
-    let total_valid   = accepted + rejected + store_timeout;
+    let total_valid = accepted + rejected + store_timeout;
     let total_invalid = inv_accepted + inv_rejected + inv_timeout;
     println!(
         "METRICS_JSON {}",

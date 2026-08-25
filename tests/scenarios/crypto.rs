@@ -123,7 +123,9 @@ fn downgrade_attack_after_rotation_rejected() {
             .to_vec();
 
         assert_eq!(
-            node_a.update(&key, record_v2.clone(), Some(auth_v1_to_v2)).await,
+            node_a
+                .update(&key, record_v2.clone(), Some(auth_v1_to_v2))
+                .await,
             Some(true),
             "legitimate rotation v1→v2 must succeed"
         );
@@ -135,7 +137,9 @@ fn downgrade_attack_after_rotation_rejected() {
             .as_bytes()
             .to_vec();
 
-        let downgrade = node_b.update(&key, record_v1.clone(), Some(fake_auth)).await;
+        let downgrade = node_b
+            .update(&key, record_v1.clone(), Some(fake_auth))
+            .await;
         assert!(
             downgrade.is_none(),
             "downgrade attack must be rejected — attacker cannot produce auth_sig with sk2"
@@ -193,7 +197,9 @@ fn revoked_key_cannot_authorise_further_rotation() {
             .as_bytes()
             .to_vec();
         assert_eq!(
-            node_a.update(&key, record_v2.clone(), Some(auth_v1_v2)).await,
+            node_a
+                .update(&key, record_v2.clone(), Some(auth_v1_v2))
+                .await,
             Some(true),
             "v1→v2 rotation must succeed"
         );
@@ -222,7 +228,9 @@ fn revoked_key_cannot_authorise_further_rotation() {
         let good_auth = dilithium2::detached_sign(&record_v3, &sk2)
             .as_bytes()
             .to_vec();
-        let accepted = node_a.update(&key, record_v3.clone(), Some(good_auth)).await;
+        let accepted = node_a
+            .update(&key, record_v3.clone(), Some(good_auth))
+            .await;
         assert_eq!(
             accepted,
             Some(true),

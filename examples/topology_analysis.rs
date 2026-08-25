@@ -29,9 +29,9 @@ use std::time::{Duration, Instant};
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::Server;
 use auth_kademlia_rs::node::Node;
-use primitive_types::U256;
 use auth_kademlia_rs::storage::IStorage;
 use auth_kademlia_rs::utils::digest;
+use primitive_types::U256;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use pqcrypto_dilithium::dilithium2;
@@ -134,9 +134,14 @@ fn extract_doc(record: &[u8]) -> Option<serde_json::Value> {
 }
 
 async fn start_node(port: u16, ksize: usize, alpha: usize) -> Arc<Server> {
-    let handler = Arc::new(DIDSignatureVerifierHandler::new(PathBuf::from("issuer.bin")));
+    let handler = Arc::new(DIDSignatureVerifierHandler::new(PathBuf::from(
+        "issuer.bin",
+    )));
     let mut server = Server::new(handler, ksize, alpha, None, None, true);
-    server.listen(port, "127.0.0.1").await.expect("listen failed");
+    server
+        .listen(port, "127.0.0.1")
+        .await
+        .expect("listen failed");
     Arc::new(server)
 }
 
@@ -151,7 +156,10 @@ fn print_sample_docs(published: &[(String, String, Vec<u8>)]) {
         println!("  DHT key : {dkey_hex}");
         match extract_doc(record) {
             Some(doc) => {
-                for line in serde_json::to_string_pretty(&doc).unwrap_or_default().lines() {
+                for line in serde_json::to_string_pretty(&doc)
+                    .unwrap_or_default()
+                    .lines()
+                {
                     println!("  {line}");
                 }
             }
@@ -213,7 +221,10 @@ fn print_replication_summary(key_holders: &HashMap<String, Vec<u16>>) {
     dist_sorted.sort_by_key(|(c, _)| **c);
     println!("\n  Copy-count distribution:");
     for (copies, count) in &dist_sorted {
-        println!("    {copies} cop{}: {count} records", if **copies == 1 { "y" } else { "ies" });
+        println!(
+            "    {copies} cop{}: {count} records",
+            if **copies == 1 { "y" } else { "ies" }
+        );
     }
     println!();
 }
@@ -240,10 +251,7 @@ async fn verify_xor_correctness(
     let mut none_ok = 0usize;
 
     // Collect (node_id, port) once for efficiency
-    let node_ids: Vec<([u8; 20], u16)> = nodes
-        .iter()
-        .map(|(s, p)| (s.node.id, *p))
-        .collect();
+    let node_ids: Vec<([u8; 20], u16)> = nodes.iter().map(|(s, p)| (s.node.id, *p)).collect();
 
     for (_did, key_str, _) in published.iter().take(check_n) {
         let dkey = digest(key_str.as_str());
@@ -262,7 +270,11 @@ async fn verify_xor_correctness(
         let mut holding: Vec<u16> = vec![];
         let mut missing: Vec<u16> = vec![];
         for &port in &k_closest {
-            let server = nodes.iter().find(|(_, p)| *p == port).map(|(s, _)| s).unwrap();
+            let server = nodes
+                .iter()
+                .find(|(_, p)| *p == port)
+                .map(|(s, _)| s)
+                .unwrap();
             if server.storage.get(&dkey).is_some() {
                 holding.push(port);
             } else {
@@ -292,7 +304,10 @@ async fn verify_xor_correctness(
         // Abbreviated display
         let uuid_short = &key_str[..8.min(key_str.len())];
         let k_str: Vec<String> = k_closest.iter().map(|p| p.to_string()).collect();
-        println!("  [{status}] key={uuid_short}…  k-closest=[{}]", k_str.join(","));
+        println!(
+            "  [{status}] key={uuid_short}…  k-closest=[{}]",
+            k_str.join(",")
+        );
         if !holding.is_empty() {
             println!(
                 "       holding : {:?}  ({}/{} k-closest)",
@@ -302,10 +317,16 @@ async fn verify_xor_correctness(
             );
         }
         if !missing.is_empty() {
-            println!("       missing : {:?}  (k-closest without the record)", missing);
+            println!(
+                "       missing : {:?}  (k-closest without the record)",
+                missing
+            );
         }
         if !extras.is_empty() {
-            println!("       extras  : {:?}  (outside k-closest but hold a copy)", extras);
+            println!(
+                "       extras  : {:?}  (outside k-closest but hold a copy)",
+                extras
+            );
         }
     }
 
@@ -363,7 +384,11 @@ async fn print_bucket_structure(nodes: &[(Arc<Server>, u16)]) {
             let hi = *bucket.range.end();
             let lo_s = format!("{:032x}", lo);
             let _hi_s = format!("{:032x}", hi);
-            let freshness = if bucket.is_lonely() { "lonely" } else { "fresh " };
+            let freshness = if bucket.is_lonely() {
+                "lonely"
+            } else {
+                "fresh "
+            };
 
             println!(
                 "    [{:>2}]  nodes={:>2}  depth={:>3}  {}  [{}..]",
@@ -433,13 +458,18 @@ async fn print_routing_tables(nodes: &[(Arc<Server>, u16)]) {
         if peers.is_empty() {
             println!("    (no peers)");
         } else {
-            println!("    {:>44}  {:>5}  ip", "node-id (hex, first 8 bytes)", "port");
+            println!(
+                "    {:>44}  {:>5}  ip",
+                "node-id (hex, first 8 bytes)", "port"
+            );
             for peer in &peers {
                 let id_hex: String = peer.id[..8].iter().map(|b| format!("{b:02x}")).collect();
                 println!(
                     "    {}  {:>5}  {}",
                     id_hex,
-                    peer.port.map(|p| p.to_string()).unwrap_or_else(|| "-".into()),
+                    peer.port
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| "-".into()),
                     peer.ip.as_deref().unwrap_or("-"),
                 );
             }
@@ -447,7 +477,6 @@ async fn print_routing_tables(nodes: &[(Arc<Server>, u16)]) {
         println!();
     }
 }
-
 
 fn percentile(sorted: &[u64], p: f64) -> u64 {
     if sorted.is_empty() {
@@ -477,7 +506,6 @@ fn latency_stats(v: &mut Vec<u64>) -> (f64, u64, u64, u64) {
     let max = *v.last().unwrap_or(&0);
     (avg, p50, p95, max)
 }
-
 
 fn main() {
     let parallelism = std::thread::available_parallelism()
@@ -633,11 +661,17 @@ async fn run() {
     println!("  ├───────┼──────────┼──────────┼──────────┼──────────┤");
     println!(
         "  │ SET   │ {:>8} │ {:>8} │ {:>8} │ {:>8} │",
-        fmt_ns(sa as u64), fmt_ns(sp50), fmt_ns(sp95), fmt_ns(smax)
+        fmt_ns(sa as u64),
+        fmt_ns(sp50),
+        fmt_ns(sp95),
+        fmt_ns(smax)
     );
     println!(
         "  │ GET   │ {:>8} │ {:>8} │ {:>8} │ {:>8} │",
-        fmt_ns(ga as u64), fmt_ns(gp50), fmt_ns(gp95), fmt_ns(gmax)
+        fmt_ns(ga as u64),
+        fmt_ns(gp50),
+        fmt_ns(gp95),
+        fmt_ns(gmax)
     );
     println!("  └───────┴──────────┴──────────┴──────────┴──────────┘\n");
 
@@ -660,9 +694,7 @@ async fn run() {
     if get_fail == 0 && get_corrupt == 0 && set_fail == 0 {
         println!("  ALL CHECKS PASSED ✓\n");
     } else {
-        println!(
-            "  SET fail: {set_fail}  GET fail: {get_fail}  Corruptions: {get_corrupt}\n"
-        );
+        println!("  SET fail: {set_fail}  GET fail: {get_fail}  Corruptions: {get_corrupt}\n");
         std::process::exit(1);
     }
 }

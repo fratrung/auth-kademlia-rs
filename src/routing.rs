@@ -334,6 +334,18 @@ impl RoutingTable {
         !self.buckets[idx].contains(node)
     }
 
+    /// Return the registered contact for `id`, including replacement entries.
+    ///
+    /// Control messages must use the endpoint already associated with an ID;
+    /// callers must not trust a fresh endpoint claimed inside the message.
+    pub fn get_contact(&self, id: &[u8; 20]) -> Option<Node> {
+        self.buckets
+            .iter()
+            .flat_map(|bucket| bucket.nodes.iter().chain(bucket.replacement_nodes.iter()))
+            .find(|node| node.id == *id)
+            .cloned()
+    }
+
     /// Return the `k` nodes closest to `target`, optionally excluding one node.
     ///
     /// Mirrors Python's `find_neighbors` exactly:
@@ -489,7 +501,10 @@ mod tests {
         let t_before = b.last_updated.load(Ordering::Relaxed);
         b.add_node(make_node("x"));
         let t_after = b.last_updated.load(Ordering::Relaxed);
-        assert_eq!(t_before, t_after, "add_node non deve aggiornare last_updated");
+        assert_eq!(
+            t_before, t_after,
+            "add_node non deve aggiornare last_updated"
+        );
     }
 
     #[test]
@@ -500,7 +515,10 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_secs(1));
         b.touch_last_updated();
         let t_after = b.last_updated.load(Ordering::Relaxed);
-        assert!(t_after > t_before, "touch_last_updated deve aggiornare last_updated");
+        assert!(
+            t_after > t_before,
+            "touch_last_updated deve aggiornare last_updated"
+        );
     }
 
     #[test]

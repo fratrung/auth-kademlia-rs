@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use auth_kademlia_rs::auth_handler::{DIDSignatureVerifierHandler, SignatureVerifierHandler};
-use auth_kademlia_rs::signature_cache::SignatureCache;
+use auth_kademlia_rs::signature_cache::{SignatureCache, VerificationDomain};
 use common::{build_did_document, build_signed_record, generate_did_iiot, make_record, rt};
 use pqcrypto_dilithium::dilithium2;
 use pqcrypto_kyber::kyber512;
@@ -43,7 +43,7 @@ fn cache_hit_is_faster_than_dilithium_verify() {
         let cache = SignatureCache::new(128);
         let (_, record) = make_record();
 
-        let ck = SignatureCache::compute_key(&record);
+        let ck = SignatureCache::compute_key(VerificationDomain::SelfSigned, &record);
 
         // Cold: full Dilithium-2 verification via spawn_blocking.
         let h = Arc::clone(&handler);
@@ -97,7 +97,7 @@ fn cache_stores_false_for_invalid_records() {
         let doc = build_did_document(&did, &pk, &kpk);
         let invalid_record = build_signed_record(&doc, &wrong_sk, "Dilithium-2");
 
-        let ck = SignatureCache::compute_key(&invalid_record);
+        let ck = SignatureCache::compute_key(VerificationDomain::SelfSigned, &invalid_record);
 
         // Cold: Dilithium runs, returns false.
         let h = Arc::clone(&handler);
@@ -126,9 +126,6 @@ fn cache_stores_false_for_invalid_records() {
             warm_us < cold_us,
             "cache rejection ({warm_us}µs) must be faster than Dilithium ({cold_us}µs)"
         );
-        println!(
-            "invalid record: cold = {cold_us}µs  warm (cache false) = {warm_us}µs"
-        );
+        println!("invalid record: cold = {cold_us}µs  warm (cache false) = {warm_us}µs");
     });
 }
-

@@ -123,8 +123,10 @@ winner has been selected; a split with no strict majority returns no value.
 - **UPDATE:** updates are propagated best-effort to the nodes discovered by the
   Kademlia crawl. Success is determined by a strict majority of the primary
   consistency group, capped at `alpha`. When the local node is a responsible
-  replica, its verified prospective value participates in that group, but the
-  local write is committed only after quorum is reached.
+  replica, its verified prospective value counts as one vote before commit;
+  with the default `alpha = 3`, one successful remote acknowledgement then
+  forms the 2-of-3 quorum. The local write is committed only after that quorum
+  is reached.
 - **TTL:** records written to the default storage expire lazily after 14 days.
   Applications that need continued availability must refresh them through a
   legitimate publish or update before expiry.
