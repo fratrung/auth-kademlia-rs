@@ -92,15 +92,6 @@ pub enum RpcMessage {
     UpdateStatusListResult {
         ok: bool,
     },
-    Delete {
-        sender_id: [u8; ID_LEN],
-        key: [u8; ID_LEN],
-        auth_signature: Vec<u8>,
-        delete_msg: Vec<u8>,
-    },
-    DeleteResult {
-        ok: bool,
-    },
     FindNode {
         sender_id: [u8; ID_LEN],
         key: [u8; ID_LEN],
@@ -159,7 +150,6 @@ enum ExpectedResponse {
     StoreResult,
     UpdateResult,
     UpdateStatusListResult,
-    DeleteResult,
     FindNodeResult,
     FindValueResult,
     NoResponse,
@@ -172,7 +162,6 @@ impl ExpectedResponse {
             RpcMessage::Store { .. } => Self::StoreResult,
             RpcMessage::Update { .. } => Self::UpdateResult,
             RpcMessage::UpdateStatusList { .. } => Self::UpdateStatusListResult,
-            RpcMessage::Delete { .. } => Self::DeleteResult,
             RpcMessage::FindNode { .. } => Self::FindNodeResult,
             RpcMessage::FindValue { .. } => Self::FindValueResult,
             RpcMessage::Leave { .. } => Self::NoResponse,
@@ -188,7 +177,6 @@ impl ExpectedResponse {
             Self::UpdateStatusListResult => {
                 matches!(message, RpcMessage::UpdateStatusListResult { .. })
             }
-            Self::DeleteResult => matches!(message, RpcMessage::DeleteResult { .. }),
             Self::FindNodeResult => matches!(message, RpcMessage::FindNodeResult { .. }),
             Self::FindValueResult => matches!(
                 message,
@@ -204,7 +192,6 @@ impl ExpectedResponse {
             Self::StoreResult => "StoreResult",
             Self::UpdateResult => "UpdateResult",
             Self::UpdateStatusListResult => "UpdateStatusListResult",
-            Self::DeleteResult => "DeleteResult",
             Self::FindNodeResult => "FindNodeResult",
             Self::FindValueResult => "FindValueHit|FindValueNodes",
             Self::NoResponse => "no response",
@@ -222,8 +209,6 @@ fn rpc_message_name(message: &RpcMessage) -> &'static str {
         RpcMessage::UpdateResult { .. } => "UpdateResult",
         RpcMessage::UpdateStatusList { .. } => "UpdateStatusList",
         RpcMessage::UpdateStatusListResult { .. } => "UpdateStatusListResult",
-        RpcMessage::Delete { .. } => "Delete",
-        RpcMessage::DeleteResult { .. } => "DeleteResult",
         RpcMessage::FindNode { .. } => "FindNode",
         RpcMessage::FindNodeResult { .. } => "FindNodeResult",
         RpcMessage::FindValue { .. } => "FindValue",
@@ -236,7 +221,6 @@ fn rpc_message_name(message: &RpcMessage) -> &'static str {
 type PendingMap =
     Arc<Mutex<HashMap<u32, (SocketAddr, ExpectedResponse, oneshot::Sender<RpcMessage>)>>>;
 
-const INVALID_SIG_BAN_THRESHOLD: u32 = 3;
 const WELCOME_CONCURRENCY: usize = 1;
 const REPLICATION_CONCURRENCY: usize = 4;
 
@@ -249,9 +233,6 @@ pub struct KademliaProtocol {
     /// Shared with `Server` so a verification result cached in one layer is
     /// immediately reused by the other. `None` when the cache is disabled.
     sig_cache: Option<Arc<SignatureCache>>,
-    /// Counts invalid-signature Store attempts per sender. A peer is removed
-    /// from the routing table once it reaches INVALID_SIG_BAN_THRESHOLD.
-    invalid_sig_strikes: DashMap<[u8; ID_LEN], u32>,
     /// Peer IDs already scheduled for discovery and replica evaluation.
     welcome_in_flight: DashMap<[u8; ID_LEN], ()>,
     /// Bounds whole-storage scans caused by newly discovered peers.
@@ -280,7 +261,6 @@ impl KademliaProtocol {
             socket,
             signature_handler,
             sig_cache,
-            invalid_sig_strikes: DashMap::new(),
             welcome_in_flight: DashMap::new(),
             welcome_permits: Arc::new(Semaphore::new(WELCOME_CONCURRENCY)),
             pending: Arc::new(Mutex::new(HashMap::new())),
@@ -644,17 +624,6 @@ impl KademliaProtocol {
                     .await;
                 Some(RpcMessage::UpdateStatusListResult { ok })
             }
-            RpcMessage::Delete {
-                sender_id,
-                key,
-                auth_signature,
-                delete_msg,
-            } => {
-                let ok = self
-                    .rpc_delete(sender_id, sender_addr, key, auth_signature, delete_msg)
-                    .await;
-                Some(RpcMessage::DeleteResult { ok })
-            }
             RpcMessage::FindNode { sender_id, key } => {
                 let nodes = self.rpc_find_node(sender_id, sender_addr, key).await;
                 Some(RpcMessage::FindNodeResult {
@@ -698,31 +667,12 @@ impl KademliaProtocol {
         key: [u8; ID_LEN],
         value: Vec<u8>,
     ) -> StoreStatus {
-        // Peer Ban Mechanism
         if !self.verify_for_key(&key, &value).await {
-            let strikes = {
-                let mut n = self.invalid_sig_strikes.entry(sender_id).or_insert(0);
-                *n += 1;
-                *n
-            };
-            let source = Node::new(sender_id, Some(sender_addr.0.clone()), Some(sender_addr.1));
-            if strikes >= INVALID_SIG_BAN_THRESHOLD {
-                log::warn!(
-                    "rpc_store: {} invalid-sig strikes from {} — removing from routing table",
-                    strikes,
-                    sender_addr.0
-                );
-                self.router.write().await.remove_contact(&source);
-            } else {
-                log::warn!(
-                    "rpc_store: invalid signature for {} from {} (strike {}/{})",
-                    hex::encode(key),
-                    sender_addr.0,
-                    strikes,
-                    INVALID_SIG_BAN_THRESHOLD
-                );
-                self.schedule_welcome_if_new(source).await;
-            }
+            log::warn!(
+                "rpc_store: invalid record for {} from {}",
+                hex::encode(key),
+                sender_addr.0
+            );
             return StoreStatus::InvalidRecord;
         }
 
@@ -770,16 +720,23 @@ impl KademliaProtocol {
         };
         let handler = Arc::clone(&self.signature_handler);
         let v = value.clone();
+        let expected_key = key;
         let ok = tokio::task::spawn_blocking(move || {
             handler
-                .handle_update_verification(&v, &old_value, &auth_signature)
+                .handle_key_binding_verification(&expected_key, &old_value)
                 .unwrap_or(false)
+                && handler
+                    .handle_key_binding_verification(&expected_key, &v)
+                    .unwrap_or(false)
+                && handler
+                    .handle_update_verification(&v, &old_value, &auth_signature)
+                    .unwrap_or(false)
         })
         .await
         .unwrap_or(false);
         if !ok {
             log::error!(
-                "rpc_update: unauthenticated update for {}",
+                "rpc_update: invalid or unauthorized update for {}",
                 hex::encode(key)
             );
             return false;
@@ -842,39 +799,6 @@ impl KademliaProtocol {
         true
     }
 
-    pub async fn rpc_delete(
-        self: &Arc<Self>,
-        sender_id: [u8; ID_LEN],
-        sender_addr: (String, u16),
-        key: [u8; ID_LEN],
-        auth_signature: Vec<u8>,
-        delete_msg: Vec<u8>,
-    ) -> bool {
-        let value = match self.storage.get(&key) {
-            Some(v) => v,
-            None => {
-                log::error!("rpc_delete: record {} not found", hex::encode(key));
-                return false;
-            }
-        };
-        let handler = Arc::clone(&self.signature_handler);
-        let ok = tokio::task::spawn_blocking(move || {
-            handler
-                .handle_signature_delete_operation(&value, &auth_signature, &delete_msg)
-                .unwrap_or(false)
-        })
-        .await
-        .unwrap_or(false);
-        if !ok {
-            log::error!("rpc_delete: invalid signature for {}", hex::encode(key));
-            return false;
-        }
-        let source = Node::new(sender_id, Some(sender_addr.0), Some(sender_addr.1));
-        self.schedule_welcome_if_new(source).await;
-        self.storage.delete(&key);
-        true
-    }
-
     pub async fn rpc_find_node(
         self: &Arc<Self>,
         sender_id: [u8; ID_LEN],
@@ -898,18 +822,24 @@ impl KademliaProtocol {
     ) -> FindValueResult {
         let source = Node::new(sender_id, Some(sender_addr.0.clone()), Some(sender_addr.1));
         self.schedule_welcome_if_new(source.clone()).await;
-        match self.storage.get(&key) {
-            Some(v) => FindValueResult::Value(v),
-            None => {
-                let target = Node::from_id(key);
-                let neighbors = self
-                    .router
-                    .read()
-                    .await
-                    .find_neighbors(&target, Some(&source));
-                FindValueResult::Nodes(neighbors)
+        if let Some(value) = self.storage.get(&key) {
+            if self.key_binding_is_valid(&key, &value) {
+                return FindValueResult::Value(value);
             }
+
+            log::warn!(
+                "rpc_find_value: refusing invalid stored record for {}",
+                hex::encode(key)
+            );
         }
+
+        let target = Node::from_id(key);
+        let neighbors = self
+            .router
+            .read()
+            .await
+            .find_neighbors(&target, Some(&source));
+        FindValueResult::Nodes(neighbors)
     }
 
     pub async fn rpc_leave(&self, sender_id: [u8; ID_LEN], sender_addr: (String, u16)) {
@@ -1047,42 +977,6 @@ impl KademliaProtocol {
         }
     }
 
-    pub async fn call_delete_rpc(
-        &self,
-        peer: &Node,
-        key: [u8; ID_LEN],
-        auth_signature: Vec<u8>,
-        delete_msg: Vec<u8>,
-    ) -> bool {
-        let addr = match peer.address() {
-            Some(a) => a,
-            None => return false,
-        };
-        let sock_addr: SocketAddr = match format!("{}:{}", addr.0, addr.1).parse() {
-            Ok(a) => a,
-            Err(_) => return false,
-        };
-        match self
-            .call(
-                sock_addr,
-                RpcMessage::Delete {
-                    sender_id: self.source_node.id,
-                    key,
-                    auth_signature,
-                    delete_msg,
-                },
-            )
-            .await
-        {
-            Some(RpcMessage::DeleteResult { ok }) => ok,
-            _ => {
-                log::warn!("no response from {}, removing from router", peer);
-                self.router.write().await.remove_contact(peer);
-                false
-            }
-        }
-    }
-
     pub async fn call_leave_rpc(&self, peer: &Node) {
         let addr = match peer.address() {
             Some(a) => a,
@@ -1106,6 +1000,9 @@ impl KademliaProtocol {
     /// PQ crypto on repeated calls with the same record bytes.
     async fn verify_for_key(&self, key: &[u8; ID_LEN], value: &[u8]) -> bool {
         let is_status = *key == digest(STATUS_LIST_KEY);
+        if !self.key_binding_is_valid(key, value) {
+            return false;
+        }
         let domain = if is_status {
             VerificationDomain::IssuerSigned
         } else {
@@ -1137,6 +1034,14 @@ impl KademliaProtocol {
             cache.insert_by_key(ck, result);
         }
         result
+    }
+
+    fn key_binding_is_valid(&self, key: &[u8; ID_LEN], value: &[u8]) -> bool {
+        *key == digest(STATUS_LIST_KEY)
+            || self
+                .signature_handler
+                .handle_key_binding_verification(key, value)
+                .unwrap_or(false)
     }
 
     /// Add `node` to the routing table and replicate keys that belong to it
@@ -1348,8 +1253,10 @@ mod tests {
     use crate::signature_cache::VerificationDomain;
 
     struct TestHandler {
+        key_binding_result: bool,
         self_signed_result: bool,
         issuer_signed_result: bool,
+        key_binding_calls: AtomicUsize,
         self_signed_calls: AtomicUsize,
         issuer_signed_calls: AtomicUsize,
     }
@@ -1357,15 +1264,31 @@ mod tests {
     impl TestHandler {
         fn new(self_signed_result: bool, issuer_signed_result: bool) -> Self {
             Self {
+                key_binding_result: true,
                 self_signed_result,
                 issuer_signed_result,
+                key_binding_calls: AtomicUsize::new(0),
                 self_signed_calls: AtomicUsize::new(0),
                 issuer_signed_calls: AtomicUsize::new(0),
             }
         }
+
+        fn with_key_binding_result(mut self, result: bool) -> Self {
+            self.key_binding_result = result;
+            self
+        }
     }
 
     impl SignatureVerifierHandler for TestHandler {
+        fn handle_key_binding_verification(
+            &self,
+            _key: &[u8; ID_LEN],
+            _value: &[u8],
+        ) -> Result<bool, AuthHandlerError> {
+            self.key_binding_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(self.key_binding_result)
+        }
+
         fn handle_signature_verification(&self, _value: &[u8]) -> Result<bool, AuthHandlerError> {
             self.self_signed_calls.fetch_add(1, Ordering::Relaxed);
             Ok(self.self_signed_result)
@@ -1376,15 +1299,6 @@ mod tests {
             _value: &[u8],
             _old_value: &[u8],
             _auth_signature: &[u8],
-        ) -> Result<bool, AuthHandlerError> {
-            Ok(true)
-        }
-
-        fn handle_signature_delete_operation(
-            &self,
-            _value: &[u8],
-            _auth_signature: &[u8],
-            _delete_msg: &[u8],
         ) -> Result<bool, AuthHandlerError> {
             Ok(true)
         }
@@ -1521,6 +1435,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invalid_store_does_not_remove_spoofed_sender_from_routing_table() {
+        let protocol = test_protocol(Arc::new(TestHandler::new(false, false)), false).await;
+        let sender_id = [14; ID_LEN];
+        let registered = Node::new(sender_id, Some("127.0.0.1".into()), Some(9013));
+        protocol
+            .router
+            .write()
+            .await
+            .add_contact(registered.clone());
+
+        for _ in 0..3 {
+            assert_eq!(
+                protocol
+                    .rpc_store(
+                        sender_id,
+                        ("127.0.0.1".into(), 9999),
+                        [15; ID_LEN],
+                        b"invalid".to_vec(),
+                    )
+                    .await,
+                StoreStatus::InvalidRecord
+            );
+        }
+
+        assert_eq!(
+            protocol.router.read().await.get_contact(&sender_id),
+            Some(registered),
+            "unauthenticated sender IDs must not mutate routing state"
+        );
+    }
+
+    #[tokio::test]
     async fn rpc_update_preserves_old_value_when_capacity_is_exceeded() {
         let key = [10; ID_LEN];
         let old_value = b"old".to_vec();
@@ -1543,6 +1489,29 @@ mod tests {
                     ("127.0.0.1".to_string(), 9012),
                     key,
                     b"larger".to_vec(),
+                    vec![],
+                )
+                .await
+        );
+        assert_eq!(protocol.storage.get(&key), Some(old_value));
+    }
+
+    #[tokio::test]
+    async fn rpc_update_rejects_a_record_bound_to_a_different_key() {
+        let key = [16; ID_LEN];
+        let old_value = b"old".to_vec();
+        let storage = Arc::new(ForgetfulStorage::new(-1));
+        storage.set(key.to_vec(), old_value.clone());
+        let handler = Arc::new(TestHandler::new(true, true).with_key_binding_result(false));
+        let protocol = test_protocol_with_storage(handler, false, storage).await;
+
+        assert!(
+            !protocol
+                .rpc_update(
+                    [17; ID_LEN],
+                    ("127.0.0.1".into(), 9014),
+                    key,
+                    b"valid but mismatched".to_vec(),
                     vec![],
                 )
                 .await
@@ -1581,6 +1550,36 @@ mod tests {
         assert!(!protocol.verify_for_key(&key, value).await);
         assert!(!protocol.verify_for_key(&key, value).await);
         assert_eq!(handler.self_signed_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn signature_cache_cannot_bypass_key_binding() {
+        let handler = Arc::new(TestHandler::new(true, true).with_key_binding_result(false));
+        let protocol = test_protocol(handler.clone(), true).await;
+        let key = [18; ID_LEN];
+        let value = b"valid record for another key";
+
+        assert!(!protocol.verify_for_key(&key, value).await);
+        assert!(!protocol.verify_for_key(&key, value).await);
+        assert_eq!(handler.key_binding_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(handler.self_signed_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn rpc_find_value_does_not_serve_a_record_bound_to_a_different_key() {
+        let key = [19; ID_LEN];
+        let storage = Arc::new(ForgetfulStorage::new(-1));
+        storage.set(key.to_vec(), b"record for another DID".to_vec());
+        let handler = Arc::new(TestHandler::new(true, true).with_key_binding_result(false));
+        let protocol = test_protocol_with_storage(handler.clone(), false, storage).await;
+
+        let response = protocol
+            .rpc_find_value([20; ID_LEN], ("127.0.0.1".into(), 9015), key)
+            .await;
+
+        assert!(matches!(response, FindValueResult::Nodes(_)));
+        assert_eq!(handler.key_binding_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(handler.self_signed_calls.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]

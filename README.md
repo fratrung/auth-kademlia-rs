@@ -61,6 +61,9 @@ This structure allows any peer to:
 
 - Verify the **authenticity** of stored data using the public key embedded in the DID Document
 - Verify the **integrity** of the record against its signature
+- Verify that the top-level `did:iiot:<uuid>` identifier inside the signed JSON
+  payload maps to the requested DHT key (`SHA-1(uuid)`), preventing a valid
+  record from occupying another identity's key
 - Operate without trusting any single node or coordinator
 
 Signature validation is handled automatically by the integrated verifier at insertion and retrieval time.
@@ -130,6 +133,8 @@ winner has been selected; a split with no strict majority returns no value.
 - **TTL:** records written to the default storage expire lazily after 14 days.
   Applications that need continued availability must refresh them through a
   legitimate publish or update before expiry.
+- **Lifecycle:** DID records have no explicit delete operation. Expiry through
+  the configured TTL is the only removal mechanism exposed by the DHT API.
 
 The remote-read quorum is currently derived from `alpha`; it is not an
 independent configuration parameter. With the default `alpha = 3`, a GET needs
@@ -184,9 +189,10 @@ let server = Server::new(handler, 20, 3, None, Some(storage), false);
 
 The Python constructor accepts `max_storage_bytes` with the same default.
 
-This release changes the bincode representation of `StoreResult`. Nodes in a
-cluster must therefore be upgraded together. The signed record format and the
-Kademlia routing algorithm are unchanged.
+This release changes the bincode representation of `StoreResult` and removes
+the application-level `Delete` RPC variants. Nodes in a cluster must therefore
+be upgraded together. The signed record format and the Kademlia routing
+algorithm are unchanged.
 
 -----
 
@@ -196,7 +202,7 @@ Kademlia routing algorithm are unchanged.
 |---|---|
 | **Concurrent storage** | `DashMap` keeps per-key operations parallel; an atomic byte reservation enforces the per-node budget without a global async lock. |
 | **Lazy TTL expiry** | Records expire after 14 days by default. Expired entries are filtered at read time instead of an O(n) scan on every write. |
-| **Signature cache** | `SignatureCache` (moka, SHA-256 keyed, TTL 1 h, 4096 entries). Repeated reads of the same record pay full Dilithium cost only once; subsequent reads are O(1). Any byte-level change forces full re-verification. |
+| **Signature cache** | `SignatureCache` (moka, SHA-256 keyed, TTL 1 h, 4096 entries). Repeated reads of the same record pay full Dilithium cost only once; subsequent reads are O(1). DID-to-DHT-key binding is checked before every cache lookup, and any byte-level change forces full signature re-verification. |
 | **Worker pool** | UDP receive loop dispatches via round-robin into `available_parallelism()` workers, each with a dedicated `mpsc::channel(256)`. `try_send` is attempted on each worker in turn; if all are full the loop awaits the base worker, providing backpressure without drops. |
 | **Fire-and-forget routing** | Routing table updates (`welcome_if_new`) are spawned as background tasks in all RPC handlers. RPC responses are sent immediately without waiting for routing convergence. |
 | **Replication filter** | On node join, only nodes XOR-closer to a key than the new node replicate it (Kademlia §2.5). Prevents redundant store RPCs from far-away nodes. |
@@ -270,7 +276,7 @@ Kernel  ──epoll──►  Tokio wakes {recv loop task}
                         │   O(µs), no blocking work
                         │   task completes, returns to rx.recv()
                         │
-                        └─ store / update / delete
+                        └─ store / update
                             verify_for_key()
                               spawn_blocking(Dilithium)
                               .await  ← task suspended, worker thread FREE

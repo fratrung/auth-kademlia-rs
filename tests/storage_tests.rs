@@ -6,7 +6,7 @@
 //! republication and caching semantics.
 //!
 //! These tests exercise the storage layer in isolation (no network) to verify
-//! correctness of CRUD operations, TTL expiry, iteration, and behaviour with
+//! correctness of storage operations, TTL expiry, iteration, and behaviour with
 //! realistic large binary payloads (signed DID records).
 
 use std::thread::sleep;
@@ -15,7 +15,7 @@ use std::time::Duration;
 use auth_kademlia_rs::storage::{ForgetfulStorage, IStorage, DEFAULT_TTL};
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Basic CRUD
+// Basic storage operations
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// A stored value is immediately retrievable.
@@ -59,22 +59,6 @@ fn test_overwrite_replaces_value() {
     s.set(b"k".to_vec(), b"first".to_vec());
     s.set(b"k".to_vec(), b"second".to_vec());
     assert_eq!(s.get(b"k"), Some(b"second".to_vec()));
-}
-
-/// Deleted keys are no longer retrievable.
-#[test]
-fn test_delete_removes_entry() {
-    let s = ForgetfulStorage::new(-1);
-    s.set(b"k".to_vec(), b"v".to_vec());
-    s.delete(b"k");
-    assert_eq!(s.get(b"k"), None);
-}
-
-/// Deleting a non-existent key is a no-op (does not panic).
-#[test]
-fn test_delete_nonexistent_key_is_noop() {
-    let s = ForgetfulStorage::new(-1);
-    s.delete(b"ghost"); // must not panic
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

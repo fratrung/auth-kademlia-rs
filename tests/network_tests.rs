@@ -10,18 +10,18 @@
 //!   2. Cross-node publish & retrieve — Node A stores, Node B retrieves.
 //!   3. Idempotent retry and conflicting-value rejection.
 //!   4. Key-rotation update — a DID owner rotates their key (update flow).
-//!   5. Authenticated delete — a DID owner deletes their record.
-//!   6. Invalid-signature rejection — malformed records are refused on `set`.
-//!   7. Bootstrap with no reachable peers — returns empty list gracefully.
+//!   5. Invalid-signature rejection — malformed records are refused on `set`.
+//!   6. Bootstrap with no reachable peers — returns empty list gracefully.
+//!   7. DID identifier binding — a record cannot occupy another DID's key.
 //!
 //! Port allocation (each test uses a dedicated range to allow parallel execution):
 //!   - test 1: 15700–15701
 //!   - test 2: 15710–15711
 //!   - test 3: 15720–15721
 //!   - test 4: 15730–15732
-//!   - test 5: 15740–15741
-//!   - test 6: 15750
-//!   - test 7: 15760
+//!   - test 5: 15750
+//!   - test 6: 15760
+//!   - test 7: 15897
 //!   - storage-capacity report: 15895-15896
 
 mod common;
@@ -32,6 +32,8 @@ use pqcrypto_traits::sign::DetachedSignature;
 use tokio::time::{sleep, Duration};
 
 use auth_kademlia_rs::network::SetOutcome;
+use auth_kademlia_rs::storage::IStorage;
+use auth_kademlia_rs::utils::digest;
 
 use common::{
     build_did_document, build_signed_record, generate_did_iiot, start_node,
@@ -219,56 +221,6 @@ async fn test_update_did_record_key_rotation() {
     node3.stop().await;
 }
 
-/// A DID owner deletes their record by signing a delete message with their key.
-/// After deletion, `get` returns None.
-#[tokio::test]
-async fn test_delete_did_record() {
-    let mut node1 = start_node(15740).await;
-    let node2 = start_node(15741).await;
-
-    node2
-        .bootstrap(vec![("127.0.0.1".to_string(), 15740)])
-        .await;
-    sleep(Duration::from_millis(500)).await;
-
-    // Store a record.
-    let (pk, sk) = dilithium2::keypair();
-    let (kpk, _) = kyber512::keypair();
-    let did = generate_did_iiot();
-    let key = did.split(':').next_back().unwrap().to_string();
-    let doc = build_did_document(&did, &pk, &kpk);
-    let record = build_signed_record(&doc, &sk, "Dilithium-2");
-
-    let stored = node1.set(&key, record.clone()).await;
-    assert!(
-        stored.unwrap_or(false),
-        "store must succeed before delete test"
-    );
-    sleep(Duration::from_millis(500)).await;
-
-    // Build and sign the delete message.
-    let delete_msg = b"DELETE THIS DID RECORD";
-    let del_sig_ds = dilithium2::detached_sign(delete_msg, &sk);
-    let del_sig = del_sig_ds.as_bytes().to_vec();
-
-    // Node2 requests the delete.
-    let deleted = node2.delete(&key, del_sig, delete_msg.to_vec()).await;
-    assert!(
-        deleted.unwrap_or(false),
-        "authenticated delete must succeed"
-    );
-
-    // After deletion, get should return None.
-    sleep(Duration::from_millis(500)).await;
-    let after = node1.get(&key).await;
-    assert!(
-        after.is_none(),
-        "get after authenticated delete must return None"
-    );
-
-    node1.stop().await;
-}
-
 /// A record whose embedded signature does not match the public key in the
 /// DID Document must be rejected by `set` (returns None).
 #[tokio::test]
@@ -291,6 +243,30 @@ async fn test_invalid_signature_record_rejected_on_set() {
         result.is_none(),
         "set with mismatched signature must return None"
     );
+
+    node.stop().await;
+}
+
+/// A valid self-signed record cannot be stored under a key derived from a
+/// different DID UUID.
+#[tokio::test]
+async fn test_valid_record_rejected_under_another_did_key() {
+    let mut node = start_node(15897).await;
+    let (pk, sk) = dilithium2::keypair();
+    let (kpk, _) = kyber512::keypair();
+    let record_did = generate_did_iiot();
+    let requested_did = generate_did_iiot();
+    let requested_key = requested_did.split(':').next_back().unwrap().to_string();
+    let doc = build_did_document(&record_did, &pk, &kpk);
+    let record = build_signed_record(&doc, &sk, "Dilithium-2");
+
+    assert!(
+        node.set(&requested_key, record.clone()).await.is_none(),
+        "set must reject a valid DID Document submitted under another UUID"
+    );
+
+    node.storage.set(digest(&requested_key).to_vec(), record);
+    assert!(node.get(&requested_key).await.is_none());
 
     node.stop().await;
 }
@@ -440,64 +416,6 @@ async fn test_update_rejected_when_auth_signature_uses_wrong_key() {
 
     node1.stop().await;
     node3.stop().await;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 10. Delete rejected when signature uses a wrong key (ports 15785–15786, 15884)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// `delete` must return None when the auth_signature is not produced by the
-/// record owner.  The record must remain in the DHT after the failed attempt.
-#[tokio::test]
-async fn test_delete_rejected_when_signature_uses_wrong_key() {
-    let mut node1 = start_node(15785).await;
-    let node2 = start_node(15786).await;
-    let node3 = start_node(15884).await;
-
-    node2
-        .bootstrap(vec![("127.0.0.1".to_string(), 15785)])
-        .await;
-    node3
-        .bootstrap(vec![("127.0.0.1".to_string(), 15785)])
-        .await;
-    sleep(Duration::from_millis(200)).await;
-
-    // Store a valid record on node1.
-    let (pk, sk) = dilithium2::keypair();
-    let (kpk, _) = kyber512::keypair();
-    let did = generate_did_iiot();
-    let key = did.split(':').next_back().unwrap().to_string();
-    let doc = build_did_document(&did, &pk, &kpk);
-    let record = build_signed_record(&doc, &sk, "Dilithium-2");
-
-    let stored = node1.set(&key, record.clone()).await;
-    assert!(stored.unwrap_or(false), "store must succeed");
-    sleep(Duration::from_millis(200)).await;
-
-    // Attempt delete with an UNRELATED key — not the record owner.
-    let (_, unrelated_sk) = dilithium2::keypair();
-    let delete_msg = b"DELETE THIS DID RECORD";
-    let bad_sig = dilithium2::detached_sign(delete_msg, &unrelated_sk)
-        .as_bytes()
-        .to_vec();
-
-    let result = node2.delete(&key, bad_sig, delete_msg.to_vec()).await;
-    assert!(result.is_none(), "delete with wrong key must return None");
-
-    // Record must still be retrievable after the rejected delete.
-    sleep(Duration::from_millis(200)).await;
-    let still_there = node1.get(&key).await;
-    assert!(
-        still_there.is_some(),
-        "record must survive a rejected delete"
-    );
-    assert_eq!(
-        still_there.unwrap(),
-        record,
-        "record content must be unchanged"
-    );
-
-    node1.stop().await;
 }
 
 #[tokio::test]

@@ -12,9 +12,11 @@ use std::path::PathBuf;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::Value;
 use thiserror::Error;
+use uuid::Uuid;
 
 use crate::crypto::factory::SignatureVerifierFactory;
 use crate::crypto::signature_verifier::{resolve_alg_and_length, VerifierError};
+use crate::utils::{digest, ID_LEN};
 
 #[derive(Debug, Error)]
 pub enum AuthHandlerError {
@@ -32,6 +34,8 @@ pub enum AuthHandlerError {
     Utf8(#[from] std::str::Utf8Error),
     #[error("invalid record format")]
     InvalidFormat,
+    #[error("invalid did:iiot identifier")]
+    InvalidDid,
 }
 
 /// Abstract handler for signature operations performed by the DHT.
@@ -39,6 +43,14 @@ pub enum AuthHandlerError {
 /// Implementing this trait allows callers to plug in different verification
 /// strategies (e.g. Dilithium, Ed25519) without changing the protocol layer.
 pub trait SignatureVerifierHandler: Send + Sync {
+    /// Verify that the DID Document carried by the signed record identifies
+    /// the requested DHT key.
+    fn handle_key_binding_verification(
+        &self,
+        key: &[u8; ID_LEN],
+        value: &[u8],
+    ) -> Result<bool, AuthHandlerError>;
+
     /// Verify that `value` is correctly self-signed (store / get path).
     fn handle_signature_verification(&self, value: &[u8]) -> Result<bool, AuthHandlerError>;
 
@@ -52,17 +64,6 @@ pub trait SignatureVerifierHandler: Send + Sync {
         value: &[u8],
         old_value: &[u8],
         auth_signature: &[u8],
-    ) -> Result<bool, AuthHandlerError>;
-
-    /// Verify a delete operation.
-    ///
-    /// `auth_signature` must be a signature of `delete_msg` produced with the
-    /// private key corresponding to the public key in `value`'s DID Document.
-    fn handle_signature_delete_operation(
-        &self,
-        value: &[u8],
-        auth_signature: &[u8],
-        delete_msg: &[u8],
     ) -> Result<bool, AuthHandlerError>;
 
     /// Verify that `value` is signed by the issuer node's public key.
@@ -126,6 +127,23 @@ fn public_key_from_did_doc(data: &[u8]) -> Result<Vec<u8>, AuthHandlerError> {
     decode_b64url(x)
 }
 
+/// Verify that `value` contains `id = "did:iiot:<uuid>"` and that the digest
+/// of the UUID is exactly the requested DHT key.
+fn did_document_matches_key(value: &[u8], key: &[u8; ID_LEN]) -> Result<bool, AuthHandlerError> {
+    let alg = get_alg_string(value)?;
+    let (_, sig_len) = resolve_alg_and_length(&alg)?;
+    let (_, data) = extract_sig_and_data(value, sig_len)?;
+    let doc: Value = serde_json::from_slice(data)?;
+    let did = doc["id"]
+        .as_str()
+        .ok_or_else(|| AuthHandlerError::MissingField("id".into()))?;
+    let uuid = did
+        .strip_prefix("did:iiot:")
+        .ok_or(AuthHandlerError::InvalidDid)?;
+    Uuid::parse_str(uuid).map_err(|_| AuthHandlerError::InvalidDid)?;
+    Ok(digest(uuid) == *key)
+}
+
 /// Concrete handler that verifies Dilithium-signed DID Document records.
 pub struct DIDSignatureVerifierHandler {
     /// Path to the issuer node's raw public key file.
@@ -185,6 +203,14 @@ impl DIDSignatureVerifierHandler {
 }
 
 impl SignatureVerifierHandler for DIDSignatureVerifierHandler {
+    fn handle_key_binding_verification(
+        &self,
+        key: &[u8; ID_LEN],
+        value: &[u8],
+    ) -> Result<bool, AuthHandlerError> {
+        did_document_matches_key(value, key)
+    }
+
     fn handle_signature_verification(&self, value: &[u8]) -> Result<bool, AuthHandlerError> {
         self.verify_self_signed(value)
     }
@@ -196,20 +222,6 @@ impl SignatureVerifierHandler for DIDSignatureVerifierHandler {
         auth_signature: &[u8],
     ) -> Result<bool, AuthHandlerError> {
         self.verify_key_rotation(value, old_value, auth_signature)
-    }
-
-    fn handle_signature_delete_operation(
-        &self,
-        value: &[u8],
-        auth_signature: &[u8],
-        delete_msg: &[u8],
-    ) -> Result<bool, AuthHandlerError> {
-        let alg = get_alg_string(value)?;
-        let (_, sig_len) = resolve_alg_and_length(&alg)?;
-        let (_, data) = extract_sig_and_data(value, sig_len)?;
-        let pub_key = public_key_from_did_doc(data)?;
-        let verifier = SignatureVerifierFactory::get_verifier(&alg)?;
-        Ok(verifier.verify(&pub_key, auth_signature, delete_msg)?)
     }
 
     fn handle_issuer_node_signature_verification(

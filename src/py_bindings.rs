@@ -126,7 +126,7 @@ fn km_err(e: KeyManagerError) -> PyErr {
 /// Internally wraps [`Server`] behind an `Arc<RwLock<…>>`:
 /// - Methods that mutate the server state (`listen`, `stop`,
 ///   `save_state_regularly`) acquire an exclusive write lock.
-/// - All other methods (`get`, `set`, `update`, `delete`, `bootstrap`, …)
+/// - All other methods (`get`, `set`, `update`, `bootstrap`, …)
 ///   acquire a shared read lock, so they can run concurrently.
 ///
 /// Every method returns a Python coroutine — use `await` in async Python code.
@@ -262,8 +262,9 @@ impl PyServer {
 
     /// Store ``value`` under ``key`` in the DHT.
     ///
-    /// The record is rejected if the key already exists or if the signature
-    /// embedded in ``value`` does not verify against its own DID Document.
+    /// The record is rejected if the key already exists, if the signature
+    /// embedded in ``value`` does not verify against its own DID Document, or
+    /// if the Document's ``did:iiot:<uuid>`` does not map to ``key``.
     ///
     /// ``value`` must follow the AuthKademlia record format:
     ///
@@ -318,6 +319,7 @@ impl PyServer {
     /// produced with the **old** DID Document's private key.  This proves
     /// that the owner of the current record authorises the rotation.
     /// ``value`` must also carry a valid self-signature under the **new** key.
+    /// Its top-level DID UUID must continue to map to ``key``.
     ///
     /// For the special status-list key, pass ``auth_signature=None``; the
     /// issuer signature embedded in ``value`` is used instead.
@@ -337,30 +339,6 @@ impl PyServer {
             // delegates all storage mutations to the internal RwLock<ForgetfulStorage>.
             let s = inner.read().await;
             Ok(s.update(&key, value, auth_signature).await)
-        })
-    }
-
-    /// Delete an existing record.
-    ///
-    /// ``auth_signature`` must be a signature of ``delete_msg`` produced with
-    /// the private key corresponding to the stored DID Document's public key.
-    ///
-    /// Returns:
-    ///     bool | None: ``True`` on success, ``None`` if the key was not found
-    ///     or the signature was invalid.
-    fn delete<'py>(
-        &self,
-        py: Python<'py>,
-        key: String,
-        auth_signature: Vec<u8>,
-        delete_msg: Vec<u8>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            // Read lock: same rationale as set — Server::delete takes &self and
-            // delegates all storage mutations to the internal RwLock<ForgetfulStorage>.
-            let s = inner.read().await;
-            Ok(s.delete(&key, auth_signature, delete_msg).await)
         })
     }
 

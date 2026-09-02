@@ -42,9 +42,6 @@ pub trait IStorage: Send + Sync {
         self.get_default(key, None)
     }
 
-    /// Remove a key.
-    fn delete(&self, key: &[u8]);
-
     /// Return all `(key, value)` pairs whose insertion time is older than
     /// `seconds_old` seconds.
     fn iter_older_than(&self, seconds_old: u64) -> Vec<(Vec<u8>, Vec<u8>)>;
@@ -226,12 +223,6 @@ impl IStorage for ForgetfulStorage {
         }
     }
 
-    fn delete(&self, key: &[u8]) {
-        if let Some((key, (value, _))) = self.data.remove(key) {
-            self.release_bytes(key.len() + value.len());
-        }
-    }
-
     fn iter_older_than(&self, seconds_old: u64) -> Vec<(Vec<u8>, Vec<u8>)> {
         let threshold = Duration::from_secs(seconds_old);
         self.data
@@ -260,14 +251,6 @@ mod tests {
         let s = ForgetfulStorage::new(-1);
         s.set(b"key".to_vec(), b"value".to_vec());
         assert_eq!(s.get(b"key"), Some(b"value".to_vec()));
-    }
-
-    #[test]
-    fn delete() {
-        let s = ForgetfulStorage::new(-1);
-        s.set(b"k".to_vec(), b"v".to_vec());
-        s.delete(b"k");
-        assert_eq!(s.get(b"k"), None);
     }
 
     #[test]
@@ -395,21 +378,6 @@ mod tests {
         );
         assert_eq!(storage.get(b"k"), Some(b"value".to_vec()));
         assert_eq!(storage.current_storage_bytes(), 6);
-    }
-
-    #[test]
-    fn delete_releases_capacity() {
-        let storage = ForgetfulStorage::with_max_storage_bytes(-1, 4);
-        assert_eq!(
-            storage.set(b"k".to_vec(), b"123".to_vec()),
-            StorageWriteStatus::Stored
-        );
-        storage.delete(b"k");
-        assert_eq!(storage.current_storage_bytes(), 0);
-        assert_eq!(
-            storage.set(b"z".to_vec(), b"456".to_vec()),
-            StorageWriteStatus::Stored
-        );
     }
 
     #[test]

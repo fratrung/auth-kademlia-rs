@@ -469,7 +469,7 @@ impl Server {
     /// previously degraded publication. A different value remains a conflict.
     pub async fn set_detailed(&self, key: &str, value: Vec<u8>) -> SetOutcome {
         if !self.verify_value(key, &value).await {
-            log::error!("set({}): invalid signature", key);
+            log::error!("set({}): invalid record or DID-key binding", key);
             return SetOutcome::Rejected {
                 reason: SetRejection::InvalidRecord,
                 report: SetReport::default(),
@@ -530,6 +530,7 @@ impl Server {
         value: Vec<u8>,
         auth_signature: Option<Vec<u8>>,
     ) -> Option<bool> {
+        let dkey = digest(key);
         let old_value = self.get(key).await?;
 
         let handler = Arc::clone(&self.signature_handler);
@@ -543,49 +544,26 @@ impl Server {
                     .unwrap_or(false)
             } else {
                 handler
-                    .handle_update_verification(&v, &old_value, auth.as_deref().unwrap_or_default())
+                    .handle_key_binding_verification(&dkey, &v)
                     .unwrap_or(false)
+                    && handler
+                        .handle_update_verification(
+                            &v,
+                            &old_value,
+                            auth.as_deref().unwrap_or_default(),
+                        )
+                        .unwrap_or(false)
             }
         })
         .await
         .unwrap_or(false);
 
         if !ok {
-            log::error!("update({}): unauthenticated", key);
+            log::error!("update({}): invalid record or authorization", key);
             return None;
         }
         log::info!("update({}): authenticated, publishing", key);
-        let dkey = digest(key);
         Some(self.update_digest(key, dkey, value, auth_signature).await)
-    }
-
-    /// Delete an existing record. `auth_signature` must be a signature of
-    /// `delete_msg` produced with the private key of the stored document.
-    pub async fn delete(
-        &self,
-        key: &str,
-        auth_signature: Vec<u8>,
-        delete_msg: Vec<u8>,
-    ) -> Option<bool> {
-        let value = self.get(key).await?;
-
-        let handler = Arc::clone(&self.signature_handler);
-        let auth_c = auth_signature.clone();
-        let msg_c = delete_msg.clone();
-        let ok = tokio::task::spawn_blocking(move || {
-            handler
-                .handle_signature_delete_operation(&value, &auth_c, &msg_c)
-                .unwrap_or(false)
-        })
-        .await
-        .unwrap_or(false);
-        if !ok {
-            log::error!("delete({}): invalid signature", key);
-            return None;
-        }
-        log::info!("delete({}): verified, removing from network", key);
-        let dkey = digest(key);
-        Some(self.delete_digest(dkey, auth_signature, delete_msg).await)
     }
 
     async fn set_digest_detailed(
@@ -733,53 +711,16 @@ impl Server {
         quorum_met
     }
 
-    async fn delete_digest(
-        &self,
-        dkey: [u8; ID_LEN],
-        auth_signature: Vec<u8>,
-        delete_msg: Vec<u8>,
-    ) -> bool {
-        let proto = match &self.protocol {
-            Some(p) => p,
-            None => return false,
-        };
-
-        self.storage.delete(&dkey);
-
-        let node = Node::from_id(dkey);
-        let nearest = proto.router.read().await.find_neighbors(&node, None);
-        if nearest.is_empty() {
-            log::warn!(
-                "delete_digest {}: no neighbours, local delete only",
-                hex::encode(dkey)
-            );
-            return true;
-        }
-
-        let nodes = NodeSpiderCrawl::new(Arc::clone(proto), node, nearest, self.ksize, self.alpha)
-            .find()
-            .await;
-
-        log::info!(
-            "delete_digest {}: propagating to {} nodes",
-            hex::encode(dkey),
-            nodes.len()
-        );
-
-        let mut futs = vec![];
-        for n in &nodes {
-            let p = Arc::clone(proto);
-            let n = n.clone();
-            let sig = auth_signature.clone();
-            let msg = delete_msg.clone();
-            futs.push(async move { p.call_delete_rpc(&n, dkey, sig, msg).await });
-        }
-        futures::future::join_all(futs).await;
-        true
-    }
-
     async fn verify_value(&self, key: &str, value: &[u8]) -> bool {
         let is_status = key == STATUS_LIST_KEY;
+        if !is_status
+            && !self
+                .signature_handler
+                .handle_key_binding_verification(&digest(key), value)
+                .unwrap_or(false)
+        {
+            return false;
+        }
         let domain = if is_status {
             VerificationDomain::IssuerSigned
         } else {

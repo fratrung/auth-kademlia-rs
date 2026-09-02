@@ -31,6 +31,7 @@ use auth_kademlia_rs::crypto::factory::{SignatureVerifierFactory, SignerFactory}
 use auth_kademlia_rs::crypto::signature_verifier::{
     dilithium_level_from_pubkey_len, resolve_alg_and_length,
 };
+use auth_kademlia_rs::utils::digest;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -404,6 +405,54 @@ fn test_did_handler_accepts_valid_self_signed_record() {
     );
 }
 
+#[test]
+fn test_did_handler_accepts_record_bound_to_requested_key() {
+    let (pk, sk) = dilithium2::keypair();
+    let uuid = Uuid::new_v4().to_string();
+    let doc = build_did_doc_d2(&format!("did:iiot:{uuid}"), &pk);
+    let record = build_record_d2(&doc, &sk);
+    let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
+
+    assert!(
+        handler
+            .handle_key_binding_verification(&digest(&uuid), &record)
+            .unwrap(),
+        "the DID UUID digest must match the requested DHT key"
+    );
+}
+
+#[test]
+fn test_did_handler_rejects_record_bound_to_another_key() {
+    let (pk, sk) = dilithium2::keypair();
+    let record_uuid = Uuid::new_v4().to_string();
+    let requested_uuid = Uuid::new_v4().to_string();
+    let doc = build_did_doc_d2(&format!("did:iiot:{record_uuid}"), &pk);
+    let record = build_record_d2(&doc, &sk);
+    let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
+
+    assert!(
+        !handler
+            .handle_key_binding_verification(&digest(&requested_uuid), &record)
+            .unwrap(),
+        "a valid record must not be publishable under another DID UUID"
+    );
+}
+
+#[test]
+fn test_did_handler_rejects_non_uuid_did_identifier() {
+    let (pk, sk) = dilithium2::keypair();
+    let doc = build_did_doc_d2("did:iiot:not-a-uuid", &pk);
+    let record = build_record_d2(&doc, &sk);
+    let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
+
+    assert!(
+        handler
+            .handle_key_binding_verification(&digest("not-a-uuid"), &record)
+            .is_err(),
+        "did:iiot identifiers must contain a UUID"
+    );
+}
+
 /// A record whose signature was produced with a DIFFERENT key than the one
 /// embedded in the DID Document must be rejected.
 #[test]
@@ -542,52 +591,5 @@ fn test_did_handler_rejects_invalid_auth_signature_on_update() {
             .handle_update_verification(&new_record, &old_record, &bad_sig_bytes)
             .unwrap(),
         "update with wrong auth signature must be rejected"
-    );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Delete verification
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Delete is authorised when auth_signature = Sign(delete_msg, secret_key).
-#[test]
-fn test_did_handler_accepts_valid_delete_signature() {
-    let (pk, sk) = dilithium2::keypair();
-    let did = format!("did:iiot:{}", Uuid::new_v4());
-    let doc = build_did_doc_d2(&did, &pk);
-    let record = build_record_d2(&doc, &sk);
-
-    let delete_msg = b"DELETE THIS RECORD";
-    let del_sig = dilithium2::detached_sign(delete_msg, &sk);
-    let del_sig_bytes = del_sig.as_bytes().to_vec();
-
-    let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
-    assert!(
-        handler
-            .handle_signature_delete_operation(&record, &del_sig_bytes, delete_msg)
-            .unwrap(),
-        "delete with valid signature must be accepted"
-    );
-}
-
-/// Delete is rejected when the delete_msg signature was produced by a different key.
-#[test]
-fn test_did_handler_rejects_delete_with_wrong_key() {
-    let (pk, sk) = dilithium2::keypair();
-    let (_, unrelated_sk) = dilithium2::keypair();
-    let did = format!("did:iiot:{}", Uuid::new_v4());
-    let doc = build_did_doc_d2(&did, &pk);
-    let record = build_record_d2(&doc, &sk); // signed with correct key
-
-    let delete_msg = b"DELETE THIS RECORD";
-    // Sign the delete message with an UNRELATED key — should fail.
-    let bad_sig = dilithium2::detached_sign(delete_msg, &unrelated_sk);
-
-    let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
-    assert!(
-        !handler
-            .handle_signature_delete_operation(&record, bad_sig.as_bytes(), delete_msg)
-            .unwrap(),
-        "delete with wrong key must be rejected"
     );
 }
