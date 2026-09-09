@@ -26,6 +26,35 @@ fn make_node_with_addr(label: &str, ip: &str, port: u16) -> Node {
     Node::new(digest(label), Some(ip.to_string()), Some(port))
 }
 
+fn make_node_with_prefix(prefix: u8) -> Node {
+    let mut id = [0u8; 20];
+    id[0] = prefix;
+    Node::from_id(id)
+}
+
+fn exhaustive_primary_neighbors(
+    table: &RoutingTable,
+    target: &Node,
+    exclude: Option<&Node>,
+    ksize: usize,
+) -> Vec<Node> {
+    let mut nodes: Vec<Node> = table
+        .buckets()
+        .iter()
+        .flat_map(|bucket| bucket.nodes().iter())
+        .filter(|node| {
+            node.id != target.id
+                && exclude
+                    .map(|excluded| node.id != excluded.id)
+                    .unwrap_or(true)
+        })
+        .cloned()
+        .collect();
+    nodes.sort_unstable_by_key(|node| node.distance_to(target));
+    nodes.truncate(ksize);
+    nodes
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // RoutingTable — basic contact management
 // ─────────────────────────────────────────────────────────────────────────────
@@ -98,6 +127,50 @@ fn test_find_neighbors_sorted_by_xor_distance() {
         distances, sorted,
         "results must be in ascending XOR-distance order"
     );
+}
+
+/// Regression for R03: candidate truncation must not happen before the bucket
+/// adjacent to the target has been considered.
+#[test]
+fn test_find_neighbors_does_not_skip_a_closer_left_bucket() {
+    let mut table = RoutingTable::new(make_node_with_prefix(0x80), 2);
+    for prefix in [0x10, 0x20, 0x90, 0xa0, 0xc0] {
+        table.add_contact(make_node_with_prefix(prefix));
+    }
+
+    let found = table.find_neighbors(&make_node_with_prefix(0xe0), None);
+    let prefixes: Vec<u8> = found.iter().map(|node| node.id[0]).collect();
+    assert_eq!(prefixes, vec![0xc0, 0xa0]);
+}
+
+/// Across several split routing tables, compare the public selector with an
+/// exhaustive oracle over exactly the primary contacts known to the table.
+#[test]
+fn test_find_neighbors_matches_exhaustive_xor_oracle() {
+    for ksize in [2, 3, 5] {
+        let mut table = RoutingTable::new(make_node(&format!("oracle-local-{ksize}")), ksize);
+        for index in 0..96 {
+            table.add_contact(make_node(&format!("oracle-contact-{ksize}-{index}")));
+        }
+        assert!(table.buckets().len() > 1);
+
+        let primary: Vec<Node> = table
+            .buckets()
+            .iter()
+            .flat_map(|bucket| bucket.nodes().iter().cloned())
+            .collect();
+
+        for index in 0..64 {
+            let target = make_node(&format!("oracle-target-{ksize}-{index}"));
+            let exclude = (index % 3 == 0).then(|| &primary[index % primary.len()]);
+            let expected = exhaustive_primary_neighbors(&table, &target, exclude, ksize);
+            let actual = table.find_neighbors(&target, exclude);
+            assert_eq!(
+                actual, expected,
+                "top-k mismatch for ksize={ksize}, target index={index}"
+            );
+        }
+    }
 }
 
 /// A peer passed as `exclude` is absent from the result list.

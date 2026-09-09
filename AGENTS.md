@@ -18,7 +18,7 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 194 tests
+cargo test                           # all 196 tests
 cargo test <name>                    # single test, e.g. test_update_did_record_key_rotation
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -77,7 +77,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/protocol.rs` | UDP transport, fragmentation, RPC dispatch (`rpc_store`, `rpc_update`, `rpc_find_node`, `rpc_find_value`) |
 | `src/network.rs` | Public `Server` API: `set/get/update`, bootstrap, refresh loop |
 | `src/crawling.rs` | Iterative lookup — `NodeSpiderCrawl` (find nodes) + `ValueSpiderCrawl` (find value) |
-| `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `TableTraverser` visits buckets in XOR-proximity order (mirrors Python AuthKademlia exactly); `touch_last_updated()` is called **only** by `TableTraverser` — bucket staleness reflects lookup activity, not node additions |
+| `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `find_neighbors` returns the exact local top-k across all known primary contacts; `touch_last_updated()` is called only for the bucket containing the lookup target — bucket staleness reflects lookup activity, not node additions |
 | `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day TTL and configurable byte budget (default 512 MiB), with lazy expiry on read |
 | `src/signature_cache.rs` | `SignatureCache` — moka bounded cache (SHA-256 key, TTL 1 h, 4096 entries) for Dilithium verification results |
 | `src/fragmentation.rs` | KADF fragmentation + reassembly (`encode_fragments`, `parse_fragment`, `ReassemblyMap`) |
@@ -139,7 +139,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 - `SignatureCache` is keyed on `SHA-256(record_bytes)`. TTL 1 h, capacity 4096 (moka TinyLFU). Eviction = cache miss = full re-verification (never a security bypass). On a cache miss the SHA-256 key is computed once via `compute_key()` and reused for both `get_by_key` and `insert_by_key` — never twice.
 - `welcome_if_new` replication uses two conditions (Kademlia §2.5, matches Python AuthKademlia): `new_node_close` (new node is XOR-closer than the farthest k-neighbor) AND `this_closest` (this node is closer than the nearest k-neighbor). Both must be true to replicate. Neighbors are computed before `add_contact` so the new node is excluded from comparisons.
 - `schedule_stats_log()` emits a `[stats]` log line every 60 s: routing table size, storage record count, used/max storage bytes, and (when enabled) signature cache entries.
-- **Routing table internals** (`src/routing.rs`): `KBucket.add_node()` does **not** update `last_updated` — matches Python AuthKademlia behaviour where only lookups reset the timer. `touch_last_updated()` (called by `TableTraverser` on the central bucket during every `find_neighbors`) is the sole update point. `find_neighbors` uses `TableTraverser` with early-stop at k and excludes `target.id` — identical logic to Python's `find_neighbors + heapq.nsmallest`. Split condition §4.2: `covers(local_node) OR depth % 5 != 0`.
+- **Routing table internals** (`src/routing.rs`): `KBucket.add_node()` does **not** update `last_updated`; only lookups reset the timer. `find_neighbors` touches the bucket containing the lookup target, evaluates every known primary contact with the full 160-bit XOR metric, excludes `target.id` and the optional caller-supplied peer, then returns the exact local top-k. Split condition §4.2: `covers(local_node) OR depth % 5 != 0`.
 
 ## Key invariants
 - Records are **immutable after creation**: byte-identical STORE retries return `AlreadyStored`; different bytes for the same key return `Conflict`.
@@ -180,7 +180,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 |---|---|---|
 | `tests/network_tests.rs` | 10 | Full multi-node integration tests (real UDP) |
 | `tests/crypto_tests.rs` | 28 | Crypto layer unit + DID handler unit tests |
-| `tests/routing_tests.rs` | 20 | Routing table unit tests |
+| `tests/routing_tests.rs` | 22 | Routing table unit tests |
 | `tests/storage_tests.rs` | 15 | `ForgetfulStorage` unit tests (includes `insert_if_absent` cases) |
 | `tests/dht_integration.rs` | 1 | Legacy 3-node end-to-end scenario |
 | `tests/scenarios/replication.rs` | 1 | welcome_if_new replication (3-node join) |

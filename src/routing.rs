@@ -6,11 +6,10 @@
 /// - When split is not possible, the LRU head is returned to the caller for pinging.
 /// - `remove_node` promotes from replacement_nodes automatically.
 /// - Lonely buckets = not updated in the last hour (time-based, §2.3).
-/// - `last_updated` is touched ONLY by `TableTraverser` (matches Python: only lookups
-///   reset the timer, not node additions).
-/// - `TableTraverser` mirrors the Python implementation exactly — starts from the
-///   bucket containing the target, alternates left/right, falls back to the
-///   remaining side when one is exhausted.
+/// - `last_updated` is touched ONLY by `find_neighbors` on the bucket containing
+///   the lookup target (only lookups reset the timer, not node additions).
+/// - `find_neighbors` evaluates every known primary contact before truncating to
+///   `k`, so the result is the exact local top-k under the full 160-bit XOR metric.
 use std::collections::VecDeque;
 use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -50,7 +49,7 @@ pub struct KBucket {
     /// Timestamp of last lookup that touched this bucket (seconds since UNIX_EPOCH).
     /// AtomicU64 allows touch_last_updated() with &self — required because
     /// find_neighbors() holds only a read lock on RoutingTable.
-    /// Updated ONLY by TableTraverser, matching Python's touch_last_updated() semantics.
+    /// Updated ONLY by `find_neighbors` for the bucket containing the lookup target.
     last_updated: AtomicU64,
 }
 
@@ -66,8 +65,8 @@ impl KBucket {
         }
     }
 
-    /// Mark the bucket as recently used — called by TableTraverser on the central
-    /// bucket, matching Python's `touch_last_updated()`.
+    /// Mark the bucket as recently used — called by `find_neighbors` on the bucket
+    /// containing the lookup target.
     /// Takes `&self` so it works under a read lock on `RoutingTable`.
     pub fn touch_last_updated(&self) {
         self.last_updated.store(now_secs(), Ordering::Relaxed);
@@ -80,7 +79,7 @@ impl KBucket {
     /// - Bucket full → add to replacement list (capped), return `false`.
     ///
     /// Does NOT touch `last_updated` — matches Python's `add_node` which never calls
-    /// `touch_last_updated()`. Only `TableTraverser` (i.e., lookups) resets the timer.
+    /// `touch_last_updated()`. Only `find_neighbors` (i.e., lookups) resets the timer.
     pub fn add_node(&mut self, node: Node) -> bool {
         if let Some(pos) = self.nodes.iter().position(|n| n.id == node.id) {
             self.nodes.remove(pos);
@@ -200,84 +199,6 @@ impl KBucket {
     }
 }
 
-/// Mirrors Python's `TableTraverser` exactly:
-///
-/// 1. Starts with nodes from the bucket that contains `target`.
-/// 2. Touches `last_updated` on that bucket (matching Python).
-/// 3. Alternates left/right — left first, then right, then left, etc.
-/// 4. When one side is exhausted, continues on the other.
-///
-/// Both `left_buckets` and `right_buckets` are stored in reverse order so
-/// that `Vec::pop()` (O(1)) yields the bucket closest to `target` first —
-/// matching Python's `left_buckets.pop()` and `right_buckets.pop(0)` semantics.
-struct TableTraverser<'a> {
-    current_nodes: Vec<Node>,
-    /// Buckets to the left of the central bucket, closest-first (reversed).
-    left_buckets: Vec<&'a KBucket>,
-    /// Buckets to the right of the central bucket, closest-first (reversed).
-    right_buckets: Vec<&'a KBucket>,
-    take_left: bool,
-}
-
-impl<'a> TableTraverser<'a> {
-    fn new(table: &'a RoutingTable, target: &Node) -> Self {
-        let idx = table.bucket_index_for(target.long_id);
-
-        // Touch the central bucket — matches Python's TableTraverser.__init__
-        table.buckets[idx].touch_last_updated();
-
-        let current_nodes = table.buckets[idx].nodes().iter().cloned().collect();
-
-        // Reverse both sides so pop() yields the closest bucket first.
-        // left:  buckets[..idx]   reversed → closest is at the end
-        // right: buckets[idx+1..] reversed → closest is at the end
-        let left_buckets = table.buckets[..idx].iter().rev().collect();
-        let right_buckets = table.buckets[idx + 1..].iter().rev().collect();
-
-        Self {
-            current_nodes,
-            left_buckets,
-            right_buckets,
-            take_left: true,
-        }
-    }
-}
-
-impl<'a> Iterator for TableTraverser<'a> {
-    type Item = Node;
-
-    fn next(&mut self) -> Option<Node> {
-        // Drain current bucket first — matches Python's `if self.current_nodes`
-        if let Some(node) = self.current_nodes.pop() {
-            return Some(node);
-        }
-
-        // Alternate left/right — left first, matching Python's `self.left` flag
-        if self.take_left {
-            if let Some(bucket) = self.left_buckets.pop() {
-                self.current_nodes = bucket.nodes().iter().cloned().collect();
-                self.take_left = false;
-                return self.next();
-            }
-        }
-
-        // Try right side
-        if let Some(bucket) = self.right_buckets.pop() {
-            self.current_nodes = bucket.nodes().iter().cloned().collect();
-            self.take_left = true;
-            return self.next();
-        }
-
-        // Right exhausted — fall back to remaining left buckets (symmetric)
-        if let Some(bucket) = self.left_buckets.pop() {
-            self.current_nodes = bucket.nodes().iter().cloned().collect();
-            return self.next();
-        }
-
-        None
-    }
-}
-
 /// Maintains a list of K-buckets that together partition the entire 160-bit
 /// XOR keyspace.
 pub struct RoutingTable {
@@ -346,34 +267,28 @@ impl RoutingTable {
             .cloned()
     }
 
-    /// Return the `k` nodes closest to `target`, optionally excluding one node.
-    ///
-    /// Mirrors Python's `find_neighbors` exactly:
-    /// - Uses `TableTraverser` to visit buckets in order of proximity.
-    /// - Excludes `target.id` itself (matches Python's `neighbor.id != node.id` check).
-    /// - Collects up to k candidates with early-stop, then sorts by XOR distance.
-    /// - Matches Python's `heapq.nsmallest(k, nodes)` result.
+    /// Return the exact `k` known primary contacts closest to `target`, optionally
+    /// excluding one node. Candidate selection uses the full 160-bit XOR distance
+    /// before truncation; otherwise bucket traversal order could omit a closer node.
     pub fn find_neighbors(&self, target: &Node, exclude: Option<&Node>) -> Vec<Node> {
-        let mut nodes: Vec<(U256, Node)> = Vec::new();
+        let target_bucket = self.bucket_index_for(target.long_id);
+        self.buckets[target_bucket].touch_last_updated();
 
-        for neighbor in TableTraverser::new(self, target) {
-            if neighbor.id == target.id {
-                continue;
-            }
-            if let Some(ex) = exclude {
-                if neighbor.id == ex.id {
-                    continue;
-                }
-            }
-            let dist = neighbor.distance_to(target);
-            nodes.push((dist, neighbor));
-
-            if nodes.len() == self.ksize {
-                break;
-            }
-        }
+        let mut nodes: Vec<(U256, Node)> = self
+            .buckets
+            .iter()
+            .flat_map(|bucket| bucket.nodes().iter())
+            .filter(|neighbor| {
+                neighbor.id != target.id
+                    && exclude
+                        .map(|excluded| neighbor.id != excluded.id)
+                        .unwrap_or(true)
+            })
+            .map(|neighbor| (neighbor.distance_to(target), neighbor.clone()))
+            .collect();
 
         nodes.sort_unstable_by_key(|(dist, _)| *dist);
+        nodes.truncate(self.ksize);
         nodes.into_iter().map(|(_, n)| n).collect()
     }
 
@@ -491,7 +406,7 @@ mod tests {
 
     #[test]
     fn add_node_does_not_reset_lonely_timer() {
-        // last_updated è toccato SOLO da TableTraverser, non da add_node.
+        // last_updated è toccato SOLO da find_neighbors, non da add_node.
         // Verifichiamo che dopo add_contact il bucket risulti ancora non-lonely
         // (perché è appena stato creato), ma che add_contact non possa mai
         // "ringiovanire" un bucket che fosse già vecchio.
@@ -522,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn traverser_visits_all_buckets() {
+    fn find_neighbors_visits_all_buckets() {
         let local = make_node("local");
         let ksize = 20;
         let mut rt = RoutingTable::new(local.clone(), ksize);
