@@ -6,22 +6,23 @@
 //!     (forces a real multi-hop DHT lookup, not a local cache hit)
 //!
 //! Diagnostic output:
-//!   1. Latency table  (SET / GET avg, p50, p95, max)
-//!   2. Sample DID Documents
-//!   3. Storage tables (which DHT keys live on which node)
-//!   4. Replication summary (copy-count per key)
-//!   5. XOR-distance correctness  ← NEW: verifies each record is on the k-closest nodes
-//!   6. Bucket structure           ← NEW: per-node bucket tree with range / depth / nodes
-//!   7. Routing convergence        ← NEW: avg buckets, avg peers across the cluster
-//!   8. Routing tables (flat peer list, for reference)
+//!   1. SET/GET latency and local-vs-remote GET paths
+//!   2. Replication count and global XOR-placement summaries
+//!   3. Exact local FIND_NODE top-k verification
+//!   4. Bucket partition invariants and routing convergence
+//!   5. A final PASS/WARN/FAIL table whose failures affect the exit status
+//!
+//! Pass `--verbose` to include DID Documents, per-key storage placement,
+//! full bucket contents, and flat routing tables.
 //!
 //! Run:
 //!   cargo run --release --example topology_analysis                # k=20 alpha=3
 //!   cargo run --release --example topology_analysis -- 3 3         # k=3  alpha=3
 //!   cargo run --release --example topology_analysis -- 5 2         # k=5  alpha=2
+//!   cargo run --release --example topology_analysis -- 3 3 --verbose
 //!   RUST_LOG=info cargo run --release --example topology_analysis -- 3
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -46,6 +47,58 @@ const BASE_PORT: u16 = 15810;
 const NUM_NODES: usize = 30;
 const NUM_RECORDS: usize = 100;
 const OP_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckStatus {
+    Pass,
+    Warn,
+    Fail,
+}
+
+impl CheckStatus {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Pass => "PASS",
+            Self::Warn => "WARN",
+            Self::Fail => "FAIL",
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct ReplicationReport {
+    records: usize,
+    zero_copies: usize,
+    under_replicated: usize,
+    exact_replicas: usize,
+    over_replicated: usize,
+    min_copies: usize,
+    max_copies: usize,
+}
+
+#[derive(Debug, Default)]
+struct PlacementReport {
+    records: usize,
+    full: usize,
+    partial: usize,
+    none: usize,
+    with_extras: usize,
+}
+
+#[derive(Debug, Default)]
+struct LocalTopKReport {
+    queries: usize,
+    mismatches: usize,
+}
+
+#[derive(Debug, Default)]
+struct BucketReport {
+    nodes: usize,
+    buckets: usize,
+    peers: usize,
+    violations: usize,
+    converged: bool,
+}
 
 // ─── record helpers ──────────────────────────────────────────────────────────
 
@@ -169,268 +222,473 @@ fn print_sample_docs(published: &[(String, String, Vec<u8>)]) {
     }
 }
 
-/// Print how many records each node stores and which keys they are.
-async fn print_storage_tables(
+/// Collect the physical record layout. Detailed per-node output is opt-in
+/// because the full 30-node table is intentionally very large.
+fn collect_storage_layout(
     nodes: &[(Arc<Server>, u16)],
     key_to_did: &HashMap<String, String>,
+    verbose: bool,
 ) -> HashMap<String, Vec<u16>> {
-    println!("━━━ Storage Tables (records per node) ━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    if verbose {
+        println!("━━━ Storage Tables (records per node) ━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    }
 
     let mut key_holders: HashMap<String, Vec<u16>> = HashMap::new();
 
     for (server, port) in nodes {
         let entries = server.storage.iter_all();
-        let keys: Vec<String> = entries.iter().map(|(k, _)| hex::encode(k)).collect();
-        println!("  Node :{port}  ({} records)", keys.len());
-        if keys.is_empty() {
-            println!("    (empty)");
-        } else {
-            for k in &keys {
-                let did_hint = key_to_did
-                    .get(k)
-                    .map(|d| format!("  →  {}", &d[..d.len().min(50)]))
-                    .unwrap_or_default();
-                println!("    {k}{did_hint}");
-                key_holders.entry(k.clone()).or_default().push(*port);
+        let mut keys: Vec<String> = entries.iter().map(|(k, _)| hex::encode(k)).collect();
+        keys.sort_unstable();
+
+        if verbose {
+            println!("  Node :{port}  ({} records)", keys.len());
+            if keys.is_empty() {
+                println!("    (empty)");
             }
         }
-        println!();
+
+        for key in keys {
+            if verbose {
+                let did_hint = key_to_did
+                    .get(&key)
+                    .map(|did| format!("  →  {}", &did[..did.len().min(50)]))
+                    .unwrap_or_default();
+                println!("    {key}{did_hint}");
+            }
+            key_holders.entry(key).or_default().push(*port);
+        }
+
+        if verbose {
+            println!();
+        }
     }
 
     key_holders
 }
 
-/// Print per-key replication count and which nodes hold each copy.
-fn print_replication_summary(key_holders: &HashMap<String, Vec<u16>>) {
+/// Summarise the physical replica count for every successfully published key.
+fn print_replication_summary(
+    key_holders: &HashMap<String, Vec<u16>>,
+    expected_keys: &[String],
+    ksize: usize,
+    verbose: bool,
+) -> ReplicationReport {
     println!("━━━ Replication Summary ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    println!("  {:>64}  copies  holders", "DHT key (hex)");
-    println!("  {}  ------  -------", "-".repeat(64));
-    let mut sorted: Vec<_> = key_holders.iter().collect();
-    sorted.sort_by_key(|(k, _)| k.as_str());
-    for (key, holders) in &sorted {
-        let ports: Vec<String> = holders.iter().map(|p| p.to_string()).collect();
-        println!("  {key}  {:>6}  {}", holders.len(), ports.join(", "));
+
+    let mut keys = expected_keys.to_vec();
+    keys.sort_unstable();
+
+    if verbose {
+        println!("  {:>40}  copies  holders", "DHT key (hex)");
+        println!("  {}  ------  -------", "-".repeat(40));
     }
 
-    // Copy-count distribution
-    let mut dist: HashMap<usize, usize> = HashMap::new();
-    for holders in key_holders.values() {
-        *dist.entry(holders.len()).or_insert(0) += 1;
+    let mut report = ReplicationReport {
+        records: keys.len(),
+        min_copies: usize::MAX,
+        ..ReplicationReport::default()
+    };
+    let mut distribution: HashMap<usize, usize> = HashMap::new();
+
+    for key in &keys {
+        let holders = key_holders.get(key).map(Vec::as_slice).unwrap_or(&[]);
+        let copies = holders.len();
+        report.min_copies = report.min_copies.min(copies);
+        report.max_copies = report.max_copies.max(copies);
+        *distribution.entry(copies).or_insert(0) += 1;
+
+        match copies.cmp(&ksize) {
+            std::cmp::Ordering::Less => {
+                report.under_replicated += 1;
+                if copies == 0 {
+                    report.zero_copies += 1;
+                }
+            }
+            std::cmp::Ordering::Equal => report.exact_replicas += 1,
+            std::cmp::Ordering::Greater => report.over_replicated += 1,
+        }
+
+        if verbose {
+            let ports = holders
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("  {key}  {copies:>6}  {ports}");
+        }
     }
-    let mut dist_sorted: Vec<_> = dist.iter().collect();
-    dist_sorted.sort_by_key(|(c, _)| **c);
-    println!("\n  Copy-count distribution:");
-    for (copies, count) in &dist_sorted {
+
+    if report.records == 0 {
+        report.min_copies = 0;
+    }
+
+    let mut distribution = distribution.into_iter().collect::<Vec<_>>();
+    distribution.sort_unstable_by_key(|(copies, _)| *copies);
+    println!("  Records inspected     : {}", report.records);
+    println!(
+        "  Replica target        : k={ksize} (extra retained copies may exist after topology changes)"
+    );
+    println!(
+        "  Replica count range   : {}..={}",
+        report.min_copies, report.max_copies
+    );
+    println!(
+        "  Below / exact / above : {} / {} / {}",
+        report.under_replicated, report.exact_replicas, report.over_replicated
+    );
+    println!("  Copy-count distribution:");
+    for (copies, count) in distribution {
         println!(
-            "    {copies} cop{}: {count} records",
-            if **copies == 1 { "y" } else { "ies" }
+            "    {copies} cop{}: {count} record{}",
+            if copies == 1 { "y" } else { "ies" },
+            if count == 1 { "" } else { "s" }
         );
     }
     println!();
+
+    report
 }
 
-/// XOR-distance correctness check.
+/// Compare physical replica placement with the globally closest nodes.
 ///
-/// For each record, compute the k globally-closest nodes (ground truth) and
-/// verify which of those actually store the record.  Also report any nodes
-/// outside the k-closest that hold a copy (tolerated for k > replicas, but
-/// should be rare with small k).
-async fn verify_xor_correctness(
+/// This is an end-to-end placement check. It deliberately does not call GET,
+/// so a quorum decision cannot change its result.
+fn verify_global_replica_placement(
     nodes: &[(Arc<Server>, u16)],
     published: &[(String, String, Vec<u8>)],
+    key_holders: &HashMap<String, Vec<u16>>,
     ksize: usize,
-) {
-    println!("━━━ XOR-Distance Correctness (Kademlia §2.3) ━━━━━━━━━━━━━━━━━━\n");
-    println!("  For each record: computes the {ksize} globally-closest nodes (XOR metric),");
-    println!("  then checks whether those nodes actually hold the record.\n");
-    println!("  Legend:  [✓] all k-closest hold it  [~] partial  [✗] none of k-closest hold it\n");
+    verbose: bool,
+) -> PlacementReport {
+    println!("━━━ Global XOR Replica Placement (Kademlia §2.3) ━━━━━━━━━━━━━\n");
+    println!("  Compares physical storage with the globally closest nodes.");
+    println!("  This check is independent of the GET quorum.\n");
 
-    let check_n = published.len().min(20);
-    let mut full_ok = 0usize;
-    let mut partial_ok = 0usize;
-    let mut none_ok = 0usize;
+    let node_ids = nodes
+        .iter()
+        .map(|(server, port)| (server.node.id, *port))
+        .collect::<Vec<_>>();
+    let mut report = PlacementReport {
+        records: published.len(),
+        ..PlacementReport::default()
+    };
 
-    // Collect (node_id, port) once for efficiency
-    let node_ids: Vec<([u8; 20], u16)> = nodes.iter().map(|(s, p)| (s.node.id, *p)).collect();
+    for (_did, key, _) in published {
+        let dkey = digest(key);
+        let target = Node::from_id(dkey);
+        let dkey_hex = hex::encode(dkey);
+        let holders = key_holders.get(&dkey_hex).map(Vec::as_slice).unwrap_or(&[]);
 
-    for (_did, key_str, _) in published.iter().take(check_n) {
-        let dkey = digest(key_str.as_str());
-        let key_node = Node::from_id(dkey);
-
-        // Sort all nodes by XOR distance to this key
-        let mut by_dist: Vec<(U256, u16)> = node_ids
+        let mut by_distance = node_ids
             .iter()
-            .map(|(id, port)| (Node::from_id(*id).distance_to(&key_node), *port))
-            .collect();
-        by_dist.sort_by_key(|(d, _)| *d);
+            .map(|(id, port)| (Node::from_id(*id).distance_to(&target), *port))
+            .collect::<Vec<_>>();
+        by_distance.sort_unstable_by_key(|(distance, _)| *distance);
+        let closest = by_distance
+            .iter()
+            .take(ksize)
+            .map(|(_, port)| *port)
+            .collect::<Vec<_>>();
 
-        let k_closest: Vec<u16> = by_dist.iter().take(ksize).map(|(_, p)| *p).collect();
+        let holding = closest
+            .iter()
+            .copied()
+            .filter(|port| holders.contains(port))
+            .collect::<Vec<_>>();
+        let missing = closest
+            .iter()
+            .copied()
+            .filter(|port| !holders.contains(port))
+            .collect::<Vec<_>>();
+        let extras = holders
+            .iter()
+            .copied()
+            .filter(|port| !closest.contains(port))
+            .collect::<Vec<_>>();
 
-        // Check which k-closest nodes actually hold the record
-        let mut holding: Vec<u16> = vec![];
-        let mut missing: Vec<u16> = vec![];
-        for &port in &k_closest {
-            let server = nodes
-                .iter()
-                .find(|(_, p)| *p == port)
-                .map(|(s, _)| s)
-                .unwrap();
-            if server.storage.get(&dkey).is_some() {
-                holding.push(port);
-            } else {
-                missing.push(port);
-            }
-        }
-
-        // Any nodes outside k-closest that hold it (extra replicas)
-        let mut extras: Vec<u16> = vec![];
-        for (server, port) in nodes {
-            if !k_closest.contains(port) && server.storage.get(&dkey).is_some() {
-                extras.push(*port);
-            }
-        }
-
-        let status = if missing.is_empty() {
-            full_ok += 1;
-            "✓"
-        } else if !holding.is_empty() {
-            partial_ok += 1;
-            "~"
+        if missing.is_empty() {
+            report.full += 1;
+        } else if holding.is_empty() {
+            report.none += 1;
         } else {
-            none_ok += 1;
-            "✗"
-        };
-
-        // Abbreviated display
-        let uuid_short = &key_str[..8.min(key_str.len())];
-        let k_str: Vec<String> = k_closest.iter().map(|p| p.to_string()).collect();
-        println!(
-            "  [{status}] key={uuid_short}…  k-closest=[{}]",
-            k_str.join(",")
-        );
-        if !holding.is_empty() {
-            println!(
-                "       holding : {:?}  ({}/{} k-closest)",
-                holding,
-                holding.len(),
-                ksize
-            );
-        }
-        if !missing.is_empty() {
-            println!(
-                "       missing : {:?}  (k-closest without the record)",
-                missing
-            );
+            report.partial += 1;
         }
         if !extras.is_empty() {
+            report.with_extras += 1;
+        }
+
+        if verbose || !missing.is_empty() {
+            let status = if missing.is_empty() {
+                "PASS"
+            } else if holding.is_empty() {
+                "FAIL"
+            } else {
+                "WARN"
+            };
             println!(
-                "       extras  : {:?}  (outside k-closest but hold a copy)",
-                extras
+                "  [{status}] key={}…  closest={closest:?}  holders={holders:?}",
+                &dkey_hex[..8]
             );
+            if !missing.is_empty() {
+                println!("         missing closest nodes: {missing:?}");
+            }
+            if verbose && !extras.is_empty() {
+                println!("         extra holders: {extras:?}");
+            }
         }
     }
 
-    println!(
-        "\n  Result on {} sampled records:  ✓ full={full_ok}  ~ partial={partial_ok}  ✗ none={none_ok}",
-        check_n
-    );
-    if none_ok == 0 {
-        println!("  → All checked records are held by at least one k-closest node ✓");
-    } else {
-        println!("  → {none_ok} records not found on ANY k-closest node — possible routing inconsistency");
-    }
+    println!("\n  Records inspected          : {}", report.records);
+    println!("  All k closest hold a copy  : {}", report.full);
+    println!("  Some k closest hold a copy : {}", report.partial);
+    println!("  No k closest holds a copy  : {}", report.none);
+    println!("  Records with extra holders : {}", report.with_extras);
     println!();
+
+    report
 }
 
-/// Per-node bucket tree: shows range boundaries, node count, depth, freshness.
-/// This is the primary view for verifying correct bucket splitting (§4.2).
-async fn print_bucket_structure(nodes: &[(Arc<Server>, u16)]) {
-    println!("━━━ Bucket Structure (k-bucket tree per node) ━━━━━━━━━━━━━━━━━\n");
-    println!("  Each line: [bucket-idx]  nodes-in-bucket  depth  fresh/lonely  [lo_hex..hi_hex]\n");
+/// Validate the bucket partition and optionally print the complete tree.
+///
+/// Hard invariants: inclusive ranges cover the 160-bit keyspace without gaps
+/// or overlaps, every primary contact belongs to its bucket, no contact is
+/// duplicated, and no bucket exceeds k primary contacts.
+async fn inspect_bucket_structure(
+    nodes: &[(Arc<Server>, u16)],
+    ksize: usize,
+    verbose: bool,
+) -> BucketReport {
+    println!("━━━ Bucket Partition and Convergence ━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    if verbose {
+        println!("  Ranges are inclusive 160-bit bounds: [lo..=hi].\n");
+    }
 
-    let mut total_buckets = 0usize;
-    let mut total_peers = 0usize;
+    let keyspace_max = (U256::one() << 160) - U256::one();
+    let mut report = BucketReport::default();
 
     for (server, port) in nodes {
         let proto = match &server.protocol {
-            Some(p) => p,
+            Some(protocol) => protocol,
             None => {
-                println!("  Node :{port}  (not started)");
+                report.violations += 1;
+                println!("  [FAIL] Node :{port} is not started");
                 continue;
             }
         };
 
+        report.nodes += 1;
         let router = proto.router.read().await;
         let buckets = router.buckets();
-        let peer_count: usize = buckets.iter().map(|b| b.len()).sum();
-        total_buckets += buckets.len();
-        total_peers += peer_count;
+        let peer_count = buckets.iter().map(|bucket| bucket.len()).sum::<usize>();
+        report.buckets += buckets.len();
+        report.peers += peer_count;
 
-        // Local node ID prefix for context
-        let local_id_hex: String = router.node.id[..4]
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        if verbose {
+            println!(
+                "  Node :{port}  id={}…  ({} buckets, {} primary peers)",
+                hex::encode(&router.node.id[..4]),
+                buckets.len(),
+                peer_count
+            );
+        }
 
-        println!(
-            "  Node :{port}  id={}…  ({} buckets, {} peers)",
-            local_id_hex,
-            buckets.len(),
-            peer_count
-        );
+        if buckets.is_empty() {
+            report.violations += 1;
+            println!("  [FAIL] Node :{port} has no buckets");
+            continue;
+        }
 
-        for (i, bucket) in buckets.iter().enumerate() {
+        let mut expected_start = U256::zero();
+        let mut seen = HashSet::new();
+
+        for (index, bucket) in buckets.iter().enumerate() {
             let lo = *bucket.range.start();
             let hi = *bucket.range.end();
-            let lo_s = format!("{:032x}", lo);
-            let _hi_s = format!("{:032x}", hi);
-            let freshness = if bucket.is_lonely() {
-                "lonely"
-            } else {
-                "fresh "
-            };
 
-            println!(
-                "    [{:>2}]  nodes={:>2}  depth={:>3}  {}  [{}..]",
-                i,
-                bucket.len(),
-                bucket.depth(),
-                freshness,
-                &lo_s[..16],
-            );
+            if lo != expected_start {
+                report.violations += 1;
+                println!(
+                    "  [FAIL] Node :{port} bucket {index} starts at {lo:040x}, expected {expected_start:040x}"
+                );
+            }
+            if hi < lo {
+                report.violations += 1;
+                println!(
+                    "  [FAIL] Node :{port} bucket {index} has an inverted range [{lo:040x}..={hi:040x}]"
+                );
+            }
+            if bucket.len() > ksize {
+                report.violations += 1;
+                println!(
+                    "  [FAIL] Node :{port} bucket {index} has {} primary contacts, above k={ksize}",
+                    bucket.len()
+                );
+            }
 
-            // List nodes inside this bucket
-            for n in bucket.nodes().iter() {
-                let nid: String = n.id[..4].iter().map(|b| format!("{b:02x}")).collect();
-                let nport = n.port.map(|p| p.to_string()).unwrap_or_else(|| "-".into());
-                println!("           ↳ {}…  :{}", nid, nport);
+            for peer in bucket.nodes() {
+                if !bucket.covers(peer.long_id) {
+                    report.violations += 1;
+                    println!(
+                        "  [FAIL] Node :{port} bucket {index} contains out-of-range peer {}",
+                        hex::encode(&peer.id[..8])
+                    );
+                }
+                if peer.id == router.node.id {
+                    report.violations += 1;
+                    println!("  [FAIL] Node :{port} contains itself in bucket {index}");
+                }
+                if !seen.insert(peer.id) {
+                    report.violations += 1;
+                    println!(
+                        "  [FAIL] Node :{port} contains duplicate peer {}",
+                        hex::encode(&peer.id[..8])
+                    );
+                }
+            }
+
+            if verbose {
+                let freshness = if bucket.is_lonely() {
+                    "lonely"
+                } else {
+                    "fresh"
+                };
+                println!(
+                    "    [{index:>2}] primary={:>2} depth={:>3} {freshness:<6} range=[{lo:040x}..={hi:040x}]",
+                    bucket.len(),
+                    bucket.depth()
+                );
+                for peer in bucket.nodes() {
+                    let peer_port = peer
+                        .port
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "-".into());
+                    println!("         ↳ {}…  :{peer_port}", hex::encode(&peer.id[..4]));
+                }
+            }
+
+            if hi < keyspace_max {
+                expected_start = hi + U256::one();
             }
         }
-        println!();
+
+        if *buckets.last().expect("non-empty bucket list").range.end() != keyspace_max {
+            report.violations += 1;
+            println!("  [FAIL] Node :{port} bucket partition does not end at {keyspace_max:040x}");
+        }
+
+        if verbose {
+            println!();
+        }
     }
 
-    // Convergence summary across all nodes
-    let n = nodes.len();
-    if n > 0 {
-        let avg_buckets = total_buckets as f64 / n as f64;
-        let avg_peers = total_peers as f64 / n as f64;
-        // In a balanced N-node DHT, each node should know ~log2(N) buckets
-        // and up to k*log2(N) peers
-        let expected_buckets = (n as f64).log2();
-        println!("━━━ Routing Convergence Summary ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-        println!("  Cluster size         : {n} nodes");
-        println!("  Avg buckets / node   : {avg_buckets:.1}  (expected ≥ log₂({n}) ≈ {expected_buckets:.1})");
-        println!("  Avg peers   / node   : {avg_peers:.1}");
-        println!(
-            "  {}",
-            if avg_buckets >= expected_buckets * 0.7 {
-                "→ Routing table appears well-converged ✓"
-            } else {
-                "→ Fewer buckets than expected — routing table may not be fully converged"
+    let divisor = report.nodes.max(1) as f64;
+    let avg_buckets = report.buckets as f64 / divisor;
+    let avg_peers = report.peers as f64 / divisor;
+    let expected_buckets = (nodes.len() as f64).log2();
+    report.converged = !nodes.is_empty() && avg_buckets >= expected_buckets * 0.7;
+
+    println!("  Nodes inspected       : {}", report.nodes);
+    println!("  Buckets inspected     : {}", report.buckets);
+    println!(
+        "  Partition invariants  : {} ({} violations)",
+        if report.violations == 0 {
+            "PASS"
+        } else {
+            "FAIL"
+        },
+        report.violations
+    );
+    println!(
+        "  Avg buckets / node    : {avg_buckets:.1} (heuristic reference log₂({}) ≈ {expected_buckets:.1})",
+        nodes.len()
+    );
+    println!("  Avg primary peers/node: {avg_peers:.1}");
+    println!(
+        "  Convergence heuristic : {}",
+        if report.converged { "PASS" } else { "WARN" }
+    );
+    println!();
+
+    report
+}
+
+/// Verify the R03 invariant against an exhaustive oracle over each node's
+/// actual primary routing contacts.
+async fn verify_local_top_k(
+    nodes: &[(Arc<Server>, u16)],
+    published: &[(String, String, Vec<u8>)],
+    ksize: usize,
+) -> LocalTopKReport {
+    println!("━━━ Local FIND_NODE Top-k Correctness ━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    println!("  Each query is checked against every primary contact known locally.");
+    println!("  Global discovery remains the responsibility of the iterative crawl.\n");
+
+    let targets = published
+        .iter()
+        .map(|(_, key, _)| Node::from_id(digest(key)))
+        .collect::<Vec<_>>();
+    let mut report = LocalTopKReport::default();
+
+    for (server, port) in nodes {
+        let Some(proto) = &server.protocol else {
+            continue;
+        };
+        let router = proto.router.read().await;
+
+        for target in &targets {
+            let mut expected = router
+                .buckets()
+                .iter()
+                .flat_map(|bucket| bucket.nodes().iter())
+                .filter(|peer| peer.id != target.id)
+                .cloned()
+                .collect::<Vec<_>>();
+            expected.sort_unstable_by_key(|peer| peer.distance_to(target));
+            expected.truncate(ksize);
+
+            let actual = router.find_neighbors(target, None);
+            report.queries += 1;
+
+            let expected_ids = expected.iter().map(|peer| peer.id).collect::<Vec<_>>();
+            let actual_ids = actual.iter().map(|peer| peer.id).collect::<Vec<_>>();
+            if actual_ids != expected_ids {
+                report.mismatches += 1;
+                if report.mismatches <= 10 {
+                    let expected_ports = expected
+                        .iter()
+                        .map(|peer| peer.port.unwrap_or_default())
+                        .collect::<Vec<_>>();
+                    let actual_ports = actual
+                        .iter()
+                        .map(|peer| peer.port.unwrap_or_default())
+                        .collect::<Vec<_>>();
+                    println!(
+                        "  [FAIL] node=:{port} target={}… expected={expected_ports:?} actual={actual_ports:?}",
+                        hex::encode(&target.id[..4])
+                    );
+                }
             }
-        );
-        println!();
+        }
     }
+
+    if report.mismatches > 10 {
+        println!(
+            "  ... {} additional mismatches omitted",
+            report.mismatches - 10
+        );
+    }
+    println!("  Queries checked : {}", report.queries);
+    println!("  Mismatches      : {}", report.mismatches);
+    println!(
+        "  Result          : {}\n",
+        if report.mismatches == 0 {
+            "PASS"
+        } else {
+            "FAIL"
+        }
+    );
+
+    report
 }
 
 /// Flat peer list per node (reference view).
@@ -494,7 +752,7 @@ fn fmt_ns(ns: u64) -> String {
     }
 }
 
-fn latency_stats(v: &mut Vec<u64>) -> (f64, u64, u64, u64) {
+fn latency_stats(v: &mut [u64]) -> (f64, u64, u64, u64) {
     v.sort_unstable();
     let avg = if v.is_empty() {
         0.0
@@ -505,6 +763,10 @@ fn latency_stats(v: &mut Vec<u64>) -> (f64, u64, u64, u64) {
     let p95 = percentile(v, 95.0);
     let max = *v.last().unwrap_or(&0);
     (avg, p50, p95, max)
+}
+
+fn print_check(status: CheckStatus, name: &str, details: &str) {
+    println!("  [{:<4}] {:<28} {details}", status.label(), name);
 }
 
 fn main() {
@@ -520,9 +782,28 @@ fn main() {
 }
 
 async fn run() {
-    let args: Vec<String> = std::env::args().collect();
-    let ksize: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(20);
-    let alpha: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(3);
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let verbose = args.iter().any(|arg| arg == "--verbose");
+    let positional = args
+        .iter()
+        .filter(|arg| !arg.starts_with("--"))
+        .collect::<Vec<_>>();
+    let ksize = positional
+        .first()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(20);
+    let alpha = positional
+        .get(1)
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(3);
+
+    if ksize == 0 || alpha == 0 {
+        eprintln!("k and alpha must both be greater than zero");
+        std::process::exit(2);
+    }
+
+    let quorum_sample = alpha.max(1);
+    let quorum_required = quorum_sample / 2 + 1;
 
     println!("╔══════════════════════════════════════════════╗");
     println!("║     AuthKademlia-RS  Topology Test           ║");
@@ -531,10 +812,17 @@ async fn run() {
         "  Nodes    : {NUM_NODES}  (ports {BASE_PORT}–{})",
         BASE_PORT + NUM_NODES as u16 - 1
     );
-    println!("  k (ksize): {ksize}  → records replicated on ≤{ksize} closest nodes");
-    println!("  alpha    : {alpha}");
-    println!("  Records  : {NUM_RECORDS}");
-    println!("  Timeout  : {}s/op\n", OP_TIMEOUT.as_secs());
+    println!("  k (ksize)       : {ksize}  (replica-placement target)");
+    println!("  alpha           : {alpha}");
+    println!(
+        "  Remote GET quorum: {quorum_required} matching values from at most {quorum_sample} responses"
+    );
+    println!("  Records         : {NUM_RECORDS}");
+    println!("  Timeout         : {}s/op", OP_TIMEOUT.as_secs());
+    println!(
+        "  Output          : {}\n",
+        if verbose { "verbose" } else { "summary" }
+    );
 
     print!("Starting {NUM_NODES} nodes... ");
     let mut nodes: Vec<(Arc<Server>, u16)> = Vec::with_capacity(NUM_NODES);
@@ -581,12 +869,14 @@ async fn run() {
             Ok(Some(true)) => {
                 set_ok += 1;
                 set_latencies.push(ns);
-                println!(
-                    "  [{i:>3}] writer={writer_port}  key={}  did={}…  SET ✓  ({:.1}ms)",
-                    &key[..8],
-                    &did[..32],
-                    ns as f64 / 1e6
-                );
+                if verbose {
+                    println!(
+                        "  [{i:>3}] writer={writer_port}  key={}  did={}…  SET ✓  ({:.1}ms)",
+                        &key[..8],
+                        &did[..32],
+                        ns as f64 / 1e6
+                    );
+                }
                 published.push((did, key, record));
             }
             other => {
@@ -606,11 +896,21 @@ async fn run() {
     let mut get_ok = 0usize;
     let mut get_fail = 0usize;
     let mut get_corrupt = 0usize;
+    let mut local_gets = 0usize;
+    let mut remote_gets = 0usize;
     let mut get_latencies: Vec<u64> = Vec::new();
 
     for (i, (_did, key, original)) in published.iter().enumerate() {
         let reader_idx = (i + NUM_NODES / 2) % NUM_NODES;
         let (reader, reader_port) = &nodes[reader_idx];
+        let local_fast_path = reader.storage.get(&digest(key)).is_some();
+        let path = if local_fast_path {
+            local_gets += 1;
+            "local-fast-path"
+        } else {
+            remote_gets += 1;
+            "remote-quorum"
+        };
 
         let t0 = Instant::now();
         let result = timeout(OP_TIMEOUT, reader.get(key)).await;
@@ -621,15 +921,17 @@ async fn run() {
                 get_latencies.push(ns);
                 if retrieved == original {
                     get_ok += 1;
-                    println!(
-                        "  [{i:>3}] reader={reader_port}  key={}  GET ✓  ({:.1}ms)",
-                        &key[..8],
-                        ns as f64 / 1e6
-                    );
+                    if verbose {
+                        println!(
+                            "  [{i:>3}] reader={reader_port}  key={}  GET ✓  path={path}  ({:.1}ms)",
+                            &key[..8],
+                            ns as f64 / 1e6
+                        );
+                    }
                 } else {
                     get_corrupt += 1;
                     println!(
-                        "  [{i:>3}] reader={reader_port}  key={}  GET ✗  CORRUPTION",
+                        "  [{i:>3}] reader={reader_port}  key={}  GET ✗  CORRUPTION  path={path}",
                         &key[..8]
                     );
                 }
@@ -637,7 +939,7 @@ async fn run() {
             Ok(None) => {
                 get_fail += 1;
                 println!(
-                    "  [{i:>3}] reader={reader_port}  key={}  GET ✗  not found  ({:.1}ms)",
+                    "  [{i:>3}] reader={reader_port}  key={}  GET ✗  no verified value  path={path}  ({:.1}ms)",
                     &key[..8],
                     ns as f64 / 1e6
                 );
@@ -645,13 +947,16 @@ async fn run() {
             Err(_) => {
                 get_fail += 1;
                 println!(
-                    "  [{i:>3}] reader={reader_port}  key={}  GET ✗  timeout",
+                    "  [{i:>3}] reader={reader_port}  key={}  GET ✗  timeout  path={path}",
                     &key[..8]
                 );
             }
         }
     }
-    println!("\n  Retrieved: {get_ok}/{set_ok}  ({get_fail} not found, {get_corrupt} corrupted)\n");
+    println!("\n  Retrieved: {get_ok}/{set_ok}  ({get_fail} unavailable, {get_corrupt} corrupted)");
+    println!(
+        "  GET paths: {local_gets} local fast path, {remote_gets} remote quorum (requires {quorum_required}/{quorum_sample} matching values)\n"
+    );
 
     println!("━━━ Latency Summary ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     let (sa, sp50, sp95, smax) = latency_stats(&mut set_latencies);
@@ -683,18 +988,132 @@ async fn run() {
         })
         .collect();
 
-    print_sample_docs(&published);
-    let key_holders = print_storage_tables(&nodes, &key_to_did).await;
-    print_replication_summary(&key_holders);
-    verify_xor_correctness(&nodes, &published, ksize).await;
-    print_bucket_structure(&nodes).await;
-    print_routing_tables(&nodes).await;
+    if verbose {
+        print_sample_docs(&published);
+    }
 
-    println!("━━━ Result ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    if get_fail == 0 && get_corrupt == 0 && set_fail == 0 {
-        println!("  ALL CHECKS PASSED ✓\n");
+    let expected_keys = key_to_did.keys().cloned().collect::<Vec<_>>();
+    let key_holders = collect_storage_layout(&nodes, &key_to_did, verbose);
+    let replication = print_replication_summary(&key_holders, &expected_keys, ksize, verbose);
+    let placement =
+        verify_global_replica_placement(&nodes, &published, &key_holders, ksize, verbose);
+    let buckets = inspect_bucket_structure(&nodes, ksize, verbose).await;
+    let local_top_k = verify_local_top_k(&nodes, &published, ksize).await;
+
+    if verbose {
+        print_routing_tables(&nodes).await;
+    }
+
+    let set_status = if set_fail == 0 {
+        CheckStatus::Pass
     } else {
-        println!("  SET fail: {set_fail}  GET fail: {get_fail}  Corruptions: {get_corrupt}\n");
+        CheckStatus::Fail
+    };
+    let get_status = if get_fail == 0 && get_corrupt == 0 && get_ok == set_ok {
+        CheckStatus::Pass
+    } else {
+        CheckStatus::Fail
+    };
+    let replication_status = if replication.zero_copies > 0 {
+        CheckStatus::Fail
+    } else if replication.under_replicated > 0 || replication.over_replicated > 0 {
+        CheckStatus::Warn
+    } else {
+        CheckStatus::Pass
+    };
+    let placement_status = if placement.none > 0 {
+        CheckStatus::Fail
+    } else if placement.partial > 0 || placement.with_extras > 0 {
+        CheckStatus::Warn
+    } else {
+        CheckStatus::Pass
+    };
+    let bucket_status = if buckets.violations == 0 {
+        CheckStatus::Pass
+    } else {
+        CheckStatus::Fail
+    };
+    let local_top_k_status = if local_top_k.mismatches == 0 {
+        CheckStatus::Pass
+    } else {
+        CheckStatus::Fail
+    };
+    let convergence_status = if buckets.converged {
+        CheckStatus::Pass
+    } else {
+        CheckStatus::Warn
+    };
+
+    println!("━━━ Final Diagnostic Result ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    print_check(
+        set_status,
+        "SET completion",
+        &format!("{set_ok}/{NUM_RECORDS} complete"),
+    );
+    print_check(
+        get_status,
+        "GET retrieval",
+        &format!(
+            "{get_ok}/{set_ok} verified; paths local={local_gets}, remote-quorum={remote_gets} ({quorum_required}/{quorum_sample})"
+        ),
+    );
+    print_check(
+        replication_status,
+        "Replica counts",
+        &format!(
+            "below/exact/above k = {}/{}/{}",
+            replication.under_replicated, replication.exact_replicas, replication.over_replicated
+        ),
+    );
+    print_check(
+        placement_status,
+        "Global XOR placement",
+        &format!(
+            "full/partial/none = {}/{}/{}; extras={}",
+            placement.full, placement.partial, placement.none, placement.with_extras
+        ),
+    );
+    print_check(
+        bucket_status,
+        "Bucket partition",
+        &format!(
+            "{} buckets across {} nodes; violations={}",
+            buckets.buckets, buckets.nodes, buckets.violations
+        ),
+    );
+    print_check(
+        local_top_k_status,
+        "Local FIND_NODE top-k",
+        &format!(
+            "{}/{} exhaustive comparisons matched",
+            local_top_k.queries - local_top_k.mismatches,
+            local_top_k.queries
+        ),
+    );
+    print_check(
+        convergence_status,
+        "Convergence heuristic",
+        &format!("{} primary peers across the cluster", buckets.peers),
+    );
+
+    let statuses = [
+        set_status,
+        get_status,
+        replication_status,
+        placement_status,
+        bucket_status,
+        local_top_k_status,
+        convergence_status,
+    ];
+    let has_failures = statuses.contains(&CheckStatus::Fail);
+    let has_warnings = statuses.contains(&CheckStatus::Warn);
+
+    if has_failures {
+        println!("\n  OVERALL RESULT: FAILED ✗\n");
         std::process::exit(1);
+    } else if has_warnings {
+        println!("\n  OVERALL RESULT: PASSED WITH WARNINGS ~\n");
+    } else {
+        println!("\n  OVERALL RESULT: PASSED ✓\n");
     }
 }

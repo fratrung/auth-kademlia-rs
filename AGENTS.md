@@ -234,32 +234,39 @@ cargo run --release --example cache_bench
 ```
 
 ### `examples/topology_analysis.rs`
-30-node DHT topology analyser. Publishes 100 authenticated DID records from rotating writers, retrieves each from a node offset by half the cluster size (forcing real multi-hop lookups), then prints:
+30-node DHT topology analyser. It publishes 100 authenticated DID records,
+retrieves them from offset readers, and prints a concise diagnostic by default:
 
-1. **Latency table** — SET/GET avg, p50, p95, max.
-2. **Sample DID Documents** — full JSON of 3 published records.
-3. **Storage tables** — which DHT keys live on which node (with DID URI cross-reference).
-4. **Replication summary** — copy-count distribution per key.
-5. **XOR-distance correctness** — for each sampled record, identifies the k globally-closest nodes (XOR metric) and verifies they actually hold the record (Kademlia §2.3).
-6. **Bucket structure** — per-node k-bucket tree: bucket index, range boundaries, node count, depth, fresh/lonely status, and the nodes inside each bucket. Verifies correct binary splitting (§4.2).
-7. **Routing convergence** — avg buckets per node vs expected log₂(N); avg peers per node.
-8. **Flat routing tables** — full peer list per node for reference.
+1. **Operation summary** — SET/GET success, latency, and local vs remote-quorum GET paths.
+2. **Replication summary** — below/exact/above-`k` copy distribution.
+3. **Global XOR placement** — physical holders vs globally closest nodes, explicitly independent of GET quorum.
+4. **Local FIND_NODE top-k** — exhaustive oracle comparison for every node and published target.
+5. **Bucket invariants** — full 160-bit contiguous coverage, membership, uniqueness, and capacity.
+6. **Routing convergence** — average buckets and primary peers per node.
+7. **Final verdict** — `PASS`/`WARN`/`FAIL` per check with a non-zero exit for hard failures.
+
+Pass `--verbose` to include full DID samples, storage tables, per-key placement,
+complete inclusive bucket ranges and contents, and flat routing tables.
 
 ```bash
-# default k=20 alpha=3
+# default k=20 alpha=3, summary output
 cargo run --release --example topology_analysis
 
-# k=3: records replicated only on 3 closest nodes — best for observing XOR correctness
+# k=3 alpha=3, strict routing profile
 cargo run --release --example topology_analysis -- 3 3
+
+# full diagnostic output
+cargo run --release --example topology_analysis -- 3 3 --verbose
 
 # k=5 with DHT logs
 RUST_LOG=info cargo run --release --example topology_analysis -- 5 2
 ```
 
-Use this example to verify:
-- **Routing**: bucket splits occur at the right depth (§4.2), avg buckets ≈ log₂(N).
-- **Replication**: records land on the k globally-closest nodes, not arbitrary ones.
-- **Convergence**: after 2 bootstrap passes, every node knows ≈ k × log₂(N) peers.
+Use this example to distinguish:
+- **Local routing correctness**: each node returns its exact known primary top-k.
+- **Global convergence and placement**: iterative crawls approach globally closest nodes.
+- **Read availability**: remote DID GETs require a majority derived from `alpha`; local DID hits use the verified fast path.
+- **Extra replicas**: retained copies are warnings, not evidence of a local XOR-ordering failure.
 
 ## Docker
 

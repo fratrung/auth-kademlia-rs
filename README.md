@@ -359,38 +359,47 @@ to `Server::new` for benchmarking or security auditing.
 
 ### Routing topology diagnostic
 
-`examples/topology_analysis.rs` builds an in-process cluster of N nodes, stores M records, then emits eight diagnostic sections that verify Kademlia routing correctness without any mocks:
+`examples/topology_analysis.rs` builds a 30-node in-process cluster, publishes
+100 authenticated records, retrieves them through readers offset from their
+writers, and emits an actionable routing verdict.
 
-| Section | What it checks |
+The default output is a concise summary:
+
+| Check | What it validates |
 |---|---|
-| **Node discovery** | Each node lists the peers it found after bootstrapping |
-| **Routing table size** | Peer count per node — confirms convergence |
-| **Sample DID Documents** | 3 raw records stored in the DHT |
-| **Storage per node** | Which keys each node holds |
-| **Replication summary** | Copy-count distribution across the cluster |
-| **XOR correctness** | For each sampled record: are the k XOR-closest nodes the ones actually storing it? |
-| **Bucket structure** | Per-node bucket tree — index, node count, depth, fresh/lonely, range start |
-| **Flat routing tables** | Full peer list per node with IP:port |
+| **SET/GET** | Publication success, verified reads, latency, and local-fast-path vs remote-quorum counts |
+| **Replica counts** | Below/exact/above-`k` copy distribution |
+| **Global XOR placement** | Physical holders compared with the globally closest nodes; independent of GET quorum |
+| **Local FIND_NODE top-k** | Every node response compared with an exhaustive oracle over its known primary contacts |
+| **Bucket partition** | Full 160-bit coverage without gaps/overlaps, contact membership, uniqueness, and bucket capacity |
+| **Convergence** | Average bucket and primary-peer counts as a heuristic |
+| **Final result** | Per-check `PASS`/`WARN`/`FAIL`; hard failures produce a non-zero exit status |
 
-The XOR-correctness check is the key invariant: it sorts all nodes by XOR distance to each record's key and verifies that the k-closest nodes are the holders. Each record is labelled `[✓]` (all k-closest hold it), `[~]` (partial), or `[✗]` (none of the k-closest hold it).
+Use `--verbose` to additionally print three complete DID Documents, per-key
+storage and replica placement, inclusive 160-bit bucket ranges and contents,
+and flat routing tables.
 
 ```bash
-# default: k=20, alpha=3, 30 nodes, 100 records
+# default: k=20, alpha=3, summary output
 cargo run --release --example topology_analysis
 
-# k=3, alpha=3: strict diagnostic profile for XOR placement
+# k=3, alpha=3: strict routing profile
 cargo run --release --example topology_analysis -- 3 3
+
+# full diagnostic details
+cargo run --release --example topology_analysis -- 3 3 --verbose
 
 # k=5, alpha=2
 cargo run --release --example topology_analysis -- 5 2
 ```
 
-The `k=3, alpha=3` run is intentionally stringent: remote reads still require
-two identical responses, so incomplete routing convergence can occasionally
-produce a GET miss even when all STORE operations succeeded. Use this mode to
-inspect XOR placement, not as the production availability profile.
-
-The bucket-structure section also reports convergence quality: average buckets per node should approach log₂(N) for a well-converged cluster.
+The `k=3, alpha=3` profile requires two byte-identical responses for a remote
+GET. Local DID hits use the verified fast path and do not enter the remote
+quorum. A GET miss can therefore be a quorum-availability outcome even when a
+single valid remote copy exists; the separate physical-placement and local
+top-k checks prevent that outcome from being misreported as an XOR-routing
+failure. Extra retained replicas are reported as warnings rather than local
+top-k failures.
 
 ### Resilience &amp; robustness tests (Docker)
 
