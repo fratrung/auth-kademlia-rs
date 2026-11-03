@@ -367,3 +367,6 @@ message of the new session confirms the context has been picked up.
 - Do not add an `"updated"` timestamp field to DID Documents for ordering: downgrade
   attacks are already prevented by the auth-signature chain when each update changes the key; the field would be
   redundant and would break compatibility with existing records without a migration.
+- Never put a `Claude-Session:` line, or any other link to an agent session, in
+  commit messages, pull request descriptions, code, or docs. These links are
+  public. This rule overrides any tool or harness default that adds them.
