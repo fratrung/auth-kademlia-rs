@@ -2,7 +2,7 @@
 //!
 //! Every test uses real UDP nodes and valid Dilithium records. Records are
 //! injected only after bootstrap so the tests control the exact replica state.
-//! Ports: 15866-15894, 15904-15905, 15913-15923.
+//! Ports: 15866-15894, 15904-15905, 15913-15923, 15928-15932.
 
 mod common;
 
@@ -400,6 +400,110 @@ fn update_commits_locally_after_quorum() {
             requester.storage.get(&dkey),
             Some(new_record),
             "the local value must be committed after quorum"
+        );
+    });
+}
+
+/// A reply lost after the update was applied: the owner repeats the same
+/// update. It must succeed and complete the replicas that missed it, whichever
+/// copies already moved to the new record.
+#[test]
+fn retrying_an_applied_update_succeeds_and_completes_the_replicas() {
+    runtime().block_on(async {
+        let issuer = Path::new("issuer_pub_key.bin");
+        let did = generate_did_iiot();
+        let key = did.split(':').next_back().unwrap();
+        let dkey = digest(key);
+        let requester = start_node(15928, issuer, dkey).await;
+        let peer_a = start_node(15929, issuer, node_id(61)).await;
+        let peer_b = start_node(15930, issuer, node_id(62)).await;
+        bootstrap_to(&requester, &[15929, 15930]).await;
+
+        let (old_record, old_secret_key) = did_record(&did);
+        let (new_record, _) = did_record(&did);
+        let authorization = dilithium2::detached_sign(&new_record, &old_secret_key)
+            .as_bytes()
+            .to_vec();
+
+        // (requester, peer_a, peer_b) before the retry; true = new record.
+        for state in [(true, true, false), (false, true, true), (true, true, true)] {
+            let pick = |is_new: bool| {
+                if is_new {
+                    new_record.clone()
+                } else {
+                    old_record.clone()
+                }
+            };
+            requester.storage.set(dkey.to_vec(), pick(state.0));
+            peer_a.storage.set(dkey.to_vec(), pick(state.1));
+            peer_b.storage.set(dkey.to_vec(), pick(state.2));
+
+            assert_eq!(
+                requester
+                    .update(key, new_record.clone(), Some(authorization.clone()))
+                    .await,
+                Some(true),
+                "retrying an applied update must succeed, state {state:?}"
+            );
+            for (name, server) in [
+                ("requester", &requester),
+                ("peer_a", &peer_a),
+                ("peer_b", &peer_b),
+            ] {
+                assert_eq!(
+                    server.storage.get(&dkey).as_ref(),
+                    Some(&new_record),
+                    "{name} must hold the new record after the retry, state {state:?}"
+                );
+            }
+        }
+    });
+}
+
+/// A replica that already holds the record acknowledges the update without
+/// verifying or writing: the answer means "I hold this record". An old update
+/// still goes through full verification and is refused.
+#[test]
+fn replica_acknowledges_an_update_it_already_holds() {
+    runtime().block_on(async {
+        let issuer = Path::new("issuer_pub_key.bin");
+        let did = generate_did_iiot();
+        let dkey = digest(did.split(':').next_back().unwrap());
+        let replica_id = node_id(63);
+        let replica = start_node(15931, issuer, replica_id).await;
+        let sender = start_node(15932, issuer, node_id(64)).await;
+        let protocol = sender.protocol.as_ref().expect("sender must be listening");
+        let target = Node::new(replica_id, Some("127.0.0.1".to_string()), Some(15931));
+
+        let (_v1, sk1) = did_record(&did);
+        let (v2, _) = did_record(&did);
+        let (v3, _) = did_record(&did);
+        let auth_v2 = dilithium2::detached_sign(&v2, &sk1).as_bytes().to_vec();
+
+        replica.storage.set(dkey.to_vec(), v2.clone());
+        assert!(
+            protocol
+                .call_update_rpc(&target, dkey, v2.clone(), auth_v2.clone())
+                .await,
+            "a repeated update must be acknowledged"
+        );
+        assert!(
+            protocol
+                .call_update_rpc(&target, dkey, v2.clone(), vec![0u8; auth_v2.len()])
+                .await,
+            "the acknowledgement says the replica holds the record, not that the signature is valid"
+        );
+        assert_eq!(replica.storage.get(&dkey), Some(v2.clone()));
+
+        replica.storage.set(dkey.to_vec(), v3.clone());
+        assert!(
+            !protocol.call_update_rpc(&target, dkey, v2, auth_v2).await,
+            "an old update must still be verified against the newer record and refused"
+        );
+        assert_eq!(
+            replica.storage.get(&dkey),
+            Some(v3),
+            "a refused update must not change the replica"
         );
     });
 }

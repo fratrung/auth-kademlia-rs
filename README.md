@@ -142,9 +142,11 @@ the default `alpha = 3`, a strict **2-of-3 majority**.
   Later STOREs return `Conflict` in both directions, so it does not catch up and
   reads can still return its copy. `update` checks the authorization against the
   first copy it reads, so a stale or forged copy that answers first makes it
-  return `None`. Retrying an update that already reached a replica returns `None`
-  or counts that replica as a refusal. A node that holds a copy but is outside
-  the `k` closest does not update it, and its next `update` returns `None`.
+  return `None`. A node that holds a copy but is outside the `k` closest does
+  not update it, and its next `update` returns `None`.
+- **Retrying an update:** repeating the same update is safe. A replica that
+  already holds the new record acknowledges it without writing, and the retry
+  completes the replicas that missed it. The retry must resend the same bytes.
 - **TTL:** records written to the default storage expire lazily after 14 days.
   Applications that need continued availability must refresh them through a
   legitimate publish or update before expiry.

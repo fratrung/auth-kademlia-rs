@@ -18,7 +18,7 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 220 tests
+cargo test                           # all 222 tests
 cargo test <name>                    # single test, e.g. test_update_did_record_key_rotation
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -165,9 +165,14 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
   `sk_v2`. An update that keeps the key stays replayable: its old auth signature still
   verifies, and nothing rejects a new record with the same key.
 - UPDATE does not converge on its own. `Server::update` checks the authorization against
-  the first copy it reads, `rpc_update` rejects a missing record and an already applied
-  one, and a replica that missed an update gets `Conflict` on every later STORE. The
-  quorum counts only nodes that responded during the lookup.
+  the first copy it reads, `rpc_update` rejects a missing record, and a replica that missed
+  an update gets `Conflict` on every later STORE. The quorum counts only nodes that
+  responded during the lookup.
+- Retrying an applied UPDATE is safe. `rpc_update` acknowledges a record identical to the
+  stored one without verifying or writing it, and does not touch routing: the answer means
+  the replica holds the record, not that the signature is valid. `Server::update` treats a
+  copy that already is the new record as authorized and publishes it again, so the retry
+  completes the replicas that missed it. Retries must resend the saved bytes.
 - There is no DELETE API or RPC. Active records are never removed explicitly;
   TTL expiry is the only record-removal mechanism.
 - DHT key = `digest(did_uuid_string)` where `digest` is SHA-1 → `[u8; 20]`.
@@ -202,7 +207,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/scenarios/churn.rs` | 1 | Publisher leaves, record survives for new joiner |
 | `tests/scenarios/worker_pool.rs` | 1 | 40-client burst, all responses delivered |
 | `tests/scenarios/crypto.rs` | 4 | End-to-end crypto invariants (tamper, injection, downgrade, revocation) |
-| `tests/quorum_tests.rs` | 10 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum, and delayed UPDATE commit scenarios |
+| `tests/quorum_tests.rs` | 12 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum, delayed UPDATE commit, and retry of an applied UPDATE scenarios |
 | `src/**` (inline) | 118 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
@@ -236,8 +241,9 @@ All tests are network-clean (loopback only) and run in parallel without interfer
 | 15906–15912 | recovery: outage, late seed, lone node |
 | 15913–15923 | DID GET without a vote: single copy, invalid record, dead peer |
 | 15924–15927 | publication with a dead peer that others keep reporting |
+| 15928–15932 | retry of an already applied UPDATE |
 
-When adding a new integration test use ports **15928+** and document them here (15900 is reserved below).
+When adding a new integration test use ports **15933+** and document them here (15900 is reserved below).
 
 | 15900 | resilience test: Node A victim (host-exposed UDP, Docker only) |
 

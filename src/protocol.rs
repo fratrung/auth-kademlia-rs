@@ -837,6 +837,12 @@ impl KademliaProtocol {
                 return false;
             }
         };
+        // A retry of an update this replica already applied: there is nothing
+        // to verify or write. The answer means "I hold this record", not that
+        // the signature is valid, so the sender is not added to the routing table.
+        if old_value == value {
+            return true;
+        }
         let handler = Arc::clone(&self.signature_handler);
         let v = value.clone();
         let expected_key = key;
