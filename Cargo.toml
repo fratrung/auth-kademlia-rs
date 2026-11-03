@@ -20,6 +20,10 @@ path = "scripts/resilience_victim.rs"
 name = "resilience_attacker"
 path = "scripts/resilience_attacker.rs"
 
+[[bin]]
+name = "testbed_node"
+path = "testbed/node.rs"
+
 [features]
 default = []
 # Build the Python extension module:

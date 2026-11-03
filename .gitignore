@@ -23,3 +23,6 @@ degradation.json
 code_review.md
 TODO.md
 dht_robustness_issues.md
+
+# Testbed: generated compose file and configuration
+testbed/.generated/

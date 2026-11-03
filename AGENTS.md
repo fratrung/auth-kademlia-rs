@@ -92,6 +92,8 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/utils.rs` | `digest()` (SHA-1 → `[u8; 20]`), `digest_bytes()`, `ID_LEN = 20`, `STATUS_LIST_KEY` |
 | `scripts/dht_node.rs` | Docker container entry point (`publisher` / `retriever` roles) |
 | `tests/common/mod.rs` | Shared test helpers: `start_node`, `build_did_document`, `build_signed_record`, `generate_did_iiot` |
+| `testbed/node.rs` | Testbed node (`testbed_node` binary): one DHT node per container, driven through a control socket inside the container |
+| `testbed/testbed.py` | Testbed driver: generates the Docker network, applies `tc netem` profiles, sends commands to nodes |
 
 ## Wire record format
 ```
@@ -303,6 +305,19 @@ docker compose logs -f dht_peer_2   # follow a single container
 `DEMO_DID_UUID` in `.env` is the shared key for the publisher→retriever demo.
 Environment variables per container: `NODE_PORT`, `IS_SEED`, `BOOTSTRAP_ADDR`,
 `ROLE` (`publisher`|`retriever`), `FIXED_DID_UUID`, `RETRIEVE_KEY`, `RUST_LOG`.
+
+### Testbed (`testbed/`)
+N nodes in Docker with configurable `k`, `alpha`, seeds and `tc netem` profiles
+(LAN, WAN Europe, WAN Trans-Atlantic, from Verizon's published latencies).
+```
+testbed/testbed.py up --nodes 10 --k 3 --profile wan-eu
+testbed/testbed.py ctl node-3 publish        # also: update, get, storage, routing
+testbed/testbed.py get node-3 --from node-5
+testbed/testbed.py pause node-10             # also: netem, stop, start, logs
+testbed/testbed.py down
+```
+See `testbed/README.md`. Only the interactive mode exists; the measurement mode
+needs library counters behind a Cargo feature that is off by default.
 
 ### Resilience / attack test (`resilience/docker-compose.yaml`)
 ```
