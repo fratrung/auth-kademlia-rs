@@ -13,6 +13,8 @@
 //!   5. Invalid-signature rejection — malformed records are refused on `set`.
 //!   6. Bootstrap with no reachable peers — returns empty list gracefully.
 //!   7. DID identifier binding — a record cannot occupy another DID's key.
+//!   8. Shutdown — `stop` and `drop` terminate the node and release its port.
+//!   9. Recovery — contacts survive an outage and nodes rejoin on their own.
 //!
 //! Port allocation (each test uses a dedicated range to allow parallel execution):
 //!   - test 1: 15700–15701
@@ -23,15 +25,24 @@
 //!   - test 6: 15760
 //!   - test 7: 15897
 //!   - storage-capacity report: 15895-15896
+//!   - shutdown: 15898-15899, 15901-15903
+//!   - recovery: 15906-15912
+//!   - dead peer during publication: 15924-15927
 
 mod common;
+
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use pqcrypto_dilithium::dilithium2;
 use pqcrypto_kyber::kyber512;
 use pqcrypto_traits::sign::DetachedSignature;
-use tokio::time::{sleep, Duration};
+use tokio::net::UdpSocket;
+use tokio::time::{sleep, timeout, Duration};
 
-use auth_kademlia_rs::network::SetOutcome;
+use auth_kademlia_rs::network::{SetOutcome, SetRejection};
+use auth_kademlia_rs::node::Node;
 use auth_kademlia_rs::storage::IStorage;
 use auth_kademlia_rs::utils::digest;
 
@@ -445,4 +456,282 @@ async fn test_set_detailed_reports_capacity_degraded_replication() {
 
     limited.stop().await;
     replica.stop().await;
+}
+
+/// Well below the 2.5 s RPC timeout: `stop` must not wait on any peer.
+const STOP_BUDGET: Duration = Duration::from_secs(1);
+
+/// A stopped node must notify its peer without waiting for a reply, release
+/// its port, and be able to rejoin the network on that same port.
+#[tokio::test]
+async fn test_stop_is_prompt_releases_port_and_allows_rejoin() {
+    let mut node = start_node(15898).await;
+    let peer = start_node(15899).await;
+    peer.bootstrap(vec![("127.0.0.1".to_string(), 15898)]).await;
+    sleep(Duration::from_millis(200)).await;
+    assert_eq!(peer.stats().await.routing_nodes, 1);
+
+    timeout(STOP_BUDGET, node.stop())
+        .await
+        .expect("stop must not wait for a Leave response");
+    assert!(!node.stats().await.listening);
+
+    sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        peer.stats().await.routing_nodes,
+        0,
+        "the peer must process Leave and remove the stopped node"
+    );
+
+    std::net::UdpSocket::bind(("127.0.0.1", 15898)).expect("stop must release the port");
+    node.stop().await; // A second stop is a no-op.
+
+    node.listen(15898, "127.0.0.1")
+        .await
+        .expect("a stopped server must be able to listen again");
+    let rejoined = node.bootstrap(vec![("127.0.0.1".to_string(), 15899)]).await;
+    assert!(!rejoined.is_empty(), "the restarted node must rejoin");
+    sleep(Duration::from_millis(200)).await;
+    assert_eq!(peer.stats().await.routing_nodes, 1);
+}
+
+/// Dropping a server without calling `stop` must not leak a running node.
+#[tokio::test]
+async fn test_dropping_server_releases_port() {
+    let node = start_node(15901).await;
+    drop(node);
+
+    timeout(Duration::from_secs(1), async {
+        while std::net::UdpSocket::bind(("127.0.0.1", 15901)).is_err() {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("dropping the server must release the port");
+}
+
+/// `stop` must also cancel background work already waiting on a dead peer:
+/// here, replication to a new contact that never answers.
+#[tokio::test]
+async fn test_stop_cancels_in_flight_replication() {
+    let mut node = start_node(15902).await;
+    let _silent_peer = std::net::UdpSocket::bind(("127.0.0.1", 15903)).expect("bind");
+    node.storage.set(vec![7; 20], b"record".to_vec());
+    node.protocol
+        .as_ref()
+        .expect("node is listening")
+        .rpc_ping([9; 20], ("127.0.0.1".to_string(), 15903))
+        .await;
+    sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        node.stats().await.routing_nodes,
+        1,
+        "the replication task must have started"
+    );
+
+    timeout(STOP_BUDGET, node.stop())
+        .await
+        .expect("stop must not wait for in-flight replication");
+    std::net::UdpSocket::bind(("127.0.0.1", 15902)).expect("stop must release the port");
+}
+
+/// Long enough for a probe that started just before the network came back to
+/// time out, for its backoff to elapse, and for the next probe to succeed.
+const RECOVERY_BUDGET: Duration = Duration::from_secs(30);
+
+/// Build a valid record for a new DID, returning `(did, dht_key, record)`.
+fn new_record() -> (String, String, Vec<u8>) {
+    let did = generate_did_iiot();
+    let key = did.split(':').next_back().unwrap().to_string();
+    let record = record_for_did(&did);
+    (did, key, record)
+}
+
+fn record_for_did(did: &str) -> Vec<u8> {
+    let (dpk, dsk) = dilithium2::keypair();
+    let (kpk, _) = kyber512::keypair();
+    build_signed_record(&build_did_document(did, &dpk, &kpk), &dsk, "Dilithium-2")
+}
+
+/// Forward datagrams between two nodes until the returned flag is raised, which
+/// drops everything. The first node reaches the second at `port_towards_b`, and
+/// the second sees the first at `port_towards_a`.
+async fn start_interruptible_link(
+    port_a: u16,
+    port_b: u16,
+    port_towards_b: u16,
+    port_towards_a: u16,
+) -> Arc<AtomicBool> {
+    let towards_b = Arc::new(
+        UdpSocket::bind(("127.0.0.1", port_towards_b))
+            .await
+            .unwrap(),
+    );
+    let towards_a = Arc::new(
+        UdpSocket::bind(("127.0.0.1", port_towards_a))
+            .await
+            .unwrap(),
+    );
+    let down = Arc::new(AtomicBool::new(false));
+    let addr = |port: u16| SocketAddr::from(([127, 0, 0, 1], port));
+
+    for (rx, tx, destination) in [
+        (towards_b.clone(), towards_a.clone(), addr(port_b)),
+        (towards_a, towards_b, addr(port_a)),
+    ] {
+        let down = Arc::clone(&down);
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 2048];
+            while let Ok((len, _)) = rx.recv_from(&mut buf).await {
+                if !down.load(Ordering::Relaxed) {
+                    let _ = tx.send_to(&buf[..len], destination).await;
+                }
+            }
+        });
+    }
+    down
+}
+
+/// Kademlia §4.1: a node that loses its connection must not void its table. After
+/// the outage both nodes reconnect with no outside help, the record published in
+/// the meantime reaches the other replica, and first-writer-wins applies again.
+#[tokio::test]
+async fn test_outage_keeps_contacts_and_nodes_recover_on_their_own() {
+    let (port_a, port_b, port_towards_b, port_towards_a) = (15906, 15907, 15908, 15909);
+    let a = start_node(port_a).await;
+    let b = start_node(port_b).await;
+    let down = start_interruptible_link(port_a, port_b, port_towards_b, port_towards_a).await;
+    a.bootstrap(vec![("127.0.0.1".to_string(), port_towards_b)])
+        .await;
+    sleep(Duration::from_millis(300)).await;
+    assert_eq!(a.stats().await.live_routing_nodes, 1);
+    assert_eq!(b.stats().await.live_routing_nodes, 1);
+
+    down.store(true, Ordering::Relaxed);
+    let (_, absent_a, _) = new_record();
+    let (_, absent_b, _) = new_record();
+    let (found_a, found_b) = tokio::join!(a.get(&absent_a), b.get(&absent_b));
+    assert!(found_a.is_none() && found_b.is_none());
+    for node in [&a, &b] {
+        let stats = node.stats().await;
+        assert_eq!(
+            stats.routing_nodes, 1,
+            "a timeout must not remove the contact"
+        );
+        assert_eq!(stats.live_routing_nodes, 0);
+    }
+
+    let (_, during_outage, record) = new_record();
+    let outcome = a.set_detailed(&during_outage, record).await;
+    assert!(
+        matches!(outcome, SetOutcome::Degraded(_)),
+        "a node that is cut off must not report a complete publication: {outcome:?}"
+    );
+
+    down.store(false, Ordering::Relaxed);
+    timeout(RECOVERY_BUDGET, async {
+        while b.storage.get(&digest(&during_outage)).is_none() {
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the record published during the outage must reach the other replica");
+
+    let (did, key, record) = new_record();
+    let outcome = a.set_detailed(&key, record.clone()).await;
+    assert!(matches!(outcome, SetOutcome::Complete(_)), "{outcome:?}");
+    assert_eq!(b.get(&key).await, Some(record));
+
+    let outcome = b.set_detailed(&key, record_for_did(&did)).await;
+    assert!(
+        matches!(
+            outcome,
+            SetOutcome::Rejected {
+                reason: SetRejection::ExistingRecord,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+}
+
+/// A node that starts before its seed keeps trying, and hands over what it
+/// published while cut off.
+#[tokio::test]
+async fn test_node_joins_when_its_seed_starts_late() {
+    let (port, seed_port) = (15910, 15911);
+    let node = start_node(port).await;
+    assert!(node
+        .bootstrap(vec![("127.0.0.1".to_string(), seed_port)])
+        .await
+        .is_empty());
+
+    let (_, key, record) = new_record();
+    let outcome = node.set_detailed(&key, record).await;
+    assert!(
+        matches!(outcome, SetOutcome::Degraded(_)),
+        "a node with an unreachable seed is cut off, not alone: {outcome:?}"
+    );
+
+    let seed = start_node(seed_port).await;
+    timeout(RECOVERY_BUDGET, async {
+        while seed.storage.get(&digest(&key)).is_none() {
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the node must join and hand over its record");
+    assert_eq!(node.stats().await.live_routing_nodes, 1);
+}
+
+/// Kademlia §2.3 and §4.1: a dead peer is neither a replica nor worth another
+/// timeout, even though the other nodes have not tried it and keep reporting it.
+#[tokio::test]
+async fn test_set_ignores_a_dead_peer_that_others_keep_reporting() {
+    let writer = start_node(15924).await;
+    let peer_a = start_node(15925).await;
+    let peer_b = start_node(15926).await;
+    let _silent = std::net::UdpSocket::bind(("127.0.0.1", 15927)).expect("bind");
+    writer
+        .bootstrap(vec![
+            ("127.0.0.1".to_string(), 15925),
+            ("127.0.0.1".to_string(), 15926),
+        ])
+        .await;
+    sleep(Duration::from_millis(300)).await;
+    let dead = Node::new(
+        digest("dead-peer"),
+        Some("127.0.0.1".to_string()),
+        Some(15927),
+    );
+    for node in [&writer, &peer_a, &peer_b] {
+        let protocol = node.protocol.as_ref().expect("node is listening");
+        protocol.router.write().await.add_contact(dead.clone());
+    }
+
+    let (_, key, record) = new_record();
+    let first = writer.set_detailed(&key, record).await;
+    assert!(matches!(first, SetOutcome::Complete(_)), "{first:?}");
+    assert_eq!(first.report().expected_replicas, 3);
+    assert_eq!(first.report().unavailable_nodes, 1);
+
+    let (_, key, record) = new_record();
+    let started = std::time::Instant::now();
+    let second = writer.set_detailed(&key, record).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the second publication took {:?}",
+        started.elapsed()
+    );
+    assert!(matches!(second, SetOutcome::Complete(_)), "{second:?}");
+    assert_eq!(second.report().unavailable_nodes, 1);
+}
+
+/// The first node of a network has nobody to reach, so one copy is complete.
+#[tokio::test]
+async fn test_node_that_never_had_contacts_publishes_completely() {
+    let node = start_node(15912).await;
+    let (_, key, record) = new_record();
+    let outcome = node.set_detailed(&key, record).await;
+    assert!(matches!(outcome, SetOutcome::Complete(_)), "{outcome:?}");
 }

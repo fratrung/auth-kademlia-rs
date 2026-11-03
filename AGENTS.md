@@ -18,7 +18,7 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 196 tests
+cargo test                           # all 220 tests
 cargo test <name>                    # single test, e.g. test_update_did_record_key_rotation
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -75,9 +75,9 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | File | Role |
 |---|---|
 | `src/protocol.rs` | UDP transport, fragmentation, RPC dispatch (`rpc_store`, `rpc_update`, `rpc_find_node`, `rpc_find_value`) |
-| `src/network.rs` | Public `Server` API: `set/get/update`, bootstrap, refresh loop |
+| `src/network.rs` | Public `Server` API: `set/get/update`, bootstrap, refresh and maintenance loops |
 | `src/crawling.rs` | Iterative lookup — `NodeSpiderCrawl` (find nodes) + `ValueSpiderCrawl` (find value) |
-| `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `find_neighbors` returns the exact local top-k across all known primary contacts; `touch_last_updated()` is called only for the bucket containing the lookup target — bucket staleness reflects lookup activity, not node additions |
+| `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `find_neighbors` returns the exact local top-k across known primary contacts, skipping failing ones (see Concurrency model); `touch_last_updated()` is called only for the bucket containing the lookup target — bucket staleness reflects lookup activity, not node additions |
 | `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day TTL and configurable byte budget (default 512 MiB), with lazy expiry on read |
 | `src/signature_cache.rs` | `SignatureCache` — moka bounded cache (SHA-256 key, TTL 1 h, 4096 entries) for Dilithium verification results |
 | `src/fragmentation.rs` | KADF fragmentation + reassembly (`encode_fragments`, `parse_fragment`, `ReassemblyMap`) |
@@ -138,22 +138,36 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 - Blocking thread pool (`spawn_blocking`) is bounded at the runtime level via `max_blocking_threads(available_parallelism())` in `scripts/dht_node.rs`. This caps concurrent Dilithium verifications to the number of physical cores, covering all call sites uniformly (`verify_for_key`, `verify_value`, `update`). `KademliaProtocol` carries no application-level semaphore.
 - `SignatureCache` is keyed on `SHA-256(record_bytes)`. TTL 1 h, capacity 4096 (moka TinyLFU). Eviction = cache miss = full re-verification (never a security bypass). On a cache miss the SHA-256 key is computed once via `compute_key()` and reused for both `get_by_key` and `insert_by_key` — never twice.
 - `welcome_if_new` replication uses two conditions (Kademlia §2.5, matches Python AuthKademlia): `new_node_close` (new node is XOR-closer than the farthest k-neighbor) AND `this_closest` (this node is closer than the nearest k-neighbor). Both must be true to replicate. Neighbors are computed before `add_contact` so the new node is excluded from comparisons.
-- `schedule_stats_log()` emits a `[stats]` log line every 60 s: routing table size, storage record count, used/max storage bytes, and (when enabled) signature cache entries.
+- `schedule_stats_log()` emits a `[stats]` log line every 60 s: routing table size and live contacts, storage record count, used/max storage bytes, and (when enabled) signature cache entries.
+- Every task that holds the protocol (receive loop, workers, refresh, maintenance, stats, save-state, `welcome_if_new`, LRU pings) must start through `KademliaProtocol::spawn_task`, never `tokio::spawn`; otherwise it keeps the socket bound after shutdown. `Server::stop` sends `Leave` without waiting for a reply, cancels those tasks, and returns once the socket is released, so `listen` can be called again. Dropping a `Server` cancels them too, without sending `Leave`.
+- **Unresponsive contacts** (Kademlia §4.1, unlike Python): a timeout calls `record_failure`, it does not remove the contact. Each failure sets a `retry_after` with exponential backoff (5 s to 300 s, plus jitter), and failures inside that window are not counted, so a burst of concurrent timeouts counts once. After `STALE_AFTER_FAILURES` (5) in a row a contact is stale: it is removed only if a replacement exists, otherwise it stays flagged, is not advertised (`find_neighbors_to_advertise`), and gives way to a new contact when its bucket is full. Any response clears the failures; a failing contact is cleared only from its registered endpoint, while a stale one also accepts a new endpoint. `find_neighbors` skips failing contacts while at least `read_quorum(alpha)` healthy ones remain, and uses stale ones last. `Leave` still removes the contact immediately.
+- **Recovery** (`schedule_maintenance`): a 1 s tick pings failing contacts whose backoff has elapsed, so user lookups do not pay for them. While no contact is live it also retries the addresses given to `bootstrap` (`seeds`), with backoff up to 60 s, and runs a self-lookup once reconnected. It does no network work while the table is healthy. A contact silent for at least `RETURNED_AFTER` goes through `welcome` when it comes back, so it receives the records it missed.
+- **Lookups and dead contacts** (Kademlia §2.3, §4.1): a crawl never re-admits a peer that failed during it, and does not query a reported contact this node knows is failing (`SpiderProtocol::failing_among`), because other nodes that have not tried it keep reporting it. Initial peers are exempt, so `find_neighbors` can still use failing contacts as a last resort. The result holds only peers that responded, so no STORE goes to a dead peer. `set_detailed` counts the others in `unavailable_nodes`, not in `expected_replicas`: `Complete` means every node that responded holds the record. The first lookup after a peer dies still waits `RPC_TIMEOUT` (2.5 s) per round that contains a dead peer, because rounds wait for all their RPCs.
+- **Publication while cut off**: if no remote replica is reachable but the node has known contacts or seeds, `set_detailed` counts one unavailable replica and reports `Degraded`. A node that never had contacts or seeds still reports `Complete 1/1`.
 - **Routing table internals** (`src/routing.rs`): `KBucket.add_node()` does **not** update `last_updated`; only lookups reset the timer. `find_neighbors` touches the bucket containing the lookup target, evaluates every known primary contact with the full 160-bit XOR metric, excludes `target.id` and the optional caller-supplied peer, then returns the exact local top-k. Split condition §4.2: `covers(local_node) OR depth % 5 != 0`.
 
 ## Key invariants
 - Records are **immutable after creation**: byte-identical STORE retries return `AlreadyStored`; different bytes for the same key return `Conflict`.
 - A new `set()` reuses the nodes from one `ValueSpiderCrawl`. An identical retry performs node discovery so missing replicas can be completed. Remote candidates plus the local node are XOR-sorted and truncated to `k`, preventing `k+1` copies.
-- Remote DID GET quorum is derived from `alpha` and is not independently
-  configurable. With `alpha = 3`, two byte-identical record responses are
-  required. In the diagnostic `k = 3, alpha = 3` topology, reaching only one
-  holder therefore returns `None` even when that copy is valid; occasional
-  randomized GET misses can reflect this narrow quorum plus transient routing
-  convergence rather than an XOR-distance defect.
+- A remote DID GET takes no vote: `find_first_valid` returns the first record
+  that passes DID binding and signature verification (Kademlia §2.3), discards
+  any that fail, and cancels the requests still in flight. This does not prove
+  the record is current or authentic: a stale replica or a forged, correctly
+  self-signed record passes too. Authenticity comes from the caller comparing
+  the public key with the hash in the VC, so do not treat `get` as an identity
+  check. Do not bring the vote back as a defence: two colluding nodes win it.
+- The Status List GET keeps a quorum derived from `alpha`, not independently
+  configurable: with `alpha = 3`, two byte-identical record responses, or `None`.
 - Updates require `auth_signature = sign(new_record_bytes, old_private_key)`.
   `verify_key_rotation()` checks: (1) auth_sig valid under old public key, (2) new record self-signed.
-  **Downgrade attacks are impossible**: to submit `record_v1` as "new" when `record_v2`
-  is stored, an attacker would need to sign with `sk_v2` — which they do not possess.
+  **Downgrade is rejected as long as every update changes the signing key**: to submit
+  `record_v1` as "new" when `record_v2` is stored, an attacker would need to sign with
+  `sk_v2`. An update that keeps the key stays replayable: its old auth signature still
+  verifies, and nothing rejects a new record with the same key.
+- UPDATE does not converge on its own. `Server::update` checks the authorization against
+  the first copy it reads, `rpc_update` rejects a missing record and an already applied
+  one, and a replica that missed an update gets `Conflict` on every later STORE. The
+  quorum counts only nodes that responded during the lookup.
 - There is no DELETE API or RPC. Active records are never removed explicitly;
   TTL expiry is the only record-removal mechanism.
 - DHT key = `digest(did_uuid_string)` where `digest` is SHA-1 → `[u8; 20]`.
@@ -170,7 +184,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
   `int(node_id.hex(), 16)`. Bucket ranges (`routing.rs`) are `U256` over
   `[0, 2^160)`. Never reintroduce a `u128` projection — it inverts ordering
   and collides ids.
-- `STATUS_LIST_KEY = digest("did:iiot:status-list")` uses issuer-node
+- `STATUS_LIST_KEY = digest("status-list")` uses issuer-node
   verification instead of DID-owner verification.
 - `issuer.bin` is read lazily; if absent, a `log::warn!` is emitted at startup
   and only `STATUS_LIST_KEY` operations are affected (normal DID records are not).
@@ -178,7 +192,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 ## Test suite structure
 | File | Count | Notes |
 |---|---|---|
-| `tests/network_tests.rs` | 10 | Full multi-node integration tests (real UDP) |
+| `tests/network_tests.rs` | 17 | Full multi-node integration tests (real UDP) |
 | `tests/crypto_tests.rs` | 28 | Crypto layer unit + DID handler unit tests |
 | `tests/routing_tests.rs` | 22 | Routing table unit tests |
 | `tests/storage_tests.rs` | 15 | `ForgetfulStorage` unit tests (includes `insert_if_absent` cases) |
@@ -188,8 +202,8 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/scenarios/churn.rs` | 1 | Publisher leaves, record survives for new joiner |
 | `tests/scenarios/worker_pool.rs` | 1 | 40-client burst, all responses delivered |
 | `tests/scenarios/crypto.rs` | 4 | End-to-end crypto invariants (tamper, injection, downgrade, revocation) |
-| `tests/quorum_tests.rs` | 7 | Real-UDP quorum, multi-hop lookup, local fast-path, Status List, and delayed UPDATE commit scenarios |
-| `src/**` (inline) | 104 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
+| `tests/quorum_tests.rs` | 10 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum, and delayed UPDATE commit scenarios |
+| `src/**` (inline) | 118 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 
@@ -217,8 +231,13 @@ All tests are network-clean (loopback only) and run in parallel without interfer
 | 15888–15894 | quorum consistency: iterative multi-hop DID GET |
 | 15895–15896 | degraded SET report when one responsible node is at capacity |
 | 15897 | valid DID record rejected under a different DID UUID key |
+| 15898–15899, 15901–15903 | shutdown: `stop`, server drop, and cancellation of in-flight replication |
+| 15904–15905 | Status List publication under the Python issuer's key |
+| 15906–15912 | recovery: outage, late seed, lone node |
+| 15913–15923 | DID GET without a vote: single copy, invalid record, dead peer |
+| 15924–15927 | publication with a dead peer that others keep reporting |
 
-When adding a new integration test use ports **15898+** and document them here (15900 is reserved below).
+When adding a new integration test use ports **15928+** and document them here (15900 is reserved below).
 
 | 15900 | resilience test: Node A victim (host-exposed UDP, Docker only) |
 
@@ -237,9 +256,9 @@ cargo run --release --example cache_bench
 30-node DHT topology analyser. It publishes 100 authenticated DID records,
 retrieves them from offset readers, and prints a concise diagnostic by default:
 
-1. **Operation summary** — SET/GET success, latency, and local vs remote-quorum GET paths.
+1. **Operation summary** — SET/GET success, latency, and local vs remote GET paths.
 2. **Replication summary** — below/exact/above-`k` copy distribution.
-3. **Global XOR placement** — physical holders vs globally closest nodes, explicitly independent of GET quorum.
+3. **Global XOR placement** — physical holders vs globally closest nodes, explicitly independent of GET.
 4. **Local FIND_NODE top-k** — exhaustive oracle comparison for every node and published target.
 5. **Bucket invariants** — full 160-bit contiguous coverage, membership, uniqueness, and capacity.
 6. **Routing convergence** — average buckets and primary peers per node.
@@ -265,7 +284,7 @@ RUST_LOG=info cargo run --release --example topology_analysis -- 5 2
 Use this example to distinguish:
 - **Local routing correctness**: each node returns its exact known primary top-k.
 - **Global convergence and placement**: iterative crawls approach globally closest nodes.
-- **Read availability**: remote DID GETs require a majority derived from `alpha`; local DID hits use the verified fast path.
+- **Read availability**: a remote DID GET returns the first verified copy; local DID hits use the verified fast path.
 - **Extra replicas**: retained copies are warnings, not evidence of a local XOR-ordering failure.
 
 ## Docker
@@ -325,5 +344,5 @@ message of the new session confirms the context has been picked up.
 - Do not add new integration tests on already-used port ranges.
 - Do not enable the `python` feature in Rust-only deployments (`cdylib` changes linking).
 - Do not add an `"updated"` timestamp field to DID Documents for ordering: downgrade
-  attacks are already prevented by the auth-signature chain; the field would be
+  attacks are already prevented by the auth-signature chain when each update changes the key; the field would be
   redundant and would break compatibility with existing records without a migration.

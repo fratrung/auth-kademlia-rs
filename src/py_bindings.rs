@@ -106,6 +106,7 @@ fn server_stats_to_py(py: Python<'_>, stats: ServerStats) -> PyResult<PyObject> 
     result.set_item("node_id", PyBytes::new_bound(py, &stats.node_id))?;
     result.set_item("listening", stats.listening)?;
     result.set_item("routing_nodes", stats.routing_nodes)?;
+    result.set_item("live_routing_nodes", stats.live_routing_nodes)?;
     result.set_item("storage_records", stats.storage_records)?;
     result.set_item("storage_bytes", stats.storage_bytes)?;
     result.set_item("max_storage_bytes", stats.max_storage_bytes)?;
@@ -344,8 +345,8 @@ impl PyServer {
 
     /// Gracefully shut down the node.
     ///
-    /// Notifies all known neighbours via Leave RPCs, then cancels background
-    /// refresh and save tasks.
+    /// Notifies the closest neighbours via Leave RPCs, cancels all background
+    /// tasks, and releases the socket. ``listen`` may be called again afterwards.
     fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {

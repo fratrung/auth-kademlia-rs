@@ -106,52 +106,61 @@ By inspecting fragments you can identify the internal composition of a PQC recor
 
 ## Record Consistency and Lifetime
 
-AuthKademlia-RS uses a bounded consistency group without adding versions,
-timestamps, or new fields to the wire protocol. With the default
-`alpha = 3`, consistency decisions require a strict **2-of-3 majority** of
-byte-identical records. The Dilithium signature is verified once, after a
-winner has been selected; a split with no strict majority returns no value.
+AuthKademlia-RS adds no versions, timestamps, or new fields to the wire
+protocol. A remote DID Document read takes the first record that passes
+verification. The Status List and UPDATE use a bounded consistency group: with
+the default `alpha = 3`, a strict **2-of-3 majority**.
 
 - **Local DID Document GET:** a valid local record is returned immediately.
-  This preserves the low-latency Kademlia fast path and does not trigger a
-  network quorum.
+  This preserves the low-latency Kademlia fast path and does not use the
+  network.
 - **Remote DID Document GET:** when there is no local record, the node follows
   the normal iterative Kademlia lookup, querying the closest uncontacted peers
-  in rounds and incorporating closer peers returned by misses. At most three
-  record-bearing responses become votes; only a strict majority is returned.
+  in rounds and incorporating closer peers returned by misses. As in Kademlia
+  §2.3, the lookup halts at the first record that passes DID binding and
+  signature verification; a record that fails is discarded and the lookup
+  continues. No vote is taken. This read does not prove the record is current or
+  authentic: a replica that missed an update, or a forged but correctly
+  self-signed record, passes too. The application must compare the public key
+  with the hash in the Verifiable Credential.
 - **Status List GET:** because the issuer Status List changes more frequently,
   it always uses the consistency group. A local copy contributes one vote and
   at most two remote records become additional votes. Discovery remains
-  iterative; the local copy never causes an immediate return by itself.
+  iterative; the local copy never causes an immediate return by itself. The
+  signature is verified once, after a winner has been selected, and a split with
+  no strict majority returns no value.
 - **UPDATE:** updates are propagated best-effort to the nodes discovered by the
   Kademlia crawl. Success is determined by a strict majority of the primary
-  consistency group, capped at `alpha`. When the local node is a responsible
+  consistency group, capped at `alpha`. Only nodes that responded during the
+  lookup belong to the group, so a responsible node that reaches no peer reports
+  success with its local copy alone. When the local node is a responsible
   replica, its verified prospective value counts as one vote before commit;
   with the default `alpha = 3`, one successful remote acknowledgement then
   forms the 2-of-3 quorum. The local write is committed only after that quorum
   is reached.
+- **Known UPDATE limits:** a replica that misses an update keeps its old record.
+  Later STOREs return `Conflict` in both directions, so it does not catch up and
+  reads can still return its copy. `update` checks the authorization against the
+  first copy it reads, so a stale or forged copy that answers first makes it
+  return `None`. Retrying an update that already reached a replica returns `None`
+  or counts that replica as a refusal. A node that holds a copy but is outside
+  the `k` closest does not update it, and its next `update` returns `None`.
 - **TTL:** records written to the default storage expire lazily after 14 days.
   Applications that need continued availability must refresh them through a
   legitimate publish or update before expiry.
 - **Lifecycle:** DID records have no explicit delete operation. Expiry through
   the configured TTL is the only removal mechanism exposed by the DHT API.
 
-The remote-read quorum is currently derived from `alpha`; it is not an
-independent configuration parameter. With the default `alpha = 3`, a GET needs
-two byte-identical record responses out of at most three record-bearing
-responses. A single valid, signed copy is therefore insufficient and the GET
-returns `None` by design.
+The Status List read quorum is derived from `alpha`; it is not an independent
+configuration parameter. With the default `alpha = 3`, a read needs two
+byte-identical record responses out of at most three record-bearing responses, so
+a single valid copy returns `None` by design.
 
-This matters most in the diagnostic `k = 3, alpha = 3` configuration. The
-replication set and consistency sample are both limited to three nodes, leaving
-very little tolerance for a routing table that is still converging. A lookup
-that reaches only one of the three holders fails quorum even though the record
-exists and the XOR metric is correct. Consequently, an occasional GET miss in
-the randomized topology example can be caused by this deliberately narrow
-configuration and transient convergence; it does not by itself demonstrate a
-routing or distance-ordering defect. The production default `k = 20, alpha = 3`
-provides many more possible holders while retaining the same two-response read
-quorum.
+The diagnostic `k = 3, alpha = 3` configuration limits the replication set to
+three nodes, leaving very little tolerance for a routing table that is still
+converging. An occasional GET miss in the randomized topology example can be
+caused by this deliberately narrow configuration; it does not by itself
+demonstrate a routing or distance-ordering defect.
 
 ### Bounded storage and publication outcomes
 
@@ -170,6 +179,18 @@ The replica target set is formed from the crawl result plus the local node,
 ordered by the full 160-bit XOR distance and truncated to `k`. A node that is
 full does not evict an active record and the publisher does not substitute a
 farther node, so routing and responsible-node selection remain unchanged.
+
+A node that has known contacts or bootstrap addresses but cannot reach any of
+them reports `Degraded`, not `Complete`: it holds one copy of a wider replica
+set. It keeps its contacts through an outage and rejoins on its own, handing
+over what it published in the meantime. Only a node that has never had a
+contact or a bootstrap address reports `Complete` with a single copy.
+
+A node that does not respond during a lookup is not a replica. It stays out of
+that lookup even if other peers keep reporting it, receives no STORE, and is
+counted in `unavailable_nodes` without preventing a `Complete` outcome, so
+`Complete` means that every node that responded holds the record. Check that
+counter to tell how many known nodes were unreachable.
 
 Configure the budget per process:
 
@@ -367,9 +388,9 @@ The default output is a concise summary:
 
 | Check | What it validates |
 |---|---|
-| **SET/GET** | Publication success, verified reads, latency, and local-fast-path vs remote-quorum counts |
+| **SET/GET** | Publication success, verified reads, latency, and local-fast-path vs remote counts |
 | **Replica counts** | Below/exact/above-`k` copy distribution |
-| **Global XOR placement** | Physical holders compared with the globally closest nodes; independent of GET quorum |
+| **Global XOR placement** | Physical holders compared with the globally closest nodes; independent of GET |
 | **Local FIND_NODE top-k** | Every node response compared with an exhaustive oracle over its known primary contacts |
 | **Bucket partition** | Full 160-bit coverage without gaps/overlaps, contact membership, uniqueness, and bucket capacity |
 | **Convergence** | Average bucket and primary-peer counts as a heuristic |
@@ -393,13 +414,10 @@ cargo run --release --example topology_analysis -- 3 3 --verbose
 cargo run --release --example topology_analysis -- 5 2
 ```
 
-The `k=3, alpha=3` profile requires two byte-identical responses for a remote
-GET. Local DID hits use the verified fast path and do not enter the remote
-quorum. A GET miss can therefore be a quorum-availability outcome even when a
-single valid remote copy exists; the separate physical-placement and local
-top-k checks prevent that outcome from being misreported as an XOR-routing
-failure. Extra retained replicas are reported as warnings rather than local
-top-k failures.
+Local DID hits use the verified fast path, and a remote DID GET returns the
+first verified copy. The separate physical-placement and local top-k checks
+prevent a GET miss from being misreported as an XOR-routing failure. Extra
+retained replicas are reported as warnings rather than local top-k failures.
 
 ### Resilience &amp; robustness tests (Docker)
 

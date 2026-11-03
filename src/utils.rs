@@ -11,7 +11,7 @@ pub const ID_LEN: usize = 20;
 
 /// Reserved DHT key for the issuer-signed status list. Operations on this key
 /// use issuer-node signature verification instead of DID-owner verification.
-pub const STATUS_LIST_KEY: &str = "did:iiot:status-list";
+pub const STATUS_LIST_KEY: &str = "status-list";
 
 /// Compute the SHA-1 digest of a UTF-8 string.
 pub fn digest(s: &str) -> [u8; ID_LEN] {

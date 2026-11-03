@@ -5,9 +5,10 @@
 /// - `SpiderCrawl`       — shared crawl state and the `find_round` driver
 /// - `ValueSpiderCrawl`  — lookup terminating when a value is found
 /// - `NodeSpiderCrawl`   — lookup terminating when the k-closest nodes are found
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use futures::stream::{FuturesUnordered, StreamExt};
 use log;
 
 use crate::node::{Node, NodeHeap};
@@ -83,6 +84,16 @@ pub trait SpiderProtocol: Send + Sync {
     async fn call_find_node(self: Arc<Self>, peer: Node, target: Node) -> RawResponse;
     async fn call_find_value(self: Arc<Self>, peer: Node, target: Node) -> RawResponse;
     async fn call_store(&self, peer: &Node, key: [u8; ID_LEN], value: Vec<u8>) -> bool;
+    /// Those of `nodes` that this node already knows are not responding.
+    async fn failing_among(&self, nodes: &[Node]) -> HashSet<[u8; ID_LEN]>;
+}
+
+/// The nodes a lookup found, all of which responded, and how many others it
+/// knows did not respond.
+#[derive(Debug, Clone, Default)]
+pub struct LookupNodes {
+    pub nodes: Vec<Node>,
+    pub unresponsive: usize,
 }
 
 /// Shared state for iterative Kademlia lookups.
@@ -96,6 +107,10 @@ pub struct SpiderCrawl<P: SpiderProtocol> {
     pub nearest: NodeHeap,
     /// IDs seen in the previous round, used to detect convergence.
     pub last_ids_crawled: Vec<[u8; ID_LEN]>,
+    /// Peers that failed to respond during this lookup.
+    failed: HashSet<[u8; ID_LEN]>,
+    /// Reported peers left out because this node knows they are not responding.
+    skipped: HashSet<[u8; ID_LEN]>,
 }
 
 impl<P: SpiderProtocol> SpiderCrawl<P> {
@@ -114,6 +129,35 @@ impl<P: SpiderProtocol> SpiderCrawl<P> {
             node,
             nearest,
             last_ids_crawled: vec![],
+            failed: HashSet::new(),
+            skipped: HashSet::new(),
+        }
+    }
+
+    /// Add contacts reported by a peer, leaving out those that failed in this
+    /// lookup or that this node knows are not responding (Kademlia §4.1). Other
+    /// nodes may not have tried them yet, so they can keep reporting them.
+    async fn add_reported(&mut self, nodes: Vec<Node>) {
+        let known_failing = self.protocol.failing_among(&nodes).await;
+        let usable = nodes
+            .into_iter()
+            .filter(|node| !self.failed.contains(&node.id) && !known_failing.contains(&node.id))
+            .collect();
+        self.skipped.extend(known_failing);
+        self.nearest.push(usable);
+    }
+
+    /// Drop peers that did not respond from this lookup for good, so that the
+    /// result holds only peers that did (Kademlia §2.3).
+    fn remove_failed(&mut self, peers: Vec<[u8; ID_LEN]>) {
+        self.nearest.remove(&peers);
+        self.failed.extend(peers);
+    }
+
+    fn lookup_nodes(&self) -> LookupNodes {
+        LookupNodes {
+            nodes: self.nearest.to_vec(),
+            unresponsive: self.failed.union(&self.skipped).count(),
         }
     }
 
@@ -144,6 +188,23 @@ impl<P: SpiderProtocol> SpiderCrawl<P> {
         F: Fn(Arc<P>, Node, Node) -> Fut + Clone,
         Fut: std::future::Future<Output = RawResponse> + Send,
     {
+        let peers = self.next_peers(limit);
+
+        let mut futs: Vec<_> = Vec::with_capacity(peers.len());
+        for peer in &peers {
+            let proto = Arc::clone(&self.protocol);
+            let peer_clone = peer.clone();
+            let node_clone = self.node.clone();
+            let f = rpcmethod.clone();
+            let id = peer.id;
+            futs.push(async move { (id, f(proto, peer_clone, node_clone).await) });
+        }
+
+        futures::future::join_all(futs).await.into_iter().collect()
+    }
+
+    /// Select up to `limit` peers for the next round and mark them as contacted.
+    fn next_peers(&mut self, limit: usize) -> Vec<Node> {
         log::info!("Crawling with nearest: {}", self.nearest);
 
         let current_ids = self.nearest.get_ids();
@@ -155,25 +216,16 @@ impl<P: SpiderProtocol> SpiderCrawl<P> {
         .min(limit);
         self.last_ids_crawled = current_ids;
 
-        let uncontacted: Vec<Node> = self
+        let peers: Vec<Node> = self
             .nearest
             .get_uncontacted()
             .into_iter()
             .take(count)
             .collect();
-
-        let mut futs: Vec<_> = Vec::with_capacity(uncontacted.len());
-        for peer in &uncontacted {
+        for peer in &peers {
             self.nearest.mark_contacted(peer);
-            let proto = Arc::clone(&self.protocol);
-            let peer_clone = peer.clone();
-            let node_clone = self.node.clone();
-            let f = rpcmethod.clone();
-            let id = peer.id;
-            futs.push(async move { (id, f(proto, peer_clone, node_clone).await) });
         }
-
-        futures::future::join_all(futs).await.into_iter().collect()
+        peers
     }
 }
 
@@ -223,10 +275,10 @@ impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
 
     /// Run the lookup. Returns the found value and the k-closest nodes discovered.
     ///
-    /// On a value hit: `(Some(value), vec![])`.
+    /// On a value hit: `(Some(value), empty)`.
     /// On a miss: `(None, k_closest)` — the caller can use the nodes directly
     /// for a subsequent STORE without a second traversal (Kademlia §2.3).
-    pub async fn find(mut self) -> (Option<Vec<u8>>, Vec<Node>) {
+    pub async fn find(mut self) -> (Option<Vec<u8>>, LookupNodes) {
         loop {
             let responses = self
                 .base
@@ -250,10 +302,10 @@ impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
                     if let Some(peer) = self.base.nearest.get_node(peer_id) {
                         self.nearest_without_value.push_one(peer);
                     }
-                    self.base.nearest.push(r.get_node_list());
+                    self.base.add_reported(r.get_node_list()).await;
                 }
             }
-            self.base.nearest.remove(&to_remove);
+            self.base.remove_failed(to_remove);
 
             if !found_values.is_empty() {
                 let value = strict_quorum_value(&found_values, 1);
@@ -262,7 +314,7 @@ impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
                         "Multiple equally supported values found for key {:?} — no value selected",
                         self.base.node.long_id
                     );
-                    return (None, self.base.nearest.to_vec());
+                    return (None, self.base.lookup_nodes());
                 }
                 if let Some(ref v) = value {
                     if let Some(peer) = self.nearest_without_value.popleft() {
@@ -272,13 +324,49 @@ impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
                             .await;
                     }
                 }
-                return (value, vec![]);
+                return (value, LookupNodes::default());
             }
 
             if self.base.nearest.have_contacted_all() {
-                return (None, self.base.nearest.to_vec());
+                return (None, self.base.lookup_nodes());
             }
         }
+    }
+
+    /// Return the first value that `accept` approves, as soon as it arrives:
+    /// Kademlia §2.3 halts a value lookup when a node returns the value. A
+    /// rejected value is discarded and the lookup continues, so one bad replica
+    /// cannot end a read. Requests still in flight are cancelled.
+    pub async fn find_first_valid<A, Fut>(mut self, accept: A) -> Option<Vec<u8>>
+    where
+        A: Fn(Vec<u8>) -> Fut,
+        Fut: std::future::Future<Output = Option<Vec<u8>>>,
+    {
+        while !self.base.nearest.have_contacted_all() {
+            let mut in_flight = FuturesUnordered::new();
+            for peer in self.base.next_peers(usize::MAX) {
+                let protocol = Arc::clone(&self.base.protocol);
+                let target = self.base.node.clone();
+                let id = peer.id;
+                in_flight.push(async move { (id, protocol.call_find_value(peer, target).await) });
+            }
+
+            let mut to_remove: Vec<[u8; ID_LEN]> = vec![];
+            while let Some((peer_id, raw)) = in_flight.next().await {
+                let response = RPCFindResponse::new(raw);
+                if !response.happened() {
+                    to_remove.push(peer_id);
+                } else if let Some(value) = response.get_value() {
+                    if let Some(accepted) = accept(value).await {
+                        return Some(accepted);
+                    }
+                } else {
+                    self.base.add_reported(response.get_node_list()).await;
+                }
+            }
+            self.base.remove_failed(to_remove);
+        }
+        None
     }
 
     /// Iteratively discover closer peers and return a byte-identical value only
@@ -319,10 +407,10 @@ impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
                 } else if let Some(value) = response.get_value() {
                     found_values.push(value);
                 } else {
-                    self.base.nearest.push(response.get_node_list());
+                    self.base.add_reported(response.get_node_list()).await;
                 }
             }
-            self.base.nearest.remove(&to_remove);
+            self.base.remove_failed(to_remove);
         }
 
         if !found_values.is_empty() {
@@ -349,7 +437,12 @@ impl<P: SpiderProtocol + 'static> NodeSpiderCrawl<P> {
     }
 
     /// Run the lookup and return the k closest nodes found.
-    pub async fn find(mut self) -> Vec<Node> {
+    pub async fn find(self) -> Vec<Node> {
+        self.find_lookup_nodes().await.nodes
+    }
+
+    /// Run the lookup and also report how many nodes did not respond.
+    pub async fn find_lookup_nodes(mut self) -> LookupNodes {
         loop {
             let responses = self
                 .base
@@ -364,13 +457,13 @@ impl<P: SpiderProtocol + 'static> NodeSpiderCrawl<P> {
                 if !r.happened() {
                     to_remove.push(*peer_id);
                 } else {
-                    self.base.nearest.push(r.get_node_list());
+                    self.base.add_reported(r.get_node_list()).await;
                 }
             }
-            self.base.nearest.remove(&to_remove);
+            self.base.remove_failed(to_remove);
 
             if self.base.nearest.have_contacted_all() {
-                return self.base.nearest.to_vec();
+                return self.base.lookup_nodes();
             }
         }
     }
@@ -378,10 +471,12 @@ impl<P: SpiderProtocol + 'static> NodeSpiderCrawl<P> {
 
 #[cfg(test)]
 mod quorum_tests {
+    use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, Mutex};
 
     use super::{
-        strict_quorum_value, FindPayload, Node, RawResponse, SpiderCrawl, SpiderProtocol, ID_LEN,
+        strict_quorum_value, FindPayload, Node, NodeSpiderCrawl, RawResponse, SpiderCrawl,
+        SpiderProtocol, ID_LEN,
     };
 
     struct RecordingProtocol {
@@ -403,6 +498,131 @@ mod quorum_tests {
         async fn call_store(&self, _peer: &Node, _key: [u8; ID_LEN], _value: Vec<u8>) -> bool {
             false
         }
+
+        async fn failing_among(&self, _nodes: &[Node]) -> HashSet<[u8; ID_LEN]> {
+            HashSet::new()
+        }
+    }
+
+    /// Peers answer FIND_NODE with a fixed list; peers in `dead` never answer.
+    #[derive(Default)]
+    struct ScriptedProtocol {
+        reports: HashMap<[u8; ID_LEN], Vec<Node>>,
+        dead: HashSet<[u8; ID_LEN]>,
+        known_failing: HashSet<[u8; ID_LEN]>,
+        contacted: Mutex<Vec<[u8; ID_LEN]>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SpiderProtocol for ScriptedProtocol {
+        async fn call_find_node(self: Arc<Self>, peer: Node, _target: Node) -> RawResponse {
+            self.contacted.lock().unwrap().push(peer.id);
+            if self.dead.contains(&peer.id) {
+                return RawResponse(false, FindPayload::Empty);
+            }
+            let reported = self.reports.get(&peer.id).cloned().unwrap_or_default();
+            let tuples = reported
+                .into_iter()
+                .map(|node| (node.id.to_vec(), node.ip, node.port))
+                .collect();
+            RawResponse(true, FindPayload::Nodes(tuples))
+        }
+
+        async fn call_find_value(self: Arc<Self>, _peer: Node, _target: Node) -> RawResponse {
+            RawResponse(true, FindPayload::Empty)
+        }
+
+        async fn call_store(&self, _peer: &Node, _key: [u8; ID_LEN], _value: Vec<u8>) -> bool {
+            false
+        }
+
+        async fn failing_among(&self, nodes: &[Node]) -> HashSet<[u8; ID_LEN]> {
+            nodes
+                .iter()
+                .filter(|node| self.known_failing.contains(&node.id))
+                .map(|node| node.id)
+                .collect()
+        }
+    }
+
+    fn contact(marker: u8) -> Node {
+        Node::new([marker; ID_LEN], Some("127.0.0.1".to_string()), Some(7000))
+    }
+
+    #[test]
+    fn peer_reported_after_failing_stays_out_of_the_lookup() {
+        test_runtime().block_on(async {
+            let (dead, alive) = (contact(1), contact(2));
+            let protocol = Arc::new(ScriptedProtocol {
+                reports: HashMap::from([(alive.id, vec![dead.clone()])]),
+                dead: HashSet::from([dead.id]),
+                ..ScriptedProtocol::default()
+            });
+            // alpha = 1 and `dead` is closer, so it fails before `alive` reports it.
+            let lookup = NodeSpiderCrawl::new(
+                protocol.clone(),
+                Node::from_id([0; ID_LEN]),
+                vec![dead.clone(), alive.clone()],
+                20,
+                1,
+            )
+            .find_lookup_nodes()
+            .await;
+
+            assert_eq!(lookup.nodes.len(), 1);
+            assert_eq!(lookup.nodes[0].id, alive.id);
+            assert_eq!(lookup.unresponsive, 1);
+            let contacted = protocol.contacted.lock().unwrap();
+            assert_eq!(contacted.iter().filter(|id| **id == dead.id).count(), 1);
+        });
+    }
+
+    #[test]
+    fn reported_peer_known_to_be_failing_is_not_queried() {
+        test_runtime().block_on(async {
+            let (failing, alive) = (contact(1), contact(2));
+            let protocol = Arc::new(ScriptedProtocol {
+                reports: HashMap::from([(alive.id, vec![failing.clone()])]),
+                known_failing: HashSet::from([failing.id]),
+                ..ScriptedProtocol::default()
+            });
+            let lookup = NodeSpiderCrawl::new(
+                protocol.clone(),
+                Node::from_id([0; ID_LEN]),
+                vec![alive.clone()],
+                20,
+                3,
+            )
+            .find_lookup_nodes()
+            .await;
+
+            assert_eq!(lookup.nodes.len(), 1);
+            assert_eq!(lookup.unresponsive, 1);
+            assert_eq!(*protocol.contacted.lock().unwrap(), vec![alive.id]);
+        });
+    }
+
+    #[test]
+    fn known_failing_peer_is_still_queried_as_a_last_resort() {
+        test_runtime().block_on(async {
+            let failing = contact(1);
+            let protocol = Arc::new(ScriptedProtocol {
+                known_failing: HashSet::from([failing.id]),
+                ..ScriptedProtocol::default()
+            });
+            let lookup = NodeSpiderCrawl::new(
+                protocol.clone(),
+                Node::from_id([0; ID_LEN]),
+                vec![failing.clone()],
+                20,
+                3,
+            )
+            .find_lookup_nodes()
+            .await;
+
+            assert_eq!(*protocol.contacted.lock().unwrap(), vec![failing.id]);
+            assert_eq!(lookup.nodes.len(), 1, "it responded, so it counts");
+        });
     }
 
     fn test_runtime() -> tokio::runtime::Runtime {

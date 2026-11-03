@@ -10,14 +10,46 @@
 ///   the lookup target (only lookups reset the timer, not node additions).
 /// - `find_neighbors` evaluates every known primary contact before truncating to
 ///   `k`, so the result is the exact local top-k under the full 160-bit XOR metric.
-use std::collections::VecDeque;
+/// - Unlike Python, a contact that stops responding is not removed at the first
+///   timeout. It follows Kademlia §4.1: stale after 5 failures in a row, removed
+///   only if a replacement can take its place, and locked out with a backoff.
+use std::collections::{HashMap, VecDeque};
 use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use primitive_types::U256;
+use rand::Rng;
 
 use crate::node::Node;
+
+/// Consecutive failures after which a contact is stale (Kademlia §4.1).
+pub const STALE_AFTER_FAILURES: u32 = 5;
+/// Backoff after the first failure. Failures inside the window are not counted,
+/// so a burst of concurrent timeouts counts as one.
+const BACKOFF_BASE: Duration = Duration::from_secs(5);
+const BACKOFF_MAX: Duration = Duration::from_secs(300);
+/// Below this many healthy contacts a lookup also uses failing ones: a Status
+/// List GET needs that many votes, and a contact that just lost a packet is
+/// usually alive. The default matches `alpha = 3`; `Server` sets it from `alpha`.
+const DEFAULT_MIN_LOOKUP_CONTACTS: usize = 2;
+
+/// Spread retries so that nodes that lost the same peer do not probe in step.
+pub(crate) fn with_jitter(delay: Duration) -> Duration {
+    delay + delay.mul_f64(rand::thread_rng().gen_range(0.0..0.25))
+}
+
+fn backoff(failures: u32) -> Duration {
+    let doublings = failures.saturating_sub(1).min(16);
+    with_jitter(BACKOFF_BASE.saturating_mul(1 << doublings).min(BACKOFF_MAX))
+}
+
+/// Present only for primary contacts that have failed since their last response.
+struct ContactHealth {
+    failures: u32,
+    first_failure: Instant,
+    retry_after: Instant,
+}
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -190,6 +222,10 @@ impl KBucket {
         self.nodes.len()
     }
 
+    pub fn has_replacement(&self) -> bool {
+        !self.replacement_nodes.is_empty()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
@@ -205,6 +241,8 @@ pub struct RoutingTable {
     pub node: Node,
     ksize: usize,
     buckets: Vec<KBucket>,
+    health: HashMap<[u8; 20], ContactHealth>,
+    min_lookup_contacts: usize,
 }
 
 impl RoutingTable {
@@ -214,14 +252,20 @@ impl RoutingTable {
             node,
             ksize,
             buckets: vec![bucket],
+            health: HashMap::new(),
+            min_lookup_contacts: DEFAULT_MIN_LOOKUP_CONTACTS,
         }
+    }
+
+    pub fn set_min_lookup_contacts(&mut self, count: usize) {
+        self.min_lookup_contacts = count;
     }
 
     /// Add a contact to the routing table.
     ///
     /// Returns `Some(lru_node)` when the target bucket is full and cannot be
-    /// split. The caller is responsible for pinging `lru_node` and evicting it
-    /// via `remove_contact` if it does not respond (§4.2).
+    /// split. The caller is responsible for pinging `lru_node` and calling
+    /// `record_failure` if it does not respond (§4.2).
     pub fn add_contact(&mut self, node: Node) -> Option<Node> {
         if node.id == self.node.id {
             return None;
@@ -231,6 +275,7 @@ impl RoutingTable {
 
     fn insert(&mut self, node: Node) -> Option<Node> {
         let idx = self.bucket_index_for(node.long_id);
+        self.replace_stale_if_full(idx, &node);
         if self.buckets[idx].add_node(node.clone()) {
             return None;
         }
@@ -245,9 +290,111 @@ impl RoutingTable {
         self.buckets[idx].head().cloned()
     }
 
+    /// A full bucket gives up a stale contact for a node that is responding.
+    fn replace_stale_if_full(&mut self, idx: usize, node: &Node) {
+        let bucket = &self.buckets[idx];
+        if bucket.len() < self.ksize || bucket.contains(node) {
+            return;
+        }
+        let stale = bucket
+            .nodes()
+            .iter()
+            .find(|n| self.is_stale(&n.id))
+            .cloned();
+        if let Some(stale) = stale {
+            self.remove_contact(&stale);
+        }
+    }
+
     pub fn remove_contact(&mut self, node: &Node) {
         let idx = self.bucket_index_for(node.long_id);
         self.buckets[idx].remove_node(node);
+        self.health.remove(&node.id);
+    }
+
+    /// Count a contact's failure to respond (Kademlia §4.1). A stale contact is
+    /// removed only if a replacement can take its place, so a node that lost its
+    /// own connection does not void its table.
+    pub fn record_failure(&mut self, node: &Node) {
+        self.record_failure_at(node, Instant::now());
+    }
+
+    pub(crate) fn record_failure_at(&mut self, node: &Node, now: Instant) {
+        let idx = self.bucket_index_for(node.long_id);
+        if !self.buckets[idx].contains(node) {
+            self.buckets[idx].remove_node(node);
+            return;
+        }
+        let failures = match self.health.get_mut(&node.id) {
+            Some(health) if now < health.retry_after => return,
+            Some(health) => {
+                health.failures += 1;
+                health.retry_after = now + backoff(health.failures);
+                health.failures
+            }
+            None => {
+                self.health.insert(
+                    node.id,
+                    ContactHealth {
+                        failures: 1,
+                        first_failure: now,
+                        retry_after: now + backoff(1),
+                    },
+                );
+                1
+            }
+        };
+        if failures >= STALE_AFTER_FAILURES && self.buckets[idx].has_replacement() {
+            self.remove_contact(node);
+        }
+    }
+
+    /// Clear a contact's failures. Returns how long it had been failing, or
+    /// `None` if it was healthy.
+    pub fn record_success(&mut self, id: &[u8; 20]) -> Option<Duration> {
+        self.health
+            .remove(id)
+            .map(|health| health.first_failure.elapsed())
+    }
+
+    pub fn has_failures(&self, id: &[u8; 20]) -> bool {
+        self.health.contains_key(id)
+    }
+
+    pub fn is_stale(&self, id: &[u8; 20]) -> bool {
+        self.health
+            .get(id)
+            .is_some_and(|health| health.failures >= STALE_AFTER_FAILURES)
+    }
+
+    /// Failing contacts whose backoff has elapsed, the longest overdue first.
+    pub fn contacts_due_for_probe(&self, limit: usize) -> Vec<Node> {
+        let now = Instant::now();
+        let mut due: Vec<(Instant, Node)> = self
+            .buckets
+            .iter()
+            .flat_map(|bucket| bucket.nodes().iter())
+            .filter_map(|node| {
+                let health = self.health.get(&node.id)?;
+                (now >= health.retry_after).then(|| (health.retry_after, node.clone()))
+            })
+            .collect();
+        due.sort_unstable_by_key(|(retry_after, _)| *retry_after);
+        due.truncate(limit);
+        due.into_iter().map(|(_, node)| node).collect()
+    }
+
+    /// Primary contacts with no failure since their last response.
+    pub fn live_contacts(&self) -> usize {
+        self.buckets
+            .iter()
+            .flat_map(|bucket| bucket.nodes().iter())
+            .filter(|node| !self.has_failures(&node.id))
+            .count()
+    }
+
+    pub fn has_contacts(&self) -> bool {
+        self.buckets.iter().any(|bucket| !bucket.is_empty())
     }
 
     pub fn is_new_node(&self, node: &Node) -> bool {
@@ -270,7 +417,33 @@ impl RoutingTable {
     /// Return the exact `k` known primary contacts closest to `target`, optionally
     /// excluding one node. Candidate selection uses the full 160-bit XOR distance
     /// before truncation; otherwise bucket traversal order could omit a closer node.
+    ///
+    /// Failing contacts are skipped, so a lookup does not pay their timeout, unless
+    /// too few healthy ones remain. Stale contacts are the last resort.
     pub fn find_neighbors(&self, target: &Node, exclude: Option<&Node>) -> Vec<Node> {
+        let healthy = self.closest(target, exclude, |node| !self.has_failures(&node.id));
+        if healthy.len() >= self.min_lookup_contacts {
+            return healthy;
+        }
+        let not_stale = self.closest(target, exclude, |node| !self.is_stale(&node.id));
+        if not_stale.is_empty() {
+            self.closest(target, exclude, |_| true)
+        } else {
+            not_stale
+        }
+    }
+
+    /// Contacts to report to other nodes. Stale contacts are not passed on.
+    pub fn find_neighbors_to_advertise(&self, target: &Node, exclude: Option<&Node>) -> Vec<Node> {
+        self.closest(target, exclude, |node| !self.is_stale(&node.id))
+    }
+
+    fn closest(
+        &self,
+        target: &Node,
+        exclude: Option<&Node>,
+        keep: impl Fn(&Node) -> bool,
+    ) -> Vec<Node> {
         let target_bucket = self.bucket_index_for(target.long_id);
         self.buckets[target_bucket].touch_last_updated();
 
@@ -283,6 +456,7 @@ impl RoutingTable {
                     && exclude
                         .map(|excluded| neighbor.id != excluded.id)
                         .unwrap_or(true)
+                    && keep(neighbor)
             })
             .map(|neighbor| (neighbor.distance_to(target), neighbor.clone()))
             .collect();
@@ -324,6 +498,139 @@ mod tests {
 
     fn make_node(key: &str) -> Node {
         Node::from_id(digest(key))
+    }
+
+    fn node_with_first_byte(first: u8) -> Node {
+        let mut id = [0u8; 20];
+        id[0] = first;
+        Node::from_id(id)
+    }
+
+    /// k=2 table whose far bucket holds two contacts, cannot split, and keeps a
+    /// third node in its replacement list.
+    fn table_with_replacement() -> (RoutingTable, Node, Node) {
+        let mut rt = RoutingTable::new(Node::from_id([0u8; 20]), 2);
+        let (oldest, other) = (node_with_first_byte(0x80), node_with_first_byte(0x84));
+        rt.add_contact(oldest.clone());
+        rt.add_contact(other);
+        let waiting = node_with_first_byte(0x86);
+        assert!(rt.add_contact(waiting.clone()).is_some());
+        (rt, oldest, waiting)
+    }
+
+    fn fail_until_stale(rt: &mut RoutingTable, node: &Node) {
+        let mut now = Instant::now();
+        for _ in 0..STALE_AFTER_FAILURES {
+            rt.record_failure_at(node, now);
+            now += Duration::from_secs(10_000);
+        }
+    }
+
+    #[test]
+    fn one_failure_keeps_the_contact() {
+        let mut rt = RoutingTable::new(make_node("local"), 20);
+        let peer = make_node("peer");
+        rt.add_contact(peer.clone());
+        rt.record_failure(&peer);
+        assert!(!rt.is_new_node(&peer));
+        assert!(rt.has_failures(&peer.id));
+    }
+
+    #[test]
+    fn failures_inside_the_backoff_window_count_once() {
+        let mut rt = RoutingTable::new(make_node("local"), 20);
+        let peer = make_node("peer");
+        rt.add_contact(peer.clone());
+        for _ in 0..100 {
+            rt.record_failure(&peer);
+        }
+        assert_eq!(rt.health[&peer.id].failures, 1);
+        assert!(!rt.is_stale(&peer.id));
+    }
+
+    #[test]
+    fn stale_contact_without_replacement_is_kept_and_not_advertised() {
+        let mut rt = RoutingTable::new(make_node("local"), 20);
+        let (peer, other) = (make_node("peer"), make_node("other"));
+        rt.add_contact(peer.clone());
+        rt.add_contact(other.clone());
+        fail_until_stale(&mut rt, &peer);
+        assert!(rt.is_stale(&peer.id));
+        assert!(!rt.is_new_node(&peer));
+        let target = make_node("target");
+        let advertised = rt.find_neighbors_to_advertise(&target, None);
+        assert!(advertised.iter().all(|n| n.id != peer.id));
+        assert!(advertised.iter().any(|n| n.id == other.id));
+    }
+
+    #[test]
+    fn stale_contact_with_replacement_is_replaced() {
+        let (mut rt, oldest, waiting) = table_with_replacement();
+        fail_until_stale(&mut rt, &oldest);
+        assert!(rt.is_new_node(&oldest));
+        assert!(!rt.is_new_node(&waiting));
+        assert!(!rt.has_failures(&oldest.id));
+    }
+
+    #[test]
+    fn response_clears_the_failures() {
+        let mut rt = RoutingTable::new(make_node("local"), 20);
+        let peer = make_node("peer");
+        rt.add_contact(peer.clone());
+        rt.record_failure(&peer);
+        assert!(rt.record_success(&peer.id).is_some());
+        assert!(!rt.has_failures(&peer.id));
+        assert!(rt.record_success(&peer.id).is_none());
+    }
+
+    #[test]
+    fn lookups_skip_failing_contacts_while_two_healthy_ones_remain() {
+        let mut rt = RoutingTable::new(make_node("local"), 20);
+        let (a, b, c) = (make_node("a"), make_node("b"), make_node("c"));
+        for peer in [&a, &b, &c] {
+            rt.add_contact(peer.clone());
+        }
+        let target = make_node("target");
+
+        rt.record_failure(&a);
+        let found = rt.find_neighbors(&target, None);
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|n| n.id != a.id));
+        assert_eq!(rt.live_contacts(), 2);
+
+        rt.record_failure(&b);
+        assert_eq!(rt.find_neighbors(&target, None).len(), 3);
+        assert_eq!(rt.live_contacts(), 1);
+    }
+
+    #[test]
+    fn min_lookup_contacts_follows_the_configured_quorum() {
+        let mut rt = RoutingTable::new(make_node("local"), 20);
+        rt.set_min_lookup_contacts(3);
+        let (a, b, c) = (make_node("a"), make_node("b"), make_node("c"));
+        for peer in [&a, &b, &c] {
+            rt.add_contact(peer.clone());
+        }
+        rt.record_failure(&a);
+        assert_eq!(rt.find_neighbors(&make_node("target"), None).len(), 3);
+    }
+
+    #[test]
+    fn stale_contacts_are_the_last_resort_for_lookups() {
+        let mut rt = RoutingTable::new(make_node("local"), 20);
+        let (stale, healthy) = (make_node("stale"), make_node("healthy"));
+        rt.add_contact(stale.clone());
+        rt.add_contact(healthy.clone());
+        fail_until_stale(&mut rt, &stale);
+        let target = make_node("target");
+        let found = rt.find_neighbors(&target, None);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, healthy.id);
+
+        rt.remove_contact(&healthy);
+        let found = rt.find_neighbors(&target, None);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, stale.id);
     }
 
     #[test]

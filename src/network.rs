@@ -1,17 +1,26 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use log;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::error::TrySendError;
 
 use crate::auth_handler::SignatureVerifierHandler;
-use crate::crawling::{NodeSpiderCrawl, ValueSpiderCrawl};
+use crate::crawling::{LookupNodes, NodeSpiderCrawl, ValueSpiderCrawl};
 use crate::node::Node;
 use crate::protocol::{KademliaProtocol, StoreStatus};
+use crate::routing::with_jitter;
 use crate::signature_cache::{SignatureCache, VerificationDomain};
 use crate::storage::{ForgetfulStorage, IStorage, StorageWriteStatus, DEFAULT_TTL};
 use crate::utils::{digest, digest_bytes, ID_LEN, STATUS_LIST_KEY};
+
+const MAINTENANCE_TICK: Duration = Duration::from_secs(1);
+const REJOIN_BACKOFF_MAX: Duration = Duration::from_secs(60);
+
+/// Byte-identical responses a Status List GET needs, derived from `alpha`.
+fn read_quorum(alpha: usize) -> usize {
+    alpha.max(1) / 2 + 1
+}
 
 /// Detailed result of a DHT publication attempt.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -20,6 +29,9 @@ pub struct SetReport {
     pub stored_replicas: usize,
     pub already_present: usize,
     pub capacity_rejections: usize,
+    /// Replicas that did not acknowledge, plus nodes the lookup knew were not
+    /// responding. Those are not replicas: they do not count in `expected_replicas`
+    /// and do not prevent a `Complete` outcome.
     pub unavailable_nodes: usize,
     pub conflict_rejections: usize,
     pub invalid_rejections: usize,
@@ -78,6 +90,8 @@ pub struct ServerStats {
     pub node_id: [u8; ID_LEN],
     pub listening: bool,
     pub routing_nodes: usize,
+    /// Routing contacts with no failure since their last response.
+    pub live_routing_nodes: usize,
     pub storage_records: usize,
     pub storage_bytes: usize,
     pub max_storage_bytes: usize,
@@ -85,7 +99,7 @@ pub struct ServerStats {
 }
 
 enum PublishLookup {
-    Missing(Vec<Node>),
+    Missing(LookupNodes),
     Identical,
     Conflict,
 }
@@ -147,8 +161,6 @@ pub struct Server {
     pub storage: Arc<ForgetfulStorage>,
     pub node: Node,
     pub protocol: Option<Arc<KademliaProtocol>>,
-    refresh_loop: Option<tokio::task::JoinHandle<()>>,
-    save_state_loop: Option<tokio::task::JoinHandle<()>>,
     signature_handler: Arc<dyn SignatureVerifierHandler>,
     /// Shared with `KademliaProtocol` so a cache hit at the network layer
     /// (rpc_store) is visible at the API layer (get/set) and vice versa.
@@ -193,8 +205,6 @@ impl Server {
             storage,
             node,
             protocol: None,
-            refresh_loop: None,
-            save_state_loop: None,
             signature_handler,
             sig_cache,
         }
@@ -218,6 +228,11 @@ impl Server {
             Arc::clone(&self.signature_handler),
             self.sig_cache.clone(),
         ));
+        protocol
+            .router
+            .write()
+            .await
+            .set_min_lookup_contacts(read_quorum(self.alpha));
         self.protocol = Some(Arc::clone(&protocol));
 
         const WORKER_QUEUE_DEPTH: usize = 256;
@@ -231,14 +246,14 @@ impl Server {
                 tokio::sync::mpsc::channel::<(Vec<u8>, std::net::SocketAddr)>(WORKER_QUEUE_DEPTH);
             senders.push(tx);
             let proto = Arc::clone(&protocol);
-            tokio::spawn(async move {
+            protocol.spawn_task(async move {
                 while let Some((data, peer)) = rx.recv().await {
                     proto.handle_datagram(data, peer).await;
                 }
             });
         }
 
-        tokio::spawn(async move {
+        protocol.spawn_task(async move {
             let mut buf = vec![0u8; 65_536];
             let mut idx = 0usize;
             'receive: loop {
@@ -269,36 +284,36 @@ impl Server {
         });
 
         self.schedule_refresh();
+        self.schedule_maintenance();
         self.schedule_stats_log();
         Ok(())
     }
 
-    /// Notify neighbours of departure and cancel background tasks.
+    /// Notify neighbours of departure, cancel all background tasks, and release
+    /// the socket. Stored records are kept, and `listen` may be called again.
+    /// The socket stays bound if the caller still holds a clone of `protocol`.
     pub async fn stop(&mut self) {
-        if let Some(proto) = &self.protocol {
-            let neighbors = proto.router.read().await.find_neighbors(&self.node, None);
-            log::info!("Notifying {} neighbours of departure", neighbors.len());
-            let mut tasks = vec![];
-            for neighbor in neighbors {
-                let p = Arc::clone(proto);
-                tasks.push(tokio::spawn(async move {
-                    p.call_leave_rpc(&neighbor).await;
-                }));
-            }
-            futures::future::join_all(tasks).await;
-        }
-        if let Some(h) = self.refresh_loop.take() {
-            h.abort();
-        }
-        if let Some(h) = self.save_state_loop.take() {
-            h.abort();
-        }
+        let Some(proto) = self.protocol.take() else {
+            return;
+        };
+        let neighbors = proto.router.read().await.find_neighbors(&self.node, None);
+        log::info!("Notifying {} neighbours of departure", neighbors.len());
+        futures::future::join_all(
+            neighbors
+                .iter()
+                .map(|neighbor| proto.call_leave_rpc(neighbor)),
+        )
+        .await;
+        proto.shutdown_tasks().await;
     }
 
     /// Ping each address in `addrs`, then run a `NodeSpiderCrawl` to populate
     /// the routing table. Returns the k-closest nodes discovered.
     pub async fn bootstrap(&self, addrs: Vec<(String, u16)>) -> Vec<Node> {
         log::debug!("Bootstrapping with {} initial contacts", addrs.len());
+        if let Some(proto) = &self.protocol {
+            proto.remember_seeds(&addrs);
+        }
         let mut futs = vec![];
         for addr in addrs {
             futs.push(self.bootstrap_node(addr));
@@ -336,9 +351,12 @@ impl Server {
         Some(Node::new(id, Some(addr.0), Some(addr.1)))
     }
 
-    /// Look up `key` in the DHT. Checks local storage first, then performs an
-    /// iterative FIND_VALUE. Verifies the Dilithium signature on every hit.
-    /// Returns `None` if the key is absent or the signature is invalid.
+    /// Look up `key` in the DHT. A DID Document comes from local storage if
+    /// present, otherwise from the first remote record that passes verification.
+    /// This does not prove it is current or authentic: a forged, correctly
+    /// self-signed record passes too, and the caller must compare its public key
+    /// with the VC. The Status List is read through a quorum.
+    /// Returns `None` if no record is found or none passes verification.
     pub async fn get(&self, key: &str) -> Option<Vec<u8>> {
         log::info!("get({})", key);
         let dkey = digest(key);
@@ -364,28 +382,31 @@ impl Server {
             .await
             .find_neighbors(&Node::from_id(dkey), None);
 
-        let sample_size = self.alpha.max(1);
-        let minimum_votes = sample_size / 2 + 1;
-        let initial_values = if is_status_list {
-            local_value.into_iter().collect::<Vec<_>>()
-        } else {
-            vec![]
-        };
-
         if nearest.is_empty() {
-            log::warn!("get({}): insufficient neighbours for quorum", key);
+            log::warn!("get({}): no known neighbours", key);
             return None;
         }
 
-        let result = ValueSpiderCrawl::new(
+        let crawl = ValueSpiderCrawl::new(
             Arc::clone(proto),
             Node::from_id(dkey),
             nearest,
             self.ksize,
             self.alpha,
-        )
-        .find_quorum(initial_values, minimum_votes, sample_size)
-        .await;
+        );
+
+        if !is_status_list {
+            return crawl
+                .find_first_valid(|value| async move {
+                    self.verify_value(key, &value).await.then_some(value)
+                })
+                .await;
+        }
+
+        let initial_values = local_value.into_iter().collect::<Vec<_>>();
+        let result = crawl
+            .find_quorum(initial_values, read_quorum(self.alpha), self.alpha.max(1))
+            .await;
 
         match result {
             Some(v) if self.verify_value(key, &v).await => Some(v),
@@ -408,7 +429,7 @@ impl Server {
 
         let proto = match self.protocol.as_ref() {
             Some(protocol) => protocol,
-            None => return PublishLookup::Missing(vec![]),
+            None => return PublishLookup::Missing(LookupNodes::default()),
         };
 
         let nearest = proto
@@ -418,10 +439,10 @@ impl Server {
             .find_neighbors(&Node::from_id(dkey), None);
         if nearest.is_empty() {
             log::warn!("set({}): no known neighbours", key);
-            return PublishLookup::Missing(vec![]);
+            return PublishLookup::Missing(LookupNodes::default());
         }
 
-        let (result, nodes) = ValueSpiderCrawl::new(
+        let (result, lookup) = ValueSpiderCrawl::new(
             Arc::clone(proto),
             Node::from_id(dkey),
             nearest,
@@ -444,22 +465,22 @@ impl Server {
                 // value-hit crawl does not return its node shortlist.
                 PublishLookup::Missing(self.discover_publish_nodes(dkey).await)
             }
-            None => PublishLookup::Missing(nodes),
+            None => PublishLookup::Missing(lookup),
         }
     }
 
-    async fn discover_publish_nodes(&self, dkey: [u8; ID_LEN]) -> Vec<Node> {
+    async fn discover_publish_nodes(&self, dkey: [u8; ID_LEN]) -> LookupNodes {
         let proto = match self.protocol.as_ref() {
             Some(protocol) => protocol,
-            None => return vec![],
+            None => return LookupNodes::default(),
         };
         let target = Node::from_id(dkey);
         let nearest = proto.router.read().await.find_neighbors(&target, None);
         if nearest.is_empty() {
-            return vec![];
+            return LookupNodes::default();
         }
         NodeSpiderCrawl::new(Arc::clone(proto), target, nearest, self.ksize, self.alpha)
-            .find()
+            .find_lookup_nodes()
             .await
     }
 
@@ -484,8 +505,8 @@ impl Server {
         }
 
         let dkey = digest(key);
-        let nodes = match self.check_publish_state(key, &value).await {
-            PublishLookup::Missing(nodes) => nodes,
+        let lookup = match self.check_publish_state(key, &value).await {
+            PublishLookup::Missing(lookup) => lookup,
             PublishLookup::Identical => self.discover_publish_nodes(dkey).await,
             PublishLookup::Conflict => {
                 log::error!("set({}): a different record already exists", key);
@@ -497,7 +518,7 @@ impl Server {
         };
 
         log::info!("set({}): publishing to responsible replicas", key);
-        self.set_digest_detailed(dkey, value, nodes).await
+        self.set_digest_detailed(dkey, value, lookup).await
     }
 
     /// Compatibility wrapper around set_detailed.
@@ -570,7 +591,7 @@ impl Server {
         &self,
         dkey: [u8; ID_LEN],
         value: Vec<u8>,
-        nodes: Vec<Node>,
+        lookup: LookupNodes,
     ) -> SetOutcome {
         let proto = match &self.protocol {
             Some(protocol) => protocol,
@@ -584,9 +605,14 @@ impl Server {
 
         let target = Node::from_id(dkey);
         let (store_local, remote_nodes) =
-            select_responsible_nodes(&self.node, &target, nodes, self.ksize);
+            select_responsible_nodes(&self.node, &target, lookup.nodes, self.ksize);
+        // A node with no reachable peer but with known contacts or seeds is cut
+        // off, not alone: it holds at most one copy of a wider set of replicas.
+        let cut_off = remote_nodes.is_empty()
+            && (proto.router.read().await.has_contacts() || !proto.seeds().is_empty());
         let mut report = SetReport {
-            expected_replicas: remote_nodes.len() + usize::from(store_local),
+            expected_replicas: remote_nodes.len() + usize::from(store_local) + usize::from(cut_off),
+            unavailable_nodes: lookup.unresponsive.max(usize::from(cut_off)),
             ..SetReport::default()
         };
 
@@ -774,22 +800,22 @@ impl Server {
 
     /// Return a point-in-time operational snapshot without changing node state.
     pub async fn stats(&self) -> ServerStats {
-        let routing_nodes = match &self.protocol {
-            Some(proto) => proto
-                .router
-                .read()
-                .await
-                .buckets()
-                .iter()
-                .map(|bucket| bucket.len())
-                .sum(),
-            None => 0,
+        let (routing_nodes, live_routing_nodes) = match &self.protocol {
+            Some(proto) => {
+                let router = proto.router.read().await;
+                (
+                    router.buckets().iter().map(|bucket| bucket.len()).sum(),
+                    router.live_contacts(),
+                )
+            }
+            None => (0, 0),
         };
 
         ServerStats {
             node_id: self.node.id,
             listening: self.protocol.is_some(),
             routing_nodes,
+            live_routing_nodes,
             storage_records: self.storage.iter_all().len(),
             storage_bytes: self.storage.current_storage_bytes(),
             max_storage_bytes: self.storage.max_storage_bytes(),
@@ -822,9 +848,9 @@ impl Server {
         let node = self.node.clone();
         let ksize = self.ksize;
         let alpha = self.alpha;
-        if let Some(proto) = &self.protocol {
-            let proto = Arc::clone(proto);
-            let handle = tokio::spawn(async move {
+        if let Some(owner) = &self.protocol {
+            let proto = Arc::clone(owner);
+            owner.spawn_task(async move {
                 loop {
                     tokio::time::sleep(Duration::from_secs(frequency_secs)).await;
                     let neighbors: Vec<_> = proto
@@ -848,19 +874,18 @@ impl Server {
                     }
                 }
             });
-            self.save_state_loop = Some(handle);
         }
     }
 
     fn schedule_stats_log(&self) {
-        let proto = match &self.protocol {
-            Some(p) => Arc::clone(p),
-            None => return,
+        let Some(owner) = &self.protocol else {
+            return;
         };
+        let proto = Arc::clone(owner);
         let storage = Arc::clone(&self.storage);
         let sig_cache = self.sig_cache.clone();
 
-        tokio::spawn(async move {
+        owner.spawn_task(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;
 
@@ -869,29 +894,30 @@ impl Server {
                     log::debug!("Pruned {} expired storage records", reclaimed);
                 }
 
-                let routing_size: usize = proto
-                    .router
-                    .read()
-                    .await
-                    .buckets()
-                    .iter()
-                    .map(|b| b.len())
-                    .sum();
+                let (routing_size, live_size): (usize, usize) = {
+                    let router = proto.router.read().await;
+                    (
+                        router.buckets().iter().map(|b| b.len()).sum(),
+                        router.live_contacts(),
+                    )
+                };
 
                 let storage_size = storage.iter_all().len();
 
                 match &sig_cache {
                     Some(cache) => log::info!(
-                        "[stats] routing_table={} nodes  storage={} records  storage_bytes={}/{}  sig_cache={} entries",
+                        "[stats] routing_table={} nodes ({} live)  storage={} records  storage_bytes={}/{}  sig_cache={} entries",
                         routing_size,
+                        live_size,
                         storage_size,
                         storage.current_storage_bytes(),
                         storage.max_storage_bytes(),
                         cache.entry_count(),
                     ),
                     None => log::info!(
-                        "[stats] routing_table={} nodes  storage={} records  storage_bytes={}/{}",
+                        "[stats] routing_table={} nodes ({} live)  storage={} records  storage_bytes={}/{}",
                         routing_size,
+                        live_size,
                         storage_size,
                         storage.current_storage_bytes(),
                         storage.max_storage_bytes(),
@@ -901,16 +927,66 @@ impl Server {
         });
     }
 
-    fn schedule_refresh(&mut self) {
-        let proto = match &self.protocol {
-            Some(p) => Arc::clone(p),
-            None => return,
+    /// Probe failing contacts and, while no contact is responding, retry the
+    /// bootstrap seeds. Does no network work while the routing table is healthy.
+    fn schedule_maintenance(&self) {
+        let Some(owner) = &self.protocol else {
+            return;
         };
+        let proto = Arc::clone(owner);
+        let node = self.node.clone();
+        let ksize = self.ksize;
+        let alpha = self.alpha;
+
+        owner.spawn_task(async move {
+            let mut isolated = false;
+            let mut seed_delay = MAINTENANCE_TICK;
+            let mut next_seed_attempt = Instant::now();
+            loop {
+                tokio::time::sleep(MAINTENANCE_TICK).await;
+                proto.probe_failing_contacts(alpha).await;
+
+                if proto.router.read().await.live_contacts() > 0 {
+                    seed_delay = MAINTENANCE_TICK;
+                    if isolated {
+                        isolated = false;
+                        log::info!("Reconnected, refreshing the routing table");
+                        let neighbors = proto.router.read().await.find_neighbors(&node, None);
+                        NodeSpiderCrawl::new(
+                            Arc::clone(&proto),
+                            node.clone(),
+                            neighbors,
+                            ksize,
+                            alpha,
+                        )
+                        .find()
+                        .await;
+                    }
+                    continue;
+                }
+
+                isolated = true;
+                let seeds = proto.seeds();
+                if !seeds.is_empty() && Instant::now() >= next_seed_attempt {
+                    futures::future::join_all(seeds.iter().map(|seed| proto.call_ping_addr(seed)))
+                        .await;
+                    seed_delay = (seed_delay * 2).min(REJOIN_BACKOFF_MAX);
+                    next_seed_attempt = Instant::now() + with_jitter(seed_delay);
+                }
+            }
+        });
+    }
+
+    fn schedule_refresh(&self) {
+        let Some(owner) = &self.protocol else {
+            return;
+        };
+        let proto = Arc::clone(owner);
         let storage = Arc::clone(&self.storage);
         let ksize = self.ksize;
         let alpha = self.alpha;
 
-        let handle = tokio::spawn(async move {
+        owner.spawn_task(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
                 log::debug!("Routing table refresh triggered");
@@ -954,7 +1030,17 @@ impl Server {
                 }
             }
         });
-        self.refresh_loop = Some(handle);
+    }
+}
+
+impl Drop for Server {
+    /// Background tasks own the protocol and its socket, so they must not
+    /// outlive the server. Unlike `stop`, this sends no `Leave` and does not
+    /// wait, so the socket closes shortly after the tasks are cancelled.
+    fn drop(&mut self) {
+        if let Some(proto) = &self.protocol {
+            proto.abort_tasks();
+        }
     }
 }
 

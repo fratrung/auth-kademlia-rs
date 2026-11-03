@@ -36,10 +36,10 @@ use tokio::task::JoinSet;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-// Must be strictly less than the protocol's internal RPC_TIMEOUT (5 s) so that
+// Must be strictly less than the protocol's internal RPC_TIMEOUT (2.5 s) so that
 // when the victim doesn't respond in time this outer timeout fires first and
 // the result is counted as timed_out rather than rejected.
-const RPC_TIMEOUT: Duration = Duration::from_millis(4500);
+const RPC_TIMEOUT: Duration = Duration::from_millis(2250);
 
 struct LatencyStats {
     samples: Vec<Duration>,

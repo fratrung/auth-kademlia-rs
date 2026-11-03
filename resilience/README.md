@@ -60,7 +60,7 @@ With 50 concurrent Dilithium-2 verifications (~5 ms each) on a 2-core victim, th
 OS UDP receive buffer (~208 KB ≈ 150 × 1 412 B fragments) can briefly overflow
 during the initial burst of 50 × 3 = 150 fragments. This causes ~1–2 % of valid
 records to be silently dropped at the kernel level — the victim never sees those
-fragments, the attacker times out at 4.5 s (below the protocol's 5 s RPC timeout
+fragments, the attacker times out at 2.25 s (below the protocol's 2.5 s RPC timeout
 so they are counted as `timeout`, not `rejected`). This is **expected graceful
 degradation**, not a bug: storage on both sides stays consistent
 (`victim_stored = attacker_accepted`).
@@ -182,7 +182,7 @@ get_tps                        18850.615    4052.810    15951.409    21749.821
   graceful degradation; security is unaffected.
 - **`store_tps` high variance** — bimodal distribution: runs with zero UDP timeouts
   complete Phase 1 in ~0.1 s (≈ 4 000–6 000 ops/s), runs with timeouts are bounded
-  by the 4.5 s RPC timeout window (≈ 111 ops/s). The wide CI reflects this
+  by the RPC timeout window, 4.5 s in these runs (≈ 111 ops/s). The wide CI reflects this
   run-to-run variability, not measurement error.
 - **`security_%` = 100 % ± 0** — every tampered record was rejected in all 10 runs,
   even under CPU saturation. Zero variance.
@@ -257,7 +257,7 @@ Without it the data is still saved to `resilience/degradation.json`.
   hence the large CI.
 
 - **Concurrency = 100 — severe degradation** — the majority of records hit the
-  4.5 s RPC timeout. Acceptance falls to 91.46 %; p95 spikes to 3 607 ms (nearly
+  RPC timeout, 4.5 s in these runs. Acceptance falls to 91.46 %; p95 spikes to 3 607 ms (nearly
   all records waiting for a timeout slot); throughput variance is extreme (CI half
   ≈ 1 076 ops/s). Security remains intact: 0 invalid records accepted in all runs.
 

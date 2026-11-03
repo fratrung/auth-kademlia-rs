@@ -7,10 +7,11 @@
 /// Message framing: every datagram is a `bincode`-encoded `(u32 msg_id, RpcEnvelope)`.
 /// Responses are correlated by `msg_id` via a `PendingMap`.
 ///
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -20,6 +21,7 @@ use log;
 use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
 use tokio::sync::{oneshot, Mutex, RwLock, Semaphore};
+use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 use crate::auth_handler::SignatureVerifierHandler;
@@ -35,8 +37,11 @@ use crate::signature_cache::{SignatureCache, VerificationDomain};
 use crate::storage::{ForgetfulStorage, IStorage, StorageWriteStatus};
 use crate::utils::{digest, ID_LEN, STATUS_LIST_KEY};
 
-/// Timeout for a single RPC call.
-const RPC_TIMEOUT: Duration = Duration::from_secs(5);
+/// Timeout for a single RPC call. A lookup pays it once for a contact that does
+/// not respond: after that the contact is marked as failing and skipped.
+const RPC_TIMEOUT: Duration = Duration::from_millis(2500);
+/// A contact silent for this long may have missed records when it comes back.
+const RETURNED_AFTER: Duration = RPC_TIMEOUT;
 
 /// Explicit result of a STORE request.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
@@ -221,6 +226,27 @@ fn rpc_message_name(message: &RpcMessage) -> &'static str {
 type PendingMap =
     Arc<Mutex<HashMap<u32, (SocketAddr, ExpectedResponse, oneshot::Sender<RpcMessage>)>>>;
 
+/// Removes a pending RPC when `call` ends, including when its caller cancels it
+/// by dropping the future, so a request to a dead peer cannot leak its entry.
+struct PendingGuard {
+    pending: PendingMap,
+    msg_id: u32,
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.pending.try_lock() {
+            pending.remove(&self.msg_id);
+        } else if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let pending = Arc::clone(&self.pending);
+            let msg_id = self.msg_id;
+            runtime.spawn(async move {
+                pending.lock().await.remove(&msg_id);
+            });
+        }
+    }
+}
+
 const WELCOME_CONCURRENCY: usize = 1;
 const REPLICATION_CONCURRENCY: usize = 4;
 
@@ -242,6 +268,11 @@ pub struct KademliaProtocol {
     next_frag_id: AtomicU32,
     reassembly: ReassemblyMap,
     last_reassembly_gc: Mutex<Instant>,
+    /// Every task that keeps this protocol and its socket alive. `None` once
+    /// the node has stopped, so no task can start during or after shutdown.
+    tasks: StdMutex<Option<JoinSet<()>>>,
+    /// Bootstrap addresses, kept so that an isolated node can rejoin.
+    seeds: StdMutex<Vec<(String, u16)>>,
 }
 
 impl KademliaProtocol {
@@ -268,7 +299,90 @@ impl KademliaProtocol {
             next_frag_id: AtomicU32::new(0),
             reassembly: Arc::new(Mutex::new(HashMap::new())),
             last_reassembly_gc: Mutex::new(Instant::now()),
+            tasks: StdMutex::new(Some(JoinSet::new())),
+            seeds: StdMutex::new(Vec::new()),
         }
+    }
+
+    /// Run `task` until it finishes or the node stops. Finished tasks are
+    /// reaped here so the set stays bounded by the tasks actually running.
+    pub(crate) fn spawn_task<F>(&self, task: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let mut tasks = self.tasks.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(tasks) = tasks.as_mut() {
+            while tasks.try_join_next().is_some() {}
+            tasks.spawn(task);
+        }
+    }
+
+    pub(crate) fn remember_seeds(&self, addrs: &[(String, u16)]) {
+        let mut seeds = self.seeds.lock().unwrap_or_else(PoisonError::into_inner);
+        for addr in addrs {
+            if !seeds.contains(addr) {
+                seeds.push(addr.clone());
+            }
+        }
+    }
+
+    pub(crate) fn seeds(&self) -> Vec<(String, u16)> {
+        self.seeds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    async fn note_failure(&self, peer: &Node) {
+        self.router.write().await.record_failure(peer);
+    }
+
+    /// Returns how long the contact had been failing, if it was. The read lock
+    /// keeps the common case, a healthy contact, off the write lock.
+    ///
+    /// Only the registered endpoint can vouch for a failing contact, so a forged
+    /// message cannot redirect it. A stale contact also accepts a new endpoint,
+    /// otherwise a peer that changed address could never be reached again.
+    async fn note_alive(&self, node: &Node) -> Option<Duration> {
+        {
+            let router = self.router.read().await;
+            if !router.has_failures(&node.id) {
+                return None;
+            }
+            let from_registered_endpoint = router
+                .get_contact(&node.id)
+                .is_some_and(|contact| contact.same_home_as(node));
+            if !from_registered_endpoint && !router.is_stale(&node.id) {
+                return None;
+            }
+        }
+        self.router.write().await.record_success(&node.id)
+    }
+
+    /// Ping up to `limit` failing contacts whose backoff has elapsed. Probing
+    /// here keeps the cost of a dead contact out of user lookups.
+    pub(crate) async fn probe_failing_contacts(self: &Arc<Self>, limit: usize) {
+        let due = self.router.read().await.contacts_due_for_probe(limit);
+        futures::future::join_all(due.iter().map(|node| self.call_ping_node(node))).await;
+    }
+
+    fn take_tasks(&self) -> Option<JoinSet<()>> {
+        self.tasks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
+    /// Cancel every task and wait until each one has released the protocol.
+    pub(crate) async fn shutdown_tasks(&self) {
+        if let Some(mut tasks) = self.take_tasks() {
+            tasks.shutdown().await;
+        }
+    }
+
+    /// Cancel every task without waiting. Dropping a `JoinSet` aborts its tasks.
+    pub(crate) fn abort_tasks(&self) {
+        drop(self.take_tasks());
     }
 
     fn next_id(&self) -> u32 {
@@ -299,7 +413,11 @@ impl KademliaProtocol {
     /// Duplicate discoveries coalesce by node ID, and capacity is deliberately
     /// bounded because each accepted peer may require a full storage scan.
     async fn schedule_welcome_if_new(self: &Arc<Self>, node: Node) {
-        if !self.router.read().await.is_new_node(&node) {
+        let returned = self
+            .note_alive(&node)
+            .await
+            .is_some_and(|silent_for| silent_for >= RETURNED_AFTER);
+        if !returned && !self.router.read().await.is_new_node(&node) {
             return;
         }
         if self.welcome_in_flight.insert(node.id, ()).is_some() {
@@ -319,9 +437,9 @@ impl KademliaProtocol {
         };
 
         let p = Arc::clone(self);
-        tokio::spawn(async move {
+        self.spawn_task(async move {
             let _permit = permit;
-            p.welcome_if_new(node.clone()).await;
+            p.welcome(node.clone()).await;
             p.welcome_in_flight.remove(&node.id);
         });
     }
@@ -383,9 +501,12 @@ impl KademliaProtocol {
             .lock()
             .await
             .insert(msg_id, (addr, expected_response, tx));
+        let _guard = PendingGuard {
+            pending: Arc::clone(&self.pending),
+            msg_id,
+        };
 
         if !self.send_frame(addr, &frame).await {
-            self.pending.lock().await.remove(&msg_id);
             return None;
         }
 
@@ -393,12 +514,10 @@ impl KademliaProtocol {
             Ok(Ok(response)) => Some(response),
             Ok(Err(_)) => {
                 log::debug!("Response channel closed for msg_id={}", msg_id);
-                self.pending.lock().await.remove(&msg_id);
                 None
             }
             Err(_) => {
                 log::debug!("RPC timeout for msg_id={}", msg_id);
-                self.pending.lock().await.remove(&msg_id);
                 None
             }
         }
@@ -811,7 +930,7 @@ impl KademliaProtocol {
         self.router
             .read()
             .await
-            .find_neighbors(&target, Some(&source))
+            .find_neighbors_to_advertise(&target, Some(&source))
     }
 
     pub async fn rpc_find_value(
@@ -838,7 +957,7 @@ impl KademliaProtocol {
             .router
             .read()
             .await
-            .find_neighbors(&target, Some(&source));
+            .find_neighbors_to_advertise(&target, Some(&source));
         FindValueResult::Nodes(neighbors)
     }
 
@@ -898,10 +1017,13 @@ impl KademliaProtocol {
             )
             .await
         {
-            Some(RpcMessage::StoreResult { status }) => Some(status),
+            Some(RpcMessage::StoreResult { status }) => {
+                self.note_alive(peer).await;
+                Some(status)
+            }
             _ => {
-                log::warn!("no response from {}, removing from router", peer);
-                self.router.write().await.remove_contact(peer);
+                log::warn!("no response from {}", peer);
+                self.note_failure(peer).await;
                 None
             }
         }
@@ -934,10 +1056,13 @@ impl KademliaProtocol {
             )
             .await
         {
-            Some(RpcMessage::UpdateResult { ok }) => ok,
+            Some(RpcMessage::UpdateResult { ok }) => {
+                self.note_alive(peer).await;
+                ok
+            }
             _ => {
-                log::warn!("no response from {}, removing from router", peer);
-                self.router.write().await.remove_contact(peer);
+                log::warn!("no response from {}", peer);
+                self.note_failure(peer).await;
                 false
             }
         }
@@ -968,15 +1093,20 @@ impl KademliaProtocol {
             )
             .await
         {
-            Some(RpcMessage::UpdateStatusListResult { ok }) => ok,
+            Some(RpcMessage::UpdateStatusListResult { ok }) => {
+                self.note_alive(peer).await;
+                ok
+            }
             _ => {
-                log::warn!("no response from {}, removing from router", peer);
-                self.router.write().await.remove_contact(peer);
+                log::warn!("no response from {}", peer);
+                self.note_failure(peer).await;
                 false
             }
         }
     }
 
+    /// Notify `peer` of this node's departure. `Leave` has no response, so
+    /// delivery is best-effort and there is nothing to wait for.
     pub async fn call_leave_rpc(&self, peer: &Node) {
         let addr = match peer.address() {
             Some(a) => a,
@@ -986,14 +1116,14 @@ impl KademliaProtocol {
             Ok(a) => a,
             Err(_) => return,
         };
-        let _ = self
-            .call(
-                sock_addr,
-                RpcMessage::Leave {
-                    sender_id: self.source_node.id,
-                },
-            )
-            .await;
+        let frame = Frame {
+            msg_id: self.next_id(),
+            is_request: true,
+            message: RpcMessage::Leave {
+                sender_id: self.source_node.id,
+            },
+        };
+        self.send_frame(sock_addr, &frame).await;
     }
 
     /// Verify `value` for `key`, using the signature cache to skip redundant
@@ -1052,7 +1182,13 @@ impl KademliaProtocol {
         if !self.router.read().await.is_new_node(&node) {
             return;
         }
-        log::info!("New node discovered: {}", node);
+        self.welcome(node).await;
+    }
+
+    /// Replicate to a node that just joined or just came back, and add it to
+    /// the routing table.
+    async fn welcome(self: &Arc<Self>, node: Node) {
+        log::info!("Discovered or returning node: {}", node);
 
         let all_entries = self.storage.iter_all();
         let self_node = self.source_node.clone();
@@ -1069,7 +1205,7 @@ impl KademliaProtocol {
                     key.copy_from_slice(&key_vec);
                     let key_node = Node::from_id(key);
 
-                    let neighbors = router.find_neighbors(&key_node, None);
+                    let neighbors = router.find_neighbors(&key_node, Some(&node));
 
                     let new_node_close = match neighbors.last() {
                         Some(last) => node.distance_to(&key_node) < last.distance_to(&key_node),
@@ -1094,7 +1230,7 @@ impl KademliaProtocol {
         let lru = self.router.write().await.add_contact(node.clone());
         if let Some(lru_node) = lru {
             let p = Arc::clone(self);
-            tokio::spawn(async move { p.call_ping_node(&lru_node).await });
+            self.spawn_task(async move { p.call_ping_node(&lru_node).await });
         }
 
         stream::iter(keys_to_replicate)
@@ -1110,8 +1246,8 @@ impl KademliaProtocol {
 
     /// Ping `node` to check liveness (§4.2 LRU eviction).
     ///
-    /// On failure the node is removed and its replacement (if any) is promoted
-    /// automatically by `remove_node`. On success the Pong response triggers
+    /// A failure is counted, and the node is replaced once stale if a replacement
+    /// is available (`record_failure`). On success the Pong response triggers
     /// `welcome_if_new` in `handle_datagram`, refreshing the routing table.
     pub async fn call_ping_node(self: &Arc<Self>, node: &Node) {
         let addr = match node.address() {
@@ -1120,8 +1256,8 @@ impl KademliaProtocol {
         };
         let (ok, _) = self.call_ping_addr(&addr).await;
         if !ok {
-            log::warn!("LRU ping: no response from {}, evicting", node);
-            self.router.write().await.remove_contact(node);
+            log::warn!("ping: no response from {}", node);
+            self.note_failure(node).await;
         }
         // On success: Pong received in handle_datagram already calls welcome_if_new.
     }
@@ -1190,8 +1326,8 @@ impl SpiderProtocol for KademliaProtocol {
                 RawResponse(true, FindPayload::Nodes(tuples))
             }
             _ => {
-                log::warn!("no response from {}, removing from router", peer);
-                self.router.write().await.remove_contact(&peer);
+                log::warn!("no response from {}", peer);
+                self.note_failure(&peer).await;
                 RawResponse(false, FindPayload::Empty)
             }
         }
@@ -1229,8 +1365,8 @@ impl SpiderProtocol for KademliaProtocol {
                 RawResponse(true, FindPayload::Nodes(tuples))
             }
             _ => {
-                log::warn!("no response from {}, removing from router", peer);
-                self.router.write().await.remove_contact(&peer);
+                log::warn!("no response from {}", peer);
+                self.note_failure(&peer).await;
                 RawResponse(false, FindPayload::Empty)
             }
         }
@@ -1241,6 +1377,15 @@ impl SpiderProtocol for KademliaProtocol {
             self.call_store_rpc(peer, key, value).await,
             Some(StoreStatus::Stored | StoreStatus::AlreadyStored)
         )
+    }
+
+    async fn failing_among(&self, nodes: &[Node]) -> HashSet<[u8; ID_LEN]> {
+        let router = self.router.read().await;
+        nodes
+            .iter()
+            .filter(|node| router.has_failures(&node.id))
+            .map(|node| node.id)
+            .collect()
     }
 }
 
@@ -1333,6 +1478,62 @@ mod tests {
             handler,
             use_cache.then(|| Arc::new(SignatureCache::new(32))),
         ))
+    }
+
+    fn contact_at(id: [u8; ID_LEN], port: u16) -> Node {
+        Node::new(id, Some("127.0.0.1".to_string()), Some(port))
+    }
+
+    #[tokio::test]
+    async fn cancelled_call_leaves_no_pending_entry() {
+        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let call = protocol.call(
+            silent.local_addr().unwrap(),
+            RpcMessage::Ping {
+                sender_id: [1; ID_LEN],
+            },
+        );
+        assert!(timeout(Duration::from_millis(50), call).await.is_err());
+        assert!(protocol.pending.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn forged_endpoint_cannot_clear_a_failing_contact() {
+        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        let registered = contact_at([9; ID_LEN], 7000);
+        {
+            let mut router = protocol.router.write().await;
+            router.add_contact(registered.clone());
+            router.record_failure(&registered);
+        }
+
+        let forged = contact_at([9; ID_LEN], 7001);
+        assert!(protocol.note_alive(&forged).await.is_none());
+        assert!(protocol.router.read().await.has_failures(&registered.id));
+
+        assert!(protocol.note_alive(&registered).await.is_some());
+        assert!(!protocol.router.read().await.has_failures(&registered.id));
+    }
+
+    #[tokio::test]
+    async fn stale_contact_accepts_a_new_endpoint() {
+        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        let registered = contact_at([9; ID_LEN], 7000);
+        {
+            let mut router = protocol.router.write().await;
+            router.add_contact(registered.clone());
+            let mut now = Instant::now();
+            for _ in 0..crate::routing::STALE_AFTER_FAILURES {
+                router.record_failure_at(&registered, now);
+                now += Duration::from_secs(10_000);
+            }
+            assert!(router.is_stale(&registered.id));
+        }
+
+        let moved = contact_at([9; ID_LEN], 7001);
+        assert!(protocol.note_alive(&moved).await.is_some());
+        assert!(!protocol.router.read().await.has_failures(&registered.id));
     }
 
     #[tokio::test]

@@ -352,7 +352,7 @@ fn print_replication_summary(
 /// Compare physical replica placement with the globally closest nodes.
 ///
 /// This is an end-to-end placement check. It deliberately does not call GET,
-/// so a quorum decision cannot change its result.
+/// so what a read returns cannot change its result.
 fn verify_global_replica_placement(
     nodes: &[(Arc<Server>, u16)],
     published: &[(String, String, Vec<u8>)],
@@ -362,7 +362,7 @@ fn verify_global_replica_placement(
 ) -> PlacementReport {
     println!("━━━ Global XOR Replica Placement (Kademlia §2.3) ━━━━━━━━━━━━━\n");
     println!("  Compares physical storage with the globally closest nodes.");
-    println!("  This check is independent of the GET quorum.\n");
+    println!("  This check is independent of GET.\n");
 
     let node_ids = nodes
         .iter()
@@ -802,9 +802,6 @@ async fn run() {
         std::process::exit(2);
     }
 
-    let quorum_sample = alpha.max(1);
-    let quorum_required = quorum_sample / 2 + 1;
-
     println!("╔══════════════════════════════════════════════╗");
     println!("║     AuthKademlia-RS  Topology Test           ║");
     println!("╚══════════════════════════════════════════════╝");
@@ -814,9 +811,7 @@ async fn run() {
     );
     println!("  k (ksize)       : {ksize}  (replica-placement target)");
     println!("  alpha           : {alpha}");
-    println!(
-        "  Remote GET quorum: {quorum_required} matching values from at most {quorum_sample} responses"
-    );
+    println!("  Remote GET      : first verified record");
     println!("  Records         : {NUM_RECORDS}");
     println!("  Timeout         : {}s/op", OP_TIMEOUT.as_secs());
     println!(
@@ -909,7 +904,7 @@ async fn run() {
             "local-fast-path"
         } else {
             remote_gets += 1;
-            "remote-quorum"
+            "remote"
         };
 
         let t0 = Instant::now();
@@ -954,9 +949,7 @@ async fn run() {
         }
     }
     println!("\n  Retrieved: {get_ok}/{set_ok}  ({get_fail} unavailable, {get_corrupt} corrupted)");
-    println!(
-        "  GET paths: {local_gets} local fast path, {remote_gets} remote quorum (requires {quorum_required}/{quorum_sample} matching values)\n"
-    );
+    println!("  GET paths: {local_gets} local fast path, {remote_gets} remote\n");
 
     println!("━━━ Latency Summary ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     let (sa, sp50, sp95, smax) = latency_stats(&mut set_latencies);
@@ -1053,9 +1046,7 @@ async fn run() {
     print_check(
         get_status,
         "GET retrieval",
-        &format!(
-            "{get_ok}/{set_ok} verified; paths local={local_gets}, remote-quorum={remote_gets} ({quorum_required}/{quorum_sample})"
-        ),
+        &format!("{get_ok}/{set_ok} verified; paths local={local_gets}, remote={remote_gets}"),
     );
     print_check(
         replication_status,

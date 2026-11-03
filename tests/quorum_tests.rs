@@ -2,7 +2,7 @@
 //!
 //! Every test uses real UDP nodes and valid Dilithium records. Records are
 //! injected only after bootstrap so the tests control the exact replica state.
-//! Ports: 15866-15894.
+//! Ports: 15866-15894, 15904-15905, 15913-15923.
 
 mod common;
 
@@ -115,7 +115,7 @@ impl Drop for TemporaryIssuerKey {
 }
 
 #[test]
-fn remote_did_get_returns_two_of_three_majority() {
+fn remote_did_get_returns_a_record_when_replicas_disagree() {
     runtime().block_on(async {
         let issuer = Path::new("issuer_pub_key.bin");
         let requester = start_node(15866, issuer, node_id(1)).await;
@@ -127,46 +127,94 @@ fn remote_did_get_returns_two_of_three_majority() {
         let did = generate_did_iiot();
         let key = did.split(':').next_back().unwrap();
         let dkey = digest(key);
-        let (old_record, _) = did_record(&did);
-        let (new_record, _) = did_record(&did);
+        let (record_a, _) = did_record(&did);
+        let (record_b, _) = did_record(&did);
+        let (record_c, _) = did_record(&did);
 
-        peer_a.storage.set(dkey.to_vec(), old_record);
-        peer_b.storage.set(dkey.to_vec(), new_record.clone());
-        peer_c.storage.set(dkey.to_vec(), new_record.clone());
+        peer_a.storage.set(dkey.to_vec(), record_a.clone());
+        peer_b.storage.set(dkey.to_vec(), record_b.clone());
+        peer_c.storage.set(dkey.to_vec(), record_c.clone());
 
-        assert_eq!(
-            requester.get(key).await,
-            Some(new_record),
-            "two byte-identical, valid replicas must win a 2-of-3 read"
+        let found = requester.get(key).await.expect("a valid record exists");
+        assert!(
+            [record_a, record_b, record_c].contains(&found),
+            "the read must return one of the valid records"
         );
     });
 }
 
 #[test]
-fn remote_did_get_rejects_three_way_split() {
+fn remote_did_get_returns_a_single_valid_copy() {
     runtime().block_on(async {
         let issuer = Path::new("issuer_pub_key.bin");
-        let requester = start_node(15870, issuer, node_id(10)).await;
-        let peer_a = start_node(15871, issuer, node_id(11)).await;
-        let peer_b = start_node(15872, issuer, node_id(12)).await;
-        let peer_c = start_node(15873, issuer, node_id(13)).await;
-        bootstrap_to(&requester, &[15871, 15872, 15873]).await;
+        let requester = start_node(15913, issuer, node_id(40)).await;
+        let holder = start_node(15914, issuer, node_id(41)).await;
+        let _without_copy = start_node(15915, issuer, node_id(42)).await;
+        bootstrap_to(&requester, &[15914, 15915]).await;
 
         let did = generate_did_iiot();
         let key = did.split(':').next_back().unwrap();
-        let dkey = digest(key);
-        let (record_a, _) = did_record(&did);
-        let (record_b, _) = did_record(&did);
-        let (record_c, _) = did_record(&did);
+        let (record, _) = did_record(&did);
+        holder.storage.set(digest(key).to_vec(), record.clone());
 
-        peer_a.storage.set(dkey.to_vec(), record_a);
-        peer_b.storage.set(dkey.to_vec(), record_b);
-        peer_c.storage.set(dkey.to_vec(), record_c);
+        assert_eq!(requester.get(key).await, Some(record));
+    });
+}
+
+#[test]
+fn remote_did_get_skips_an_invalid_record() {
+    runtime().block_on(async {
+        let issuer = Path::new("issuer_pub_key.bin");
+        let did = generate_did_iiot();
+        let key = did.split(':').next_back().unwrap();
+        let dkey = digest(key);
+
+        let requester = start_node(15916, issuer, node_id(50)).await;
+        let bad_a = start_node(15917, issuer, id_at_distance(dkey, 0x01)).await;
+        let bad_b = start_node(15918, issuer, id_at_distance(dkey, 0x02)).await;
+        let bad_c = start_node(15919, issuer, id_at_distance(dkey, 0x03)).await;
+        let good = start_node(15920, issuer, id_at_distance(dkey, 0x04)).await;
+        bootstrap_to(&requester, &[15917, 15918, 15919, 15920]).await;
+
+        let (record, _) = did_record(&did);
+        let mut tampered = record.clone();
+        tampered[12] ^= 0xFF;
+        for peer in [&bad_a, &bad_b, &bad_c] {
+            peer.storage.set(dkey.to_vec(), tampered.clone());
+        }
+        good.storage.set(dkey.to_vec(), record.clone());
 
         assert_eq!(
             requester.get(key).await,
-            None,
-            "three divergent valid replicas must not select an arbitrary value"
+            Some(record),
+            "records that fail verification must not end the read"
+        );
+    });
+}
+
+#[test]
+fn remote_did_get_does_not_wait_for_a_dead_peer() {
+    runtime().block_on(async {
+        let issuer = Path::new("issuer_pub_key.bin");
+        let did = generate_did_iiot();
+        let key = did.split(':').next_back().unwrap();
+        let dkey = digest(key);
+
+        let requester = start_node(15921, issuer, node_id(60)).await;
+        let holder = start_node(15922, issuer, id_at_distance(dkey, 0x02)).await;
+        bootstrap_to(&requester, &[15922]).await;
+        let _silent = std::net::UdpSocket::bind(("127.0.0.1", 15923)).expect("bind");
+        add_known_peer(&requester, id_at_distance(dkey, 0x01), 15923).await;
+
+        let (record, _) = did_record(&did);
+        holder.storage.set(dkey.to_vec(), record.clone());
+
+        let started = std::time::Instant::now();
+        assert_eq!(requester.get(key).await, Some(record));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the read took {:?}",
+            started.elapsed()
         );
     });
 }
@@ -212,7 +260,7 @@ fn remote_did_get_follows_kademlia_multihop_discovery() {
         assert_eq!(
             requester.get(key).await,
             Some(record),
-            "lookup must follow closer nodes returned by relays before collecting its three votes"
+            "lookup must follow closer nodes returned by relays"
         );
     });
 }
@@ -231,7 +279,7 @@ fn local_did_get_keeps_the_fast_path() {
         assert_eq!(
             requester.get(key).await,
             Some(record),
-            "a valid local DID Document must not require network quorum"
+            "a valid local DID Document must not require the network"
         );
     });
 }
@@ -258,6 +306,33 @@ fn status_list_uses_local_copy_as_one_vote() {
             Some(new_record),
             "two remote status-list replicas must override one stale local copy"
         );
+    });
+}
+
+/// Pins the exact key and document used by the Python issuer: a mismatch here
+/// makes every Status List publication fail while the issuer ignores the result.
+#[test]
+fn issuer_publishes_and_updates_the_status_list_under_its_python_key() {
+    runtime().block_on(async {
+        const ISSUER_KEY: &str = "status-list";
+        let (issuer_public_key, issuer_secret_key) = dilithium2::keypair();
+        let issuer_file = TemporaryIssuerKey::create(15904, issuer_public_key.as_bytes());
+        let issuer = start_node(15904, &issuer_file.0, node_id(60)).await;
+        let proxy = start_node(15905, &issuer_file.0, node_id(61)).await;
+        bootstrap_to(&issuer, &[15905]).await;
+
+        assert_eq!(STATUS_LIST_KEY, ISSUER_KEY);
+        let document = |version: u8| format!(r#"{{"id":"status-list","status_list":[{version}]}}"#);
+        let first = issuer_record(document(1).as_bytes(), &issuer_secret_key);
+        let second = issuer_record(document(2).as_bytes(), &issuer_secret_key);
+
+        assert_eq!(issuer.set(ISSUER_KEY, first.clone()).await, Some(true));
+        assert_eq!(proxy.get(ISSUER_KEY).await, Some(first));
+        assert_eq!(
+            issuer.update(ISSUER_KEY, second.clone(), None).await,
+            Some(true)
+        );
+        assert_eq!(proxy.get(ISSUER_KEY).await, Some(second));
     });
 }
 
