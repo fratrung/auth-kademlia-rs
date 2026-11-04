@@ -1212,13 +1212,21 @@ impl KademliaProtocol {
         let target = Node::from_id(key);
         // Contacts known not to respond are left out, even as a last resort:
         // the answer to the sender cannot wait for them.
-        let nearest: Vec<Node> = {
+        let (nearest, among_closest): (Vec<Node>, bool) = {
             let router = self.router.read().await;
-            router
-                .find_neighbors(&target, None)
+            let neighbors = router.find_neighbors(&target, None);
+            // By its own table, this node is among the k closest to the key
+            // when it knows fewer than k nodes closer to it.
+            let own_distance = self.source_node.distance_to(&target);
+            let closer = neighbors
+                .iter()
+                .filter(|node| node.distance_to(&target) < own_distance)
+                .count();
+            let nearest = neighbors
                 .into_iter()
                 .filter(|node| !router.has_failures(&node.id))
-                .collect()
+                .collect();
+            (nearest, closer < self.ksize)
         };
         // Nobody to ask, as for a node that has just restarted: it cannot know
         // what the network holds, which is not the same as knowing it is empty.
@@ -1228,12 +1236,21 @@ impl KademliaProtocol {
         let deadline = tokio::time::Instant::now() + STORE_LOOKUP_TIMEOUT;
         let own = record_hash(value);
         let find_hash = |protocol: Arc<Self>, peer, target| protocol.call_find_hash(peer, target);
-        let search =
-            ValueSpiderCrawl::new(Arc::clone(self), target, nearest, self.ksize, self.alpha)
-                .search(Some(deadline), find_hash, |found| async move {
-                    (found.as_slice() != own.as_slice()).then_some(found)
-                })
-                .await;
+        let mut crawl =
+            ValueSpiderCrawl::new(Arc::clone(self), target, nearest, self.ksize, self.alpha);
+        // A replica has to hear all of them anyway, so it asks them at once:
+        // one round instead of several, and a node it knows cannot be pushed
+        // out of the lookup by an earlier answer before it is asked. A node far
+        // from the key keeps asking `alpha` at a time: the nodes it knows are
+        // replaced at each hop, and asking all of them would ask k per hop.
+        if among_closest {
+            crawl = crawl.asking_everyone();
+        }
+        let search = crawl
+            .search(Some(deadline), find_hash, |found| async move {
+                (found.as_slice() != own.as_slice()).then_some(found)
+            })
+            .await;
         match search {
             ValueSearch::Found(_) => NetworkCopy::Other,
             ValueSearch::NotFound => NetworkCopy::NoneOrSame,
@@ -2521,6 +2538,172 @@ mod tests {
         );
         assert_eq!(handler.self_signed_calls.load(Ordering::Relaxed), 0);
         assert_eq!(protocol.storage.get(&[7; ID_LEN]), None);
+    }
+
+    /// Answer every request that reaches `socket` with `answer`, until no
+    /// request comes for a while.
+    fn answer_every_request(socket: UdpSocket, answer: RpcMessage) {
+        tokio::spawn(async move {
+            while let Some((frame, from)) = try_read_frame(&socket, Duration::from_secs(5)).await {
+                if frame.is_request {
+                    send_raw(&socket, from, frame.msg_id, false, answer.clone()).await;
+                }
+            }
+        });
+    }
+
+    /// A replica among the nodes closest to the key, by its own table, must
+    /// hear all of them anyway: it asks them all at once rather than α at a
+    /// time. None of them answers, so the STORE is still refused.
+    #[tokio::test]
+    async fn an_empty_replica_asks_every_known_neighbour_at_once() {
+        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        serve(&protocol);
+        let key = [7; ID_LEN];
+        let mut peers = vec![];
+        for id in [6u8, 5, 4, 3, 0] {
+            let (peer, contact) = raw_peer([id; ID_LEN]).await;
+            protocol.router.write().await.add_contact(contact);
+            peers.push((id, peer));
+        }
+        let started = tokio::time::Instant::now();
+        let replica = Arc::clone(&protocol);
+        let store = tokio::spawn(async move {
+            replica
+                .rpc_store(
+                    [2; ID_LEN],
+                    ("127.0.0.1".to_string(), 9017),
+                    key,
+                    b"one".to_vec(),
+                )
+                .await
+        });
+
+        let asked_by = started + Duration::from_millis(300);
+        let mut not_asked = vec![];
+        for (id, peer) in &peers {
+            let wait = asked_by.saturating_duration_since(tokio::time::Instant::now());
+            match try_read_frame(peer, wait).await {
+                Some((frame, _)) => assert!(
+                    matches!(frame.message, RpcMessage::FindHash { key: asked, .. } if asked == key),
+                    "{:?}",
+                    frame.message
+                ),
+                None => not_asked.push(*id),
+            }
+        }
+        assert!(
+            not_asked.is_empty(),
+            "neighbours not asked within 300 ms: {not_asked:?}"
+        );
+        assert_eq!(store.await.unwrap(), None);
+        assert_eq!(protocol.storage.get(&key), None);
+    }
+
+    /// A node that knows k nodes closer to the key than itself is not among the
+    /// replicas by its own table: it keeps asking `alpha` at a time, since the
+    /// nodes it knows would be replaced at the next hop.
+    #[tokio::test]
+    async fn a_node_far_from_the_key_asks_alpha_neighbours_at_a_time() {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let protocol = Arc::new(KademliaProtocol::new(
+            Node::from_id([1; ID_LEN]),
+            socket,
+            Arc::new(ForgetfulStorage::new(-1)),
+            5,
+            3,
+            Arc::new(TestHandler::new(true, true)),
+            None,
+        ));
+        serve(&protocol);
+        let key = [7; ID_LEN];
+        // Five nodes, all closer to the key than this node, from the closest.
+        let mut peers = vec![];
+        for first in [6u8, 5, 4, 3, 2] {
+            let mut id = [0; ID_LEN];
+            id[0] = first;
+            let (peer, contact) = raw_peer(id).await;
+            protocol.router.write().await.add_contact(contact);
+            peers.push((first, peer));
+        }
+        let started = tokio::time::Instant::now();
+        let replica = Arc::clone(&protocol);
+        let store = tokio::spawn(async move {
+            replica
+                .rpc_store(
+                    [2; ID_LEN],
+                    ("127.0.0.1".to_string(), 9019),
+                    key,
+                    b"one".to_vec(),
+                )
+                .await
+        });
+
+        let asked_by = started + Duration::from_millis(300);
+        let mut asked = vec![];
+        for (first, peer) in &peers {
+            let wait = asked_by.saturating_duration_since(tokio::time::Instant::now());
+            if try_read_frame(peer, wait).await.is_some() {
+                asked.push(*first);
+            }
+        }
+        assert_eq!(asked, vec![6, 5, 4]);
+        assert_eq!(store.await.unwrap(), None);
+        assert_eq!(protocol.storage.get(&key), None);
+    }
+
+    /// A neighbour answers the STORE check with made-up nodes closer to the key,
+    /// all at its own address, that hold nothing. They must not push out of the
+    /// check a node the replica already knows, which holds another record.
+    #[tokio::test]
+    async fn a_neighbour_cannot_push_a_known_holder_out_of_the_store_check() {
+        let handler = Arc::new(TestHandler::new(true, true));
+        let protocol = test_protocol(handler.clone(), false).await;
+        serve(&protocol);
+        let key = [7; ID_LEN];
+
+        // From the closest to the key: an empty node, the liar, another empty
+        // node, the holder, a third empty node.
+        let (liar, liar_contact) = raw_peer([5; ID_LEN]).await;
+        let (holder, holder_contact) = raw_peer([3; ID_LEN]).await;
+        let mut contacts = vec![liar_contact.clone(), holder_contact];
+        for id in [6u8, 4, 0] {
+            let (empty, contact) = raw_peer([id; ID_LEN]).await;
+            answer_every_request(empty, RpcMessage::FindValueNodes { nodes: vec![] });
+            contacts.push(contact);
+        }
+        for contact in contacts {
+            protocol.router.write().await.add_contact(contact);
+        }
+
+        let made_up: Vec<WireNode> = (1..=20u8)
+            .map(|n| {
+                let mut id = key;
+                id[ID_LEN - 1] ^= n;
+                WireNode::from(&Node::new(id, liar_contact.ip.clone(), liar_contact.port))
+            })
+            .collect();
+        answer_every_request(liar, RpcMessage::FindValueNodes { nodes: made_up });
+        answer_every_request(
+            holder,
+            RpcMessage::FindHashHit {
+                hash: record_hash(b"the owner's record"),
+            },
+        );
+
+        assert_eq!(
+            protocol
+                .rpc_store(
+                    [2; ID_LEN],
+                    ("127.0.0.1".to_string(), 9018),
+                    key,
+                    b"a forged record".to_vec(),
+                )
+                .await,
+            Some(StoreStatus::Conflict)
+        );
+        assert_eq!(handler.self_signed_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(protocol.storage.get(&key), None);
     }
 
     #[tokio::test]

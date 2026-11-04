@@ -18,7 +18,7 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 250 tests
+cargo test                           # all 253 tests
 cargo test <name>                    # single test, e.g. test_update_did_record_key_rotation
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -197,6 +197,15 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
   asks the nodes closest to the key for the SHA-256 of their record (`FindHash`, through
   `ValueSpiderCrawl::search`), asking all of them, leaving no cached copy, giving up after
   `STORE_LOOKUP_TIMEOUT` (2 s, below `RPC_TIMEOUT`). The Status List is exempt.
+  - A replica asks them all at once (`asking_everyone`), and in a later round all the
+    nodes that answers added, instead of `alpha` per round: one round, sometimes two,
+    instead of several, and a node it knows cannot be pushed out of the lookup before it
+    is asked by made-up nodes closer to the key in an earlier answer (with `alpha` per
+    round, such an answer hid the only holder and a forged record was stored:
+    `a_neighbour_cannot_push_a_known_holder_out_of_the_store_check`). It still waits for every
+    node it asked, including one pushed out since. A node that knows `k` nodes closer to
+    the key than itself is not a replica by its own table and keeps `alpha` per round:
+    asking all would ask `k` nodes per hop, most replaced at the next.
   - Before asking, it checks the DID binding (a JSON parse): a record that does not
     belong to the key is `InvalidRecord` and starts no lookup.
   - Another hash: `Conflict`, without verifying the signature. A hash cannot be
@@ -253,7 +262,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/scenarios/worker_pool.rs` | 1 | 40-client burst, all responses delivered |
 | `tests/scenarios/crypto.rs` | 4 | End-to-end crypto invariants (tamper, injection, downgrade, revocation) |
 | `tests/quorum_tests.rs` | 19 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum, delayed UPDATE commit, retry of an applied UPDATE, UPDATE to replicas without the record, and the network check of a STORE to an empty replica |
-| `src/**` (inline) | 139 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
+| `src/**` (inline) | 142 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 

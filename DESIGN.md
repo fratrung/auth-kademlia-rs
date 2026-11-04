@@ -253,7 +253,7 @@ sequenceDiagram
     opt record not bound to key (malformed, or another DID)
         R-->>S: InvalidRecord (nobody asked)
     end
-    R->>C: FindHash(key), all of them, deadline 2 s
+    R->>C: FindHash(key), all of them at once, deadline 2 s
     C-->>R: SHA-256 of their record, or closer nodes
     alt another hash
         R-->>S: Conflict (signature not verified, nothing stored)
@@ -270,7 +270,12 @@ sequenceDiagram
    belong to the key is `InvalidRecord`, and nobody is asked: a malformed
    STORE does not cost a lookup.
 2. It sends `FindHash` to the nodes closest to the key, all of them rather than
-   stopping at the first answer, and leaves no cached copy behind.
+   stopping at the first answer, and leaves no cached copy behind. A replica
+   asks them all at once, not three at a time as a GET does: it must hear all
+   of them anyway, and a node asked late could be pushed out of the lookup by
+   made-up nodes closer to the key in an earlier answer. A node that knows `k`
+   nodes closer to the key than itself is not a replica and keeps three at a
+   time.
 3. **Another hash:** it answers `Conflict` without verifying the signature.
 4. **The same hash, or no node holds the key:** it verifies the signature and
    stores the record.

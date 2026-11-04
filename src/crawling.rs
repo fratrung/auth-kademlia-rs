@@ -129,6 +129,9 @@ pub struct SpiderCrawl<P: SpiderProtocol> {
     failed: HashSet<[u8; ID_LEN]>,
     /// Reported peers left out because this node knows they are not responding.
     skipped: HashSet<[u8; ID_LEN]>,
+    /// Ask every uncontacted peer in each round, not `alpha`
+    /// (`ValueSpiderCrawl::asking_everyone`).
+    ask_everyone: bool,
 }
 
 impl<P: SpiderProtocol> SpiderCrawl<P> {
@@ -149,6 +152,7 @@ impl<P: SpiderProtocol> SpiderCrawl<P> {
             last_ids_crawled: vec![],
             failed: HashSet::new(),
             skipped: HashSet::new(),
+            ask_everyone: false,
         }
     }
 
@@ -226,7 +230,7 @@ impl<P: SpiderProtocol> SpiderCrawl<P> {
         log::info!("Crawling with nearest: {}", self.nearest);
 
         let current_ids = self.nearest.get_ids();
-        let count = if current_ids == self.last_ids_crawled {
+        let count = if self.ask_everyone || current_ids == self.last_ids_crawled {
             self.nearest.len()
         } else {
             self.alpha
@@ -289,6 +293,18 @@ impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
             base: SpiderCrawl::new(protocol, node, peers, ksize, alpha),
             nearest_without_value,
         }
+    }
+
+    /// Ask every peer in the shortlist at once, and in each later round every
+    /// peer that entered it, rather than `alpha` per round until the shortlist
+    /// stops changing. For a lookup that has to hear all of them anyway and
+    /// starts among the nodes closest to the key: the STORE check of an empty
+    /// replica. A peer asked late can be pushed out of the shortlist before it
+    /// is asked, by made-up nodes in an earlier answer. `search` still waits
+    /// for every peer it asked, including one pushed out since.
+    pub fn asking_everyone(mut self) -> Self {
+        self.base.ask_everyone = true;
+        self
     }
 
     /// Run the lookup. Returns the found value and the k-closest nodes discovered.

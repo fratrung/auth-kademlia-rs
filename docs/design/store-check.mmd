@@ -8,7 +8,7 @@ sequenceDiagram
     opt record not bound to key (malformed, or another DID)
         R-->>S: InvalidRecord (nobody asked)
     end
-    R->>C: FindHash(key), all of them, deadline 2 s
+    R->>C: FindHash(key), all of them at once, deadline 2 s
     C-->>R: SHA-256 of their record, or closer nodes
     alt another hash
         R-->>S: Conflict (signature not verified, nothing stored)

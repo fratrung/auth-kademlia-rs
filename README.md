@@ -156,7 +156,7 @@ the default `alpha = 3`, a strict **2-of-3 majority**.
   owner's, because both are self-signed for the same DID. Before storing a
   record it does not hold, it asks the nodes closest to the DID for the
   SHA-256 of the record they hold (`FindHash`), not for the record itself. It
-  asks all of them, and leaves no cached copy. A record that is malformed or
+  asks all of them at once, and leaves no cached copy. A record that is malformed or
   does not belong to the DID's key is refused as `InvalidRecord` before anyone
   is asked. Then:
   - if one of them answers with another hash, it answers `Conflict` without
