@@ -15,150 +15,42 @@
 //! SIG_CACHE   1 enables the signature cache (default 0)
 //! RUST_LOG    log filter (default `warn,testbed_node=info`)
 //!
-//! Commands: `info`, `publish`, `update`, `discard`, `get <did|uuid>`,
-//! `stats`, `storage`, `routing`. Each answers with one JSON line.
+//! Commands: `info`, `new`, `publish`, `update`, `discard`, `forget`,
+//! `get <did|uuid>`, `watch <did|uuid> <ms>`, `stats`, `storage`, `routing`.
+//! Each answers with one JSON line. Times named `*_unix_ms` are wall-clock
+//! milliseconds: containers share the host clock, so they compare across
+//! nodes.
+//!
+//! The node id is derived from NODE_NAME, so a node that restarts keeps its
+//! id, as after a crash, and comes back with empty storage.
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::{Server, SetOutcome};
 use auth_kademlia_rs::storage::IStorage;
 use auth_kademlia_rs::utils::digest;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use pqcrypto_dilithium::dilithium2;
-use pqcrypto_kyber::kyber512;
-use pqcrypto_traits::kem::PublicKey as KemPublicKey;
-use pqcrypto_traits::sign::{DetachedSignature, PublicKey};
+use pqcrypto_traits::sign::DetachedSignature;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
-const ALGORITHM: &str = "Dilithium-2";
-const SIGNATURE_LEN: usize = 2420;
+mod did;
+use did::{describe, signing_key_of, Version};
+
 const STATS_EVERY: Duration = Duration::from_secs(30);
+const WATCH_PAUSE: Duration = Duration::from_millis(5);
 
 fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
     std::env::var(name)
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
-}
-
-// ---------------------------------------------------------------------------
-// DID records
-// ---------------------------------------------------------------------------
-
-fn sorted(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => Value::Object(
-            map.iter()
-                .collect::<std::collections::BTreeMap<_, _>>()
-                .into_iter()
-                .map(|(key, value)| (key.clone(), sorted(value)))
-                .collect(),
-        ),
-        Value::Array(items) => Value::Array(items.iter().map(sorted).collect()),
-        other => other.clone(),
-    }
-}
-
-fn did_document(
-    did: &str,
-    signing: &dilithium2::PublicKey,
-    agreement: &kyber512::PublicKey,
-) -> Value {
-    json!({
-        "@context": ["https://www.w3.org/ns/did/v1"],
-        "id": did,
-        "verificationMethod": [
-            {
-                "id": format!("{did}#k0"),
-                "type": "JsonWebKey2020",
-                "controller": did,
-                "publicKeyJwk": { "kty": "OKP", "crv": "Dilithium2",
-                                  "x": URL_SAFE_NO_PAD.encode(signing.as_bytes()) }
-            },
-            {
-                "id": format!("{did}#k1"),
-                "type": "JsonWebKey2020",
-                "controller": did,
-                "publicKeyJwk": { "kty": "OKP", "crv": "Kyber512",
-                                  "x": URL_SAFE_NO_PAD.encode(agreement.as_bytes()) }
-            }
-        ],
-        "authentication": [format!("{did}#k0")],
-        "keyAgreement": [format!("{did}#k1")],
-        "service": [{
-            "id": format!("{did}#device"),
-            "type": "DeviceAgent",
-            "serviceEndpoint": "http://example.com/device"
-        }]
-    })
-}
-
-/// `[algorithm: 12 B][Dilithium-2 signature][DID Document JSON]`
-fn signed_record(document: &Value, secret_key: &dilithium2::SecretKey) -> Vec<u8> {
-    let body = serde_json::to_vec(&sorted(document)).expect("a DID Document serializes");
-    let mut record = vec![0u8; 12];
-    record[..ALGORITHM.len()].copy_from_slice(ALGORITHM.as_bytes());
-    record.extend_from_slice(dilithium2::detached_sign(&body, secret_key).as_bytes());
-    record.extend_from_slice(&body);
-    record
-}
-
-fn short_hash(bytes: &[u8]) -> String {
-    hex::encode(&Sha256::digest(bytes)[..6])
-}
-
-/// The DID of a record and short hashes of its two public keys, so versions
-/// can be told apart in the output.
-fn describe(record: &[u8]) -> Value {
-    let document: Option<Value> = record
-        .get(12 + SIGNATURE_LEN..)
-        .and_then(|body| serde_json::from_slice(body).ok());
-    let Some(document) = document else {
-        return json!({ "bytes": record.len(), "error": "not a DID record" });
-    };
-    let key = |index: usize| {
-        document["verificationMethod"][index]["publicKeyJwk"]["x"]
-            .as_str()
-            .and_then(|x| URL_SAFE_NO_PAD.decode(x).ok())
-            .map(|bytes| short_hash(&bytes))
-    };
-    json!({
-        "did": document["id"],
-        "signing_key": key(0),
-        "agreement_key": key(1),
-        "bytes": record.len(),
-    })
-}
-
-fn signing_key_of(record: &[u8]) -> String {
-    describe(record)["signing_key"]
-        .as_str()
-        .unwrap_or("?")
-        .to_string()
-}
-
-/// One version of this node's DID Document. The Kyber secret key is not
-/// kept: the testbed does not run key agreement.
-struct Version {
-    secret_key: dilithium2::SecretKey,
-    record: Vec<u8>,
-}
-
-impl Version {
-    fn generate(did: &str) -> Self {
-        let (signing, secret_key) = dilithium2::keypair();
-        let (agreement, _) = kyber512::keypair();
-        let record = signed_record(&did_document(did, &signing, &agreement), &secret_key);
-        Self { secret_key, record }
-    }
 }
 
 /// A rotation that has not been confirmed yet. It is kept so that a retry
@@ -186,6 +78,13 @@ struct Node {
     identity: Mutex<Option<Identity>>,
 }
 
+fn unix_ms() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_micros() as f64 / 1000.0)
+        .unwrap_or(0.0)
+}
+
 fn elapsed_ms(started: Instant) -> f64 {
     (started.elapsed().as_secs_f64() * 1000.0 * 10.0).round() / 10.0
 }
@@ -194,20 +93,27 @@ async fn handle(node: &Node, line: &str) -> Value {
     let mut words = line.split_whitespace();
     match words.next().unwrap_or("") {
         "info" => info(node).await,
+        "new" => new_identity(node).await,
         "publish" => publish(node).await,
         "update" => update(node).await,
         "discard" => discard(node).await,
+        "forget" => forget(node).await,
         "get" => match words.next() {
             Some(target) => get(node, target).await,
             None => json!({ "error": "usage: get <did|uuid>" }),
+        },
+        "watch" => match (words.next(), words.next().and_then(|ms| ms.parse().ok())) {
+            (Some(target), Some(ms)) => watch(node, target, ms).await,
+            _ => json!({ "error": "usage: watch <did|uuid> <ms>" }),
         },
         "stats" => stats(node).await,
         "storage" => storage(node).await,
         "routing" => routing(node).await,
         other => json!({
             "error": format!("unknown command '{other}'"),
-            "commands": ["info", "publish", "update", "discard", "get <did|uuid>",
-                         "stats", "storage", "routing"],
+            "commands": ["info", "new", "publish", "update", "discard", "forget",
+                         "get <did|uuid>", "watch <did|uuid> <ms>", "stats", "storage",
+                         "routing"],
         }),
     }
 }
@@ -227,22 +133,35 @@ async fn info(node: &Node) -> Value {
     })
 }
 
+fn fresh_identity() -> Identity {
+    let uuid = Uuid::new_v4().to_string();
+    let did = format!("did:iiot:{uuid}");
+    Identity {
+        current: Version::generate(&did),
+        uuid,
+        did,
+        pending: None,
+    }
+}
+
+/// Create a new DID without publishing it, dropping the previous one, so that
+/// other nodes can start watching for it before the publication.
+async fn new_identity(node: &Node) -> Value {
+    let id = fresh_identity();
+    let did = id.did.clone();
+    log::info!("new DID {did}, not published yet");
+    *node.identity.lock().await = Some(id);
+    json!({ "did": did })
+}
+
 /// Publish this node's DID Document, creating the DID on first use. Publishing
 /// again sends the same record, so it is a retry.
 async fn publish(node: &Node) -> Value {
     let mut identity = node.identity.lock().await;
     let created = identity.is_none();
-    let id = identity.get_or_insert_with(|| {
-        let uuid = Uuid::new_v4().to_string();
-        let did = format!("did:iiot:{uuid}");
-        Identity {
-            current: Version::generate(&did),
-            uuid,
-            did,
-            pending: None,
-        }
-    });
+    let id = identity.get_or_insert_with(fresh_identity);
     let server = node.server.read().await;
+    let started_unix_ms = unix_ms();
     let started = Instant::now();
     let outcome = server
         .set_detailed(&id.uuid, id.current.record.clone())
@@ -278,6 +197,7 @@ async fn publish(node: &Node) -> Value {
         "capacity_rejections": report.capacity_rejections,
         "invalid": report.invalid_rejections,
         "ms": ms,
+        "started_unix_ms": started_unix_ms,
         "record": describe(&id.current.record),
         "pending_rotation": id.pending.is_some(),
     })
@@ -358,6 +278,16 @@ async fn discard(node: &Node) -> Value {
     json!({ "discarded_rotation_to": dropped })
 }
 
+/// Drop this node's DID, so that the next `publish` creates a new one. The
+/// records already in the network are not touched.
+async fn forget(node: &Node) -> Value {
+    let dropped = node.identity.lock().await.take().map(|id| id.did);
+    if let Some(did) = &dropped {
+        log::info!("forgot {did}: the next publish creates a new DID");
+    }
+    json!({ "forgotten": dropped })
+}
+
 async fn get(node: &Node, target: &str) -> Value {
     let uuid = target.strip_prefix("did:iiot:").unwrap_or(target);
     let server = node.server.read().await;
@@ -386,6 +316,44 @@ async fn get(node: &Node, target: &str) -> Value {
         "ms": ms,
         "record": found.map(|record| describe(&record)),
     })
+}
+
+/// Read a DID again and again, until it is found or `ms` milliseconds have
+/// passed: to measure when a publication becomes readable from this node.
+async fn watch(node: &Node, target: &str, ms: u64) -> Value {
+    let uuid = target.strip_prefix("did:iiot:").unwrap_or(target);
+    let server = node.server.read().await;
+    let deadline = Instant::now() + Duration::from_millis(ms);
+    let watch_started_unix_ms = unix_ms();
+    let mut attempts = 0u32;
+    loop {
+        attempts += 1;
+        let local_copy = server.storage.get(&digest(uuid)).is_some();
+        let attempt_started = Instant::now();
+        if let Some(record) = server.get(uuid).await {
+            return json!({
+                "did": format!("did:iiot:{uuid}"),
+                "found": true,
+                "found_unix_ms": unix_ms(),
+                "watch_started_unix_ms": watch_started_unix_ms,
+                "attempts": attempts,
+                "last_get_ms": elapsed_ms(attempt_started),
+                "local_copy": local_copy,
+                "record": describe(&record),
+            });
+        }
+        if Instant::now() >= deadline {
+            return json!({
+                "did": format!("did:iiot:{uuid}"),
+                "found": false,
+                "watch_started_unix_ms": watch_started_unix_ms,
+                "attempts": attempts,
+            });
+        }
+        // A pause between attempts, so that watching does not flood the
+        // network with lookups in LAN, where an attempt takes about 1 ms.
+        tokio::time::sleep(WATCH_PAUSE).await;
+    }
 }
 
 async fn stats(node: &Node) -> Value {
@@ -522,7 +490,15 @@ async fn run(ctl_port: u16) {
     let handler = Arc::new(DIDSignatureVerifierHandler::new(PathBuf::from(
         "issuer.bin",
     )));
-    let mut server = Server::new(handler, k, alpha, None, None, env_or("SIG_CACHE", 0u8) == 1);
+    let id = digest(&format!("testbed:{name}"));
+    let mut server = Server::new(
+        handler,
+        k,
+        alpha,
+        Some(id),
+        None,
+        env_or("SIG_CACHE", 0u8) == 1,
+    );
     if let Err(error) = server.listen(port, "0.0.0.0").await {
         log::error!("cannot listen on UDP port {port}: {error}");
         std::process::exit(1);

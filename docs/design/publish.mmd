@@ -1,0 +1,15 @@
+sequenceDiagram
+    autonumber
+    participant O as Owner
+    participant N as Nodes on the path
+    participant R as Replicas (k closest to the DID)
+    Note over O: record = algorithm | signature | DID Document<br/>key = SHA-1(UUID of the DID)
+    O->>N: FIND_VALUE(key), iterative, alpha at a time
+    N-->>O: closer nodes, no record
+    Note over O: no record found, so the k closest are the replicas
+    par to each replica
+        O->>R: STORE(key, record)
+        Note over R: empty, so it checks the network first<br/>(see the STORE check diagram)
+        R-->>O: Stored
+    end
+    Note over O: Complete if every replica stored it,<br/>Degraded if some did not answer the STORE

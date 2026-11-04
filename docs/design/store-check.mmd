@@ -1,0 +1,18 @@
+sequenceDiagram
+    autonumber
+    participant S as Sender
+    participant R as Empty replica
+    participant C as Nodes closest to the DID
+    S->>R: STORE(key, record)
+    Note over R: no record for key, so it cannot tell<br/>a forged record from the owner's
+    R->>C: FindHash(key), all of them, deadline 2 s
+    C-->>R: SHA-256 of their record, or closer nodes
+    alt another hash
+        R-->>S: Conflict (nothing verified, nothing stored)
+    else same hash, or no node holds the key
+        Note over R: verify DID binding and signature,<br/>then insert if still absent
+        R-->>S: Stored
+    else a node did not answer, or nobody to ask
+        Note over R: refuse: fail-safe default
+        R--xS: no answer, the sender counts it unavailable
+    end

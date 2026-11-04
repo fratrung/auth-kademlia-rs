@@ -30,6 +30,7 @@ CONFIG_FILE = GENERATED / "config.json"
 IMAGE = "auth-kademlia-testbed:latest"
 PROJECT = "aktestbed"
 DHT_PORT = 4000
+ATTACKER = "tb-attacker"
 
 # One-way delay added to every container's egress. A request and its reply
 # cross two containers, so the round trip is twice this value.
@@ -133,7 +134,7 @@ def generate(args):
         ip = node_ip(prefix, i)
         lines += [
             f"  {name}:",
-            f"    image: {IMAGE}",
+            f"    image: {args.image}",
             f"    container_name: {container(name)}",
             f"    hostname: {name}",
             "    cap_add: [NET_ADMIN]",
@@ -221,9 +222,11 @@ def wait_ready(nodes, timeout):
 # ---------------------------------------------------------------------------
 
 
-def cmd_build(_args):
-    print(f"building {IMAGE} (the first build compiles the whole crate)")
-    run(["docker", "build", "-f", str(HERE / "Dockerfile"), "-t", IMAGE, str(ROOT)])
+def cmd_build(args):
+    tag = getattr(args, "tag", None) or IMAGE
+    context = Path(getattr(args, "context", None) or ROOT)
+    print(f"building {tag} from {context} (the first build compiles the whole crate)")
+    run(["docker", "build", "-f", str(context / "testbed" / "Dockerfile"), "-t", tag, str(context)])
 
 
 def cmd_up(args):
@@ -234,6 +237,8 @@ def cmd_up(args):
     if args.k < 1 or args.alpha < 1:
         fail("k and alpha must be at least 1")
     if not args.no_build:
+        if args.image != IMAGE:
+            fail(f"--image {args.image} is not built by up: pass --no-build, or build it with `build --tag`")
         cmd_build(args)
     GENERATED.mkdir(exist_ok=True)
     COMPOSE_FILE.write_text(generate(args))
@@ -249,6 +254,7 @@ def cmd_up(args):
         "jitter_ms": jitter,
         "loss_pct": loss,
         "cpus": args.cpus,
+        "image": args.image,
     }
     CONFIG_FILE.write_text(json.dumps(config, indent=2) + "\n")
     rtt = "about the bridge RTT" if delay == 0 else f"about {2 * delay:g} ms"
@@ -262,6 +268,7 @@ def cmd_up(args):
 
 
 def cmd_down(_args):
+    run(["docker", "rm", "-f", ATTACKER], capture=True, check=False)
     compose("down", "--remove-orphans")
 
 
@@ -364,7 +371,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("build", help="build the testbed image").set_defaults(func=cmd_build)
+    b = sub.add_parser("build", help="build the testbed image")
+    b.add_argument("--tag", default=IMAGE, help=f"image tag (default {IMAGE})")
+    b.add_argument("--context", help="source tree to build from (default: this repository)")
+    b.set_defaults(func=cmd_build)
 
     up = sub.add_parser("up", help="generate and start a network")
     up.add_argument("--nodes", type=int, default=10)
@@ -380,6 +390,7 @@ def main():
     up.add_argument("--subnet", default="10.213", help="first two octets of the /16 (default 10.213)")
     up.add_argument("--timeout", type=int, default=120, help="seconds to wait for contacts")
     up.add_argument("--no-build", action="store_true", help="reuse the existing image")
+    up.add_argument("--image", default=IMAGE, help=f"image to run (default {IMAGE})")
     up.set_defaults(func=cmd_up)
 
     sub.add_parser("down", help="stop and remove the network").set_defaults(func=cmd_down)
@@ -414,6 +425,7 @@ def main():
         ("pause", "freeze nodes: they stop answering, like a hang"),
         ("unpause", "resume frozen nodes"),
         ("stop", "stop nodes: they send Leave and exit"),
+        ("kill", "crash nodes: no Leave"),
         ("start", "start stopped nodes again, with empty storage"),
     ]:
         p = sub.add_parser(action, help=help_text)

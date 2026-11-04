@@ -23,6 +23,12 @@ path = "scripts/resilience_attacker.rs"
 [[bin]]
 name = "testbed_node"
 path = "testbed/node.rs"
+required-features = ["testbed"]
+
+[[bin]]
+name = "testbed_attacker"
+path = "testbed/attacker.rs"
+required-features = ["testbed"]
 
 [features]
 default = []
@@ -30,6 +36,8 @@ default = []
 #   maturin develop --features python
 #   maturin build   --features python
 python = ["dep:pyo3", "pyo3/extension-module", "dep:pyo3-async-runtimes"]
+# Docker testbed binaries (testbed/): the node and the attacker. Off by default.
+testbed = ["dep:libc"]
 
 [dependencies]
 # Async runtime
@@ -76,6 +84,8 @@ env_logger     = "0.11"
 pyo3                = { version = "0.21", optional = true, features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.21", features = ["tokio-runtime"], optional = true }
 primitive-types = "0.12"
+# Raw packet socket of the testbed attacker (feature "testbed" only)
+libc = { version = "0.2", optional = true }
  
 
 

@@ -1,0 +1,16 @@
+sequenceDiagram
+    autonumber
+    participant O as Owner
+    participant A as Attacker (reads the traffic)
+    participant E as Empty replica (just restarted)
+    participant H as Other replicas
+    O->>E: UPDATE(v2, auth = sign(v2, old key))
+    A-->>A: sees the UPDATE, signs a forged<br/>document for the same DID
+    E-->>O: refused: no record to verify the rotation against
+    A->>E: STORE(forged)
+    E->>H: FindHash(key)
+    H-->>E: hash(v1) or hash(v2)
+    E-->>A: Conflict: the network holds another record
+    O->>E: STORE(v2), fallback after the refusal
+    E->>H: FindHash(key)
+    H-->>E: hash(v2) from all: stored<br/>hash(v1) from one: Conflict (known gap)

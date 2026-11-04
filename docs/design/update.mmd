@@ -1,0 +1,16 @@
+sequenceDiagram
+    autonumber
+    participant O as Owner
+    participant R1 as Replica holding v1
+    participant R2 as Replica without the record
+    Note over O: v2 with new Dilithium and Kyber keys<br/>auth = sign(v2, secret key of v1)
+    O->>O: get the current record (v1), verify auth<br/>against it and the self-signature of v2
+    O->>R1: UPDATE(v2, auth)
+    Note over R1: auth valid under the key of the stored v1,<br/>v2 self-signed: replace v1
+    R1-->>O: ok
+    O->>R2: UPDATE(v2, auth)
+    R2-->>O: refused: nothing to verify against
+    O->>R2: STORE(v2)
+    Note over R2: STORE check: accepted only if<br/>the network holds v2 or nothing
+    R2-->>O: Stored or Conflict
+    Note over O: strict majority of the consistency group (alpha),<br/>then commit the local copy
