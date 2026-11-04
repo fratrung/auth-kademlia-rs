@@ -8,11 +8,15 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use futures::stream::{FuturesUnordered, StreamExt};
 use log;
+use tokio::task::JoinSet;
 
 use crate::node::{Node, NodeHeap};
 use crate::utils::ID_LEN;
+
+/// When a lookup gives up at its deadline, a peer silent for at least this
+/// long counts as not responding. One asked just before the deadline does not.
+const SILENT_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Raw tuple returned by a protocol `call_find_*` method:
 /// `(response_received, payload)`.
@@ -86,6 +90,20 @@ pub trait SpiderProtocol: Send + Sync {
     async fn call_store(&self, peer: &Node, key: [u8; ID_LEN], value: Vec<u8>) -> bool;
     /// Those of `nodes` that this node already knows are not responding.
     async fn failing_among(&self, nodes: &[Node]) -> HashSet<[u8; ID_LEN]>;
+    /// `nodes` did not answer before a lookup gave up on them, so their
+    /// requests never reached a timeout: count them as if they had.
+    async fn note_no_answer(&self, _nodes: &[Node]) {}
+}
+
+/// Outcome of a value lookup that must hear from every peer it asks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueSearch {
+    /// A value the caller approved.
+    Found(Vec<u8>),
+    /// Every peer asked answered, none with an approved value.
+    NotFound,
+    /// A peer asked did not answer, by the deadline or at all.
+    Incomplete,
 }
 
 /// The nodes a lookup found, all of which responded, and how many others it
@@ -337,28 +355,99 @@ impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
     /// Kademlia §2.3 halts a value lookup when a node returns the value. A
     /// rejected value is discarded and the lookup continues, so one bad replica
     /// cannot end a read. Requests still in flight are cancelled.
-    pub async fn find_first_valid<A, Fut>(mut self, accept: A) -> Option<Vec<u8>>
+    pub async fn find_first_valid<A, Fut>(self, accept: A) -> Option<Vec<u8>>
     where
         A: Fn(Vec<u8>) -> Fut,
         Fut: std::future::Future<Output = Option<Vec<u8>>>,
     {
+        let find_value = |protocol: Arc<P>, peer, target| protocol.call_find_value(peer, target);
+        match self.search(None, find_value, accept).await {
+            ValueSearch::Found(value) => Some(value),
+            ValueSearch::NotFound | ValueSearch::Incomplete => None,
+        }
+    }
+
+    /// Like `find_first_valid`, but asks each peer through `rpc` (a
+    /// `FindValue` or a `FindHash` call), tells a lookup in which every peer
+    /// asked answered from one in which some did not, and stops waiting for
+    /// answers at `deadline`. Peers known not to respond are not asked, so
+    /// they do not count. The peers silent for `SILENT_AFTER` at the deadline
+    /// count as not responding, as after a timeout, so the next lookup does
+    /// not wait for them again.
+    ///
+    /// Each request runs as its own task. Between two answers the lookup
+    /// awaits other work that reads or writes the routing table, and a request
+    /// can be waiting for that table too (a node met in an answer enters it).
+    /// Polled from this future, such a request would stop being polled while
+    /// the lookup waits; Tokio's fair lock would then be handed to it and never
+    /// released, and the node would stop (futurelock, Oxide RFD 609). The
+    /// requests still running when the lookup returns are aborted.
+    pub async fn search<R, RFut, A, Fut>(
+        mut self,
+        deadline: Option<tokio::time::Instant>,
+        rpc: R,
+        accept: A,
+    ) -> ValueSearch
+    where
+        R: Fn(Arc<P>, Node, Node) -> RFut,
+        RFut: std::future::Future<Output = RawResponse> + Send + 'static,
+        A: Fn(Vec<u8>) -> Fut,
+        Fut: std::future::Future<Output = Option<Vec<u8>>>,
+    {
+        let mut incomplete = false;
         while !self.base.nearest.have_contacted_all() {
-            let mut in_flight = FuturesUnordered::new();
+            if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+                return ValueSearch::Incomplete;
+            }
+            let mut in_flight = JoinSet::new();
+            let mut waiting: HashMap<[u8; ID_LEN], Node> = HashMap::new();
+            let asked_at = tokio::time::Instant::now();
             for peer in self.base.next_peers(usize::MAX) {
                 let protocol = Arc::clone(&self.base.protocol);
                 let target = self.base.node.clone();
                 let id = peer.id;
-                in_flight.push(async move { (id, protocol.call_find_value(peer, target).await) });
+                waiting.insert(id, peer.clone());
+                let request = rpc(protocol, peer, target);
+                in_flight.spawn(async move { (id, request.await) });
             }
 
             let mut to_remove: Vec<[u8; ID_LEN]> = vec![];
-            while let Some((peer_id, raw)) = in_flight.next().await {
+            loop {
+                let next = match deadline {
+                    Some(deadline) => {
+                        match tokio::time::timeout_at(deadline, in_flight.join_next()).await {
+                            Ok(next) => next,
+                            Err(_) => {
+                                if asked_at.elapsed() >= SILENT_AFTER {
+                                    let silent: Vec<Node> = waiting.into_values().collect();
+                                    self.base.protocol.note_no_answer(&silent).await;
+                                }
+                                return ValueSearch::Incomplete;
+                            }
+                        }
+                    }
+                    None => in_flight.join_next().await,
+                };
+                let (peer_id, raw) = match next {
+                    None => break,
+                    Some(Ok(answer)) => answer,
+                    // A request that panicked takes the lookup down, as when
+                    // it was polled from here.
+                    Some(Err(error)) if error.is_panic() => {
+                        std::panic::resume_unwind(error.into_panic())
+                    }
+                    // Only `abort` cancels a request, and nothing aborts one
+                    // while the set is alive.
+                    Some(Err(_)) => continue,
+                };
+                waiting.remove(&peer_id);
                 let response = RPCFindResponse::new(raw);
                 if !response.happened() {
                     to_remove.push(peer_id);
+                    incomplete = true;
                 } else if let Some(value) = response.get_value() {
                     if let Some(accepted) = accept(value).await {
-                        return Some(accepted);
+                        return ValueSearch::Found(accepted);
                     }
                 } else {
                     self.base.add_reported(response.get_node_list()).await;
@@ -366,7 +455,11 @@ impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
             }
             self.base.remove_failed(to_remove);
         }
-        None
+        if incomplete {
+            ValueSearch::Incomplete
+        } else {
+            ValueSearch::NotFound
+        }
     }
 
     /// Iteratively discover closer peers and return a byte-identical value only
@@ -474,9 +567,11 @@ mod quorum_tests {
     use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, Mutex};
 
+    use std::time::Duration;
+
     use super::{
         strict_quorum_value, FindPayload, Node, NodeSpiderCrawl, RawResponse, SpiderCrawl,
-        SpiderProtocol, ID_LEN,
+        SpiderProtocol, ValueSearch, ValueSpiderCrawl, ID_LEN,
     };
 
     struct RecordingProtocol {
@@ -547,6 +642,128 @@ mod quorum_tests {
 
     fn contact(marker: u8) -> Node {
         Node::new([marker; ID_LEN], Some("127.0.0.1".to_string()), Some(7000))
+    }
+
+    /// A routing table behind Tokio's fair `RwLock`, as in `KademliaProtocol`.
+    /// The request to `writer` takes it for writing, as when a node met in an
+    /// answer enters the table; the others answer after a delay, reporting
+    /// some nodes. The lookup reads it to leave out reported nodes known to
+    /// fail, and writes it to mark the nodes silent at its deadline.
+    struct TableProtocol {
+        table: Arc<tokio::sync::RwLock<()>>,
+        writer: [u8; ID_LEN],
+        reports: HashMap<[u8; ID_LEN], (Duration, Vec<Node>)>,
+    }
+
+    #[async_trait::async_trait]
+    impl SpiderProtocol for TableProtocol {
+        async fn call_find_node(self: Arc<Self>, _peer: Node, _target: Node) -> RawResponse {
+            RawResponse(true, FindPayload::Empty)
+        }
+
+        async fn call_find_value(self: Arc<Self>, peer: Node, _target: Node) -> RawResponse {
+            if peer.id == self.writer {
+                let _table = self.table.write().await;
+                return RawResponse(true, FindPayload::Nodes(vec![]));
+            }
+            let (delay, reported) = self.reports.get(&peer.id).cloned().unwrap_or_default();
+            tokio::time::sleep(delay).await;
+            let tuples = reported
+                .into_iter()
+                .map(|node| (node.id.to_vec(), node.ip, node.port))
+                .collect();
+            RawResponse(true, FindPayload::Nodes(tuples))
+        }
+
+        async fn call_store(&self, _peer: &Node, _key: [u8; ID_LEN], _value: Vec<u8>) -> bool {
+            false
+        }
+
+        async fn failing_among(&self, _nodes: &[Node]) -> HashSet<[u8; ID_LEN]> {
+            let _table = self.table.read().await;
+            HashSet::new()
+        }
+
+        async fn note_no_answer(&self, _nodes: &[Node]) {
+            let _table = self.table.write().await;
+        }
+    }
+
+    /// Someone else reads the table for `for_ms`, so a writer has to wait.
+    async fn read_table_briefly(table: &Arc<tokio::sync::RwLock<()>>, for_ms: u64) {
+        let held = Arc::clone(table).read_owned().await;
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(for_ms)).await;
+            drop(held);
+        });
+    }
+
+    /// A request waiting to write the routing table must keep being polled
+    /// while the lookup reads the table for another answer. Otherwise the
+    /// fair lock is handed to a request nobody polls, and the node stops
+    /// (futurelock, Oxide RFD 609).
+    #[test]
+    fn a_lookup_keeps_polling_a_request_that_waits_for_the_routing_table() {
+        test_runtime().block_on(async {
+            let table = Arc::new(tokio::sync::RwLock::new(()));
+            let (writer, reporter, reported) = (contact(1), contact(2), contact(3));
+            let protocol = Arc::new(TableProtocol {
+                table: Arc::clone(&table),
+                writer: writer.id,
+                reports: HashMap::from([(
+                    reporter.id,
+                    (Duration::from_millis(10), vec![reported]),
+                )]),
+            });
+            read_table_briefly(&table, 50).await;
+
+            let search = ValueSpiderCrawl::new(
+                protocol,
+                Node::from_id([0; ID_LEN]),
+                vec![writer, reporter],
+                20,
+                3,
+            )
+            .search(
+                None,
+                |protocol, peer, target| protocol.call_find_value(peer, target),
+                |_| async { None },
+            );
+            let outcome = tokio::time::timeout(Duration::from_secs(2), search)
+                .await
+                .expect("the lookup is stuck on the routing table");
+            assert_eq!(outcome, ValueSearch::NotFound);
+        });
+    }
+
+    /// The same at the deadline of the STORE check: marking the silent peers
+    /// writes the table while a request still waits for it.
+    #[test]
+    fn a_lookup_at_its_deadline_keeps_polling_a_request_that_waits_for_the_routing_table() {
+        test_runtime().block_on(async {
+            let table = Arc::new(tokio::sync::RwLock::new(()));
+            let writer = contact(1);
+            let protocol = Arc::new(TableProtocol {
+                table: Arc::clone(&table),
+                writer: writer.id,
+                reports: HashMap::new(),
+            });
+            // Released after the deadline, which comes after SILENT_AFTER.
+            read_table_briefly(&table, 1200).await;
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(1100);
+
+            let search =
+                ValueSpiderCrawl::new(protocol, Node::from_id([0; ID_LEN]), vec![writer], 20, 3)
+                    .search(
+                        Some(deadline),
+                        |protocol, peer, target| protocol.call_find_value(peer, target),
+                        |_| async { None },
+                    );
+            let outcome = tokio::time::timeout(Duration::from_secs(3), search)
+                .await
+                .expect("the lookup is stuck on the routing table");
+            assert_eq!(outcome, ValueSearch::Incomplete);
+        });
     }
 
     #[test]

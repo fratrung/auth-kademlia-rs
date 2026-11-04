@@ -225,6 +225,7 @@ impl Server {
             Arc::clone(&socket),
             Arc::clone(&self.storage),
             self.ksize,
+            self.alpha,
             Arc::clone(&self.signature_handler),
             self.sig_cache.clone(),
         ));

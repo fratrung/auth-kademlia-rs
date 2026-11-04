@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -19,19 +19,20 @@ use dashmap::DashMap;
 use futures::stream::{self, StreamExt};
 use log;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::net::UdpSocket;
-use tokio::sync::{oneshot, Mutex, RwLock, Semaphore};
+use tokio::sync::{oneshot, Mutex, Notify, RwLock, Semaphore};
 use tokio::task::JoinSet;
-use tokio::time::timeout;
 
 use crate::auth_handler::SignatureVerifierHandler;
-use crate::crawling::{FindPayload, RawResponse, SpiderProtocol};
+use crate::crawling::{FindPayload, RawResponse, SpiderProtocol, ValueSearch, ValueSpiderCrawl};
 use crate::fragmentation::{
     encode_fragments, parse_fragment, ReassemblyEntry, ReassemblyMap, FRAG_CHUNK_SIZE,
     MAX_MESSAGE_SIZE, MAX_REASSEMBLY_ENTRIES, MAX_REASSEMBLY_ENTRIES_PER_PEER,
     REASSEMBLY_GC_INTERVAL, REASSEMBLY_TTL,
 };
 use crate::node::Node;
+use crate::retransmit::{RoundTrips, MAX_RESENDS};
 use crate::routing::RoutingTable;
 use crate::signature_cache::{SignatureCache, VerificationDomain};
 use crate::storage::{ForgetfulStorage, IStorage, StorageWriteStatus};
@@ -42,6 +43,12 @@ use crate::utils::{digest, ID_LEN, STATUS_LIST_KEY};
 const RPC_TIMEOUT: Duration = Duration::from_millis(2500);
 /// A contact silent for this long may have missed records when it comes back.
 const RETURNED_AFTER: Duration = RPC_TIMEOUT;
+/// How long an empty replica asks the network about a record it was sent,
+/// below `RPC_TIMEOUT` so that its answer reaches the sender in time.
+const STORE_LOOKUP_TIMEOUT: Duration = Duration::from_millis(2000);
+/// STOREs waiting for that lookup at once. Beyond this a STORE is dropped
+/// without an answer, as an overloaded node drops datagrams.
+const MAX_STORE_LOOKUPS: usize = 256;
 
 /// Explicit result of a STORE request.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
@@ -117,6 +124,30 @@ pub enum RpcMessage {
     Leave {
         sender_id: [u8; ID_LEN],
     },
+    /// Whether the node holds a record for `key`, asked by an empty replica
+    /// before a STORE. A node that holds one answers with its SHA-256
+    /// (`FindHashHit`), one that does not with closer nodes (`FindValueNodes`).
+    /// The answer fits in one datagram, unlike a whole record.
+    FindHash {
+        sender_id: [u8; ID_LEN],
+        key: [u8; ID_LEN],
+    },
+    FindHashHit {
+        hash: [u8; RECORD_HASH_LEN],
+    },
+    /// Sent at once for a request that carries a record (`Store`, `Update`,
+    /// `UpdateStatusList`), whose answer may take a while: the request
+    /// arrived and is being handled, so the sender does not send it again yet.
+    /// Sent again for each copy that arrives meanwhile.
+    Received,
+}
+
+/// Length of `record_hash`.
+pub const RECORD_HASH_LEN: usize = 32;
+
+/// SHA-256 of a whole record, as a node answers `FindHash`.
+pub fn record_hash(record: &[u8]) -> [u8; RECORD_HASH_LEN] {
+    Sha256::digest(record).into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +188,7 @@ enum ExpectedResponse {
     UpdateStatusListResult,
     FindNodeResult,
     FindValueResult,
+    FindHashResult,
     NoResponse,
 }
 
@@ -169,6 +201,7 @@ impl ExpectedResponse {
             RpcMessage::UpdateStatusList { .. } => Self::UpdateStatusListResult,
             RpcMessage::FindNode { .. } => Self::FindNodeResult,
             RpcMessage::FindValue { .. } => Self::FindValueResult,
+            RpcMessage::FindHash { .. } => Self::FindHashResult,
             RpcMessage::Leave { .. } => Self::NoResponse,
             _ => Self::NoResponse,
         }
@@ -187,8 +220,20 @@ impl ExpectedResponse {
                 message,
                 RpcMessage::FindValueHit { .. } | RpcMessage::FindValueNodes { .. }
             ),
+            Self::FindHashResult => matches!(
+                message,
+                RpcMessage::FindHashHit { .. } | RpcMessage::FindValueNodes { .. }
+            ),
             Self::NoResponse => false,
         }
+    }
+
+    /// Whether the request gets a receipt before its answer.
+    fn after_receipt(self) -> bool {
+        matches!(
+            self,
+            Self::StoreResult | Self::UpdateResult | Self::UpdateStatusListResult
+        )
     }
 
     fn name(self) -> &'static str {
@@ -199,6 +244,7 @@ impl ExpectedResponse {
             Self::UpdateStatusListResult => "UpdateStatusListResult",
             Self::FindNodeResult => "FindNodeResult",
             Self::FindValueResult => "FindValueHit|FindValueNodes",
+            Self::FindHashResult => "FindHashHit|FindValueNodes",
             Self::NoResponse => "no response",
         }
     }
@@ -220,11 +266,64 @@ fn rpc_message_name(message: &RpcMessage) -> &'static str {
         RpcMessage::FindValueHit { .. } => "FindValueHit",
         RpcMessage::FindValueNodes { .. } => "FindValueNodes",
         RpcMessage::Leave { .. } => "Leave",
+        RpcMessage::FindHash { .. } => "FindHash",
+        RpcMessage::FindHashHit { .. } => "FindHashHit",
+        RpcMessage::Received => "Received",
     }
 }
 
-type PendingMap =
-    Arc<Mutex<HashMap<u32, (SocketAddr, ExpectedResponse, oneshot::Sender<RpcMessage>)>>>;
+/// A request waiting for its answer.
+struct PendingCall {
+    peer: SocketAddr,
+    expected: ExpectedResponse,
+    reply: oneshot::Sender<RpcMessage>,
+    /// Signalled for each receipt (`Received`) the peer sends.
+    received: Arc<Notify>,
+}
+
+type PendingMap = Arc<Mutex<HashMap<u32, PendingCall>>>;
+
+/// The record a request carries, if any. Its answer comes only after the
+/// record is handled, so the request gets a receipt first (`Received`).
+fn carried_record(message: &RpcMessage) -> Option<&[u8]> {
+    match message {
+        RpcMessage::Store { value, .. }
+        | RpcMessage::Update { value, .. }
+        | RpcMessage::UpdateStatusList { value, .. } => Some(value),
+        _ => None,
+    }
+}
+
+/// A request that carries a record, being handled: its sender's address and
+/// the SHA-256 of the whole request. A copy of it, sent again because the
+/// receipt or the answer was late, is identical, so it is recognised and not
+/// handled twice. Another request under the same msg_id is not a copy.
+type RequestKey = (SocketAddr, [u8; RECORD_HASH_LEN]);
+
+/// Marks a request as being handled until dropped.
+struct InProgress {
+    requests: Arc<DashMap<RequestKey, ()>>,
+    key: RequestKey,
+}
+
+impl InProgress {
+    /// `None` if the request is already being handled: this is a copy.
+    fn start(requests: &Arc<DashMap<RequestKey, ()>>, key: RequestKey) -> Option<Self> {
+        if requests.insert(key, ()).is_some() {
+            return None;
+        }
+        Some(Self {
+            requests: Arc::clone(requests),
+            key,
+        })
+    }
+}
+
+impl Drop for InProgress {
+    fn drop(&mut self) {
+        self.requests.remove(&self.key);
+    }
+}
 
 /// Removes a pending RPC when `call` ends, including when its caller cancels it
 /// by dropping the future, so a request to a dead peer cannot leak its entry.
@@ -247,8 +346,48 @@ impl Drop for PendingGuard {
     }
 }
 
+/// Replications to new nodes that run at once. Each one scans the whole
+/// storage.
 const WELCOME_CONCURRENCY: usize = 1;
+/// Nodes waiting for, or receiving, the records they should hold. A node met
+/// beyond this still enters the routing table, and gets its records from the
+/// hourly republication.
+const MAX_WELCOME_QUEUE: usize = 256;
+/// Records whose neighbours are computed under one read lock of the routing
+/// table, while scanning the storage for a new node.
+const WELCOME_SCAN_CHUNK: usize = 256;
 const REPLICATION_CONCURRENCY: usize = 4;
+
+/// What an empty replica learns from the network about a record it was sent.
+enum NetworkCopy {
+    /// Every node asked answered: none holds the record, or they hold the
+    /// same one.
+    NoneOrSame,
+    /// A node holds another record: it answered with another hash.
+    Other,
+    /// Some node did not answer, or there was nobody to ask.
+    Unknown,
+}
+
+/// One of the `MAX_STORE_LOOKUPS` places for a STORE waiting for a lookup,
+/// given back when dropped, also if the task never runs.
+struct StoreLookupSlot(Arc<AtomicUsize>);
+
+impl StoreLookupSlot {
+    fn take(count: &Arc<AtomicUsize>) -> Option<Self> {
+        if count.fetch_add(1, Ordering::AcqRel) >= MAX_STORE_LOOKUPS {
+            count.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        Some(Self(Arc::clone(count)))
+    }
+}
+
+impl Drop for StoreLookupSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 pub struct KademliaProtocol {
     pub router: Arc<RwLock<RoutingTable>>,
@@ -256,14 +395,26 @@ pub struct KademliaProtocol {
     pub source_node: Node,
     pub socket: Arc<UdpSocket>,
     pub signature_handler: Arc<dyn SignatureVerifierHandler>,
+    /// Lookup parameters, for the lookups this node makes on its own.
+    ksize: usize,
+    alpha: usize,
+    /// STOREs waiting for a lookup (`MAX_STORE_LOOKUPS`).
+    store_lookups: Arc<AtomicUsize>,
     /// Shared with `Server` so a verification result cached in one layer is
     /// immediately reused by the other. `None` when the cache is disabled.
     sig_cache: Option<Arc<SignatureCache>>,
-    /// Peer IDs already scheduled for discovery and replica evaluation.
+    /// Nodes waiting for, or receiving, the records they should hold.
     welcome_in_flight: DashMap<[u8; ID_LEN], ()>,
     /// Bounds whole-storage scans caused by newly discovered peers.
     welcome_permits: Arc<Semaphore>,
+    /// Oldest contacts of full buckets being pinged (Kademlia §2.2).
+    oldest_pings_in_flight: DashMap<[u8; ID_LEN], ()>,
     pending: PendingMap,
+    /// Round trips to the peers this node asks, to know when a request or
+    /// its answer was lost.
+    round_trips: RoundTrips,
+    /// Requests carrying a record being handled (`InProgress`).
+    requests_in_progress: Arc<DashMap<RequestKey, ()>>,
     next_msg_id: AtomicU32,
     next_frag_id: AtomicU32,
     reassembly: ReassemblyMap,
@@ -281,6 +432,7 @@ impl KademliaProtocol {
         socket: Arc<UdpSocket>,
         storage: Arc<ForgetfulStorage>,
         ksize: usize,
+        alpha: usize,
         signature_handler: Arc<dyn SignatureVerifierHandler>,
         sig_cache: Option<Arc<SignatureCache>>,
     ) -> Self {
@@ -291,10 +443,16 @@ impl KademliaProtocol {
             source_node,
             socket,
             signature_handler,
+            ksize,
+            alpha,
+            store_lookups: Arc::new(AtomicUsize::new(0)),
             sig_cache,
             welcome_in_flight: DashMap::new(),
             welcome_permits: Arc::new(Semaphore::new(WELCOME_CONCURRENCY)),
+            oldest_pings_in_flight: DashMap::new(),
             pending: Arc::new(Mutex::new(HashMap::new())),
+            round_trips: RoundTrips::default(),
+            requests_in_progress: Arc::new(DashMap::new()),
             next_msg_id: AtomicU32::new(0),
             next_frag_id: AtomicU32::new(0),
             reassembly: Arc::new(Mutex::new(HashMap::new())),
@@ -409,9 +567,10 @@ impl KademliaProtocol {
         map.retain(|_, entry| now.duration_since(entry.created_at) < REASSEMBLY_TTL);
     }
 
-    /// Schedule the expensive new-peer work without blocking an RPC handler.
-    /// Duplicate discoveries coalesce by node ID, and capacity is deliberately
-    /// bounded because each accepted peer may require a full storage scan.
+    /// A node made contact: add it to the routing table at once (Kademlia
+    /// §2.2), and queue the records it should hold (§2.5). Only the records
+    /// are bounded, because finding them scans the whole storage: one scan
+    /// runs at a time and at most `MAX_WELCOME_QUEUE` nodes wait for it.
     async fn schedule_welcome_if_new(self: &Arc<Self>, node: Node) {
         let returned = self
             .note_alive(&node)
@@ -420,38 +579,56 @@ impl KademliaProtocol {
         if !returned && !self.router.read().await.is_new_node(&node) {
             return;
         }
+        self.add_contact(node.clone()).await;
+
+        if self.welcome_in_flight.contains_key(&node.id) {
+            return;
+        }
+        if self.welcome_in_flight.len() >= MAX_WELCOME_QUEUE {
+            log::debug!(
+                "Replication queue full: {} gets its records from the next republication",
+                node
+            );
+            return;
+        }
         if self.welcome_in_flight.insert(node.id, ()).is_some() {
             return;
         }
-
-        let permit = match Arc::clone(&self.welcome_permits).try_acquire_owned() {
-            Ok(permit) => permit,
-            Err(_) => {
-                self.welcome_in_flight.remove(&node.id);
-                log::debug!(
-                    "Discovery capacity exhausted for {}; it will be retried on a later RPC",
-                    node
-                );
-                return;
-            }
-        };
-
         let p = Arc::clone(self);
         self.spawn_task(async move {
-            let _permit = permit;
-            p.welcome(node.clone()).await;
+            if let Ok(_permit) = Arc::clone(&p.welcome_permits).acquire_owned().await {
+                p.replicate_to(&node).await;
+            }
             p.welcome_in_flight.remove(&node.id);
         });
     }
 
-    /// Serialize, fragment, and send a frame to `addr`. Returns false if any
-    /// fragment fails to be transmitted.
-    async fn send_frame(&self, addr: SocketAddr, frame: &Frame) -> bool {
+    /// Add `node` to the routing table. A full bucket that cannot split gives
+    /// its oldest contact, which is pinged to learn whether it is still there
+    /// (§2.2): at most one ping per contact at a time, however many new nodes
+    /// fall into that bucket.
+    async fn add_contact(self: &Arc<Self>, node: Node) {
+        let oldest = self.router.write().await.add_contact(node);
+        let Some(oldest) = oldest else {
+            return;
+        };
+        if self.oldest_pings_in_flight.insert(oldest.id, ()).is_some() {
+            return;
+        }
+        let p = Arc::clone(self);
+        self.spawn_task(async move {
+            p.call_ping_node(&oldest).await;
+            p.oldest_pings_in_flight.remove(&oldest.id);
+        });
+    }
+
+    /// Serialize and fragment a frame for `addr`. `None` if it cannot be sent.
+    fn encode_frame(&self, addr: SocketAddr, frame: &Frame) -> Option<Vec<Vec<u8>>> {
         let bytes = match bincode::serialize(frame) {
             Ok(b) => b,
             Err(e) => {
                 log::error!("Serialization error: {}", e);
-                return false;
+                return None;
             }
         };
 
@@ -461,7 +638,7 @@ impl KademliaProtocol {
                 bytes.len(),
                 MAX_MESSAGE_SIZE
             );
-            return false;
+            return None;
         }
 
         let frag_id = self.next_frag_id_val();
@@ -476,8 +653,13 @@ impl KademliaProtocol {
                 frag_id
             );
         }
+        Some(datagrams)
+    }
 
-        for dg in &datagrams {
+    /// Send the datagrams of one frame. Returns false if any fails to be
+    /// transmitted.
+    async fn send_datagrams(&self, addr: SocketAddr, datagrams: &[Vec<u8>]) -> bool {
+        for dg in datagrams {
             if let Err(e) = self.socket.send_to(dg, addr).await {
                 log::warn!("UDP send to {} failed: {}", addr, e);
                 return false;
@@ -486,7 +668,25 @@ impl KademliaProtocol {
         true
     }
 
-    /// Send an RPC request to `addr` and wait for the matching response.
+    /// Serialize, fragment, and send a frame to `addr`. Returns false if any
+    /// fragment fails to be transmitted.
+    async fn send_frame(&self, addr: SocketAddr, frame: &Frame) -> bool {
+        match self.encode_frame(addr, frame) {
+            Some(datagrams) => self.send_datagrams(addr, &datagrams).await,
+            None => false,
+        }
+    }
+
+    /// Send an RPC request to `addr` and wait for the matching response, for
+    /// at most `RPC_TIMEOUT`.
+    ///
+    /// Over UDP the request or its answer can be lost. With no sign of the
+    /// peer after a few of its round trips (`RoundTrips::resend_after`), the
+    /// same datagrams are sent again, up to `MAX_RESENDS` times, waiting
+    /// twice as long each time. Copies keep the fragment id, so a copy also
+    /// completes a message that lost a fragment. A receipt (`Received`) means
+    /// the request arrived and is being handled: the next copy waits longer,
+    /// and only asks again for an answer that may have been lost.
     async fn call(&self, addr: SocketAddr, message: RpcMessage) -> Option<RpcMessage> {
         let msg_id = self.next_id();
         let frame = Frame {
@@ -494,31 +694,85 @@ impl KademliaProtocol {
             is_request: true,
             message,
         };
+        // The answer to a request carrying a record comes after the record is
+        // handled, so it does not measure the round trip; its receipt does.
+        let answer_measures = carried_record(&frame.message).is_none();
+        let datagrams = self.encode_frame(addr, &frame)?;
 
-        let expected_response = ExpectedResponse::for_request(&frame.message);
-        let (tx, rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .await
-            .insert(msg_id, (addr, expected_response, tx));
+        let (reply, mut answer) = oneshot::channel();
+        let received = Arc::new(Notify::new());
+        self.pending.lock().await.insert(
+            msg_id,
+            PendingCall {
+                peer: addr,
+                expected: ExpectedResponse::for_request(&frame.message),
+                reply,
+                received: Arc::clone(&received),
+            },
+        );
         let _guard = PendingGuard {
             pending: Arc::clone(&self.pending),
             msg_id,
         };
 
-        if !self.send_frame(addr, &frame).await {
+        let first_sent = tokio::time::Instant::now();
+        let deadline = first_sent + RPC_TIMEOUT;
+        if !self.send_datagrams(addr, &datagrams).await {
             return None;
         }
-
-        match timeout(RPC_TIMEOUT, rx).await {
-            Ok(Ok(response)) => Some(response),
-            Ok(Err(_)) => {
-                log::debug!("Response channel closed for msg_id={}", msg_id);
-                None
-            }
-            Err(_) => {
-                log::debug!("RPC timeout for msg_id={}", msg_id);
-                None
+        let mut wait = self.round_trips.resend_after(addr);
+        let mut next_send = first_sent + wait;
+        let mut resends = 0;
+        let mut receipts = 0;
+        loop {
+            tokio::select! {
+                result = &mut answer => {
+                    let Ok(response) = result else {
+                        log::debug!("Response channel closed for msg_id={}", msg_id);
+                        return None;
+                    };
+                    // Karn's algorithm: after a copy, the answer may be to either.
+                    if answer_measures && resends == 0 {
+                        self.round_trips.record(addr, first_sent.elapsed());
+                    }
+                    return Some(response);
+                }
+                _ = received.notified() => {
+                    receipts += 1;
+                    wait = if receipts == 1 {
+                        if resends == 0 {
+                            self.round_trips.record(addr, first_sent.elapsed());
+                        }
+                        self.round_trips.resend_after(addr) * 2
+                    } else {
+                        wait * 2
+                    };
+                    next_send = tokio::time::Instant::now() + wait;
+                }
+                _ = tokio::time::sleep_until(next_send.min(deadline)) => {
+                    if tokio::time::Instant::now() >= deadline {
+                        log::debug!("RPC timeout for msg_id={}", msg_id);
+                        return None;
+                    }
+                    if resends == MAX_RESENDS {
+                        next_send = deadline;
+                        continue;
+                    }
+                    resends += 1;
+                    log::debug!(
+                        "No answer from {} for msg_id={} after {:?}, sending it again ({}/{})",
+                        addr,
+                        msg_id,
+                        wait,
+                        resends,
+                        MAX_RESENDS
+                    );
+                    if !self.send_datagrams(addr, &datagrams).await {
+                        return None;
+                    }
+                    wait *= 2;
+                    next_send = tokio::time::Instant::now() + wait;
+                }
             }
         }
     }
@@ -647,17 +901,30 @@ impl KademliaProtocol {
 
         if !frame.is_request {
             let message = frame.message;
+            if let RpcMessage::Received = message {
+                let pending = self.pending.lock().await;
+                match pending.get(&frame.msg_id) {
+                    Some(call) if call.peer == peer && call.expected.after_receipt() => {
+                        call.received.notify_one();
+                    }
+                    _ => log::debug!(
+                        "Discarded receipt for msg_id={} from {}",
+                        frame.msg_id,
+                        peer
+                    ),
+                }
+                return;
+            }
             let tx = {
                 let mut pending = self.pending.lock().await;
                 match pending
                     .get(&frame.msg_id)
-                    .map(|(expected_peer, expected_response, _)| {
-                        (*expected_peer, *expected_response)
-                    }) {
+                    .map(|call| (call.peer, call.expected))
+                {
                     Some((expected_peer, expected_response))
                         if expected_peer == peer && expected_response.accepts(&message) =>
                     {
-                        pending.remove(&frame.msg_id).map(|(_, _, tx)| tx)
+                        pending.remove(&frame.msg_id).map(|call| call.reply)
                     }
                     Some((expected_peer, expected_response)) if expected_peer == peer => {
                         log::warn!(
@@ -692,14 +959,70 @@ impl KademliaProtocol {
             return;
         }
 
+        if carried_record(&frame.message).is_none() {
+            let response = self.dispatch_request(frame.message, peer).await;
+            self.answer(peer, frame.msg_id, response).await;
+            return;
+        }
+
+        // A request carrying a record is answered only once the record is
+        // handled. A copy of one still being handled, sent again because the
+        // receipt was lost or late, gets the receipt again and nothing else.
+        let Some(in_progress) =
+            InProgress::start(&self.requests_in_progress, (peer, record_hash(&payload)))
+        else {
+            self.answer(peer, frame.msg_id, Some(RpcMessage::Received))
+                .await;
+            return;
+        };
+
+        // A STORE to an empty replica waits for a lookup, whose answers reach
+        // this node through these same workers: handled here, it could leave
+        // every worker waiting for answers queued behind it. It runs apart,
+        // and its answer leaves when the lookup is over.
+        let slot = match &frame.message {
+            RpcMessage::Store { key, .. } if self.store_needs_lookup(key) => {
+                let Some(slot) = StoreLookupSlot::take(&self.store_lookups) else {
+                    log::warn!(
+                        "Dropped STORE from {}: {} STOREs already waiting for a lookup",
+                        peer,
+                        MAX_STORE_LOOKUPS
+                    );
+                    return;
+                };
+                Some(slot)
+            }
+            _ => None,
+        };
+
+        // The receipt tells the sender the request arrived, so it does not
+        // send it again while it waits for the answer.
+        self.answer(peer, frame.msg_id, Some(RpcMessage::Received))
+            .await;
+        if let Some(slot) = slot {
+            let protocol = Arc::clone(self);
+            self.spawn_task(async move {
+                let _slot = slot;
+                let _in_progress = in_progress;
+                let response = protocol.dispatch_request(frame.message, peer).await;
+                protocol.answer(peer, frame.msg_id, response).await;
+            });
+            return;
+        }
+
         let response = self.dispatch_request(frame.message, peer).await;
-        if let Some(resp) = response {
-            let resp_frame = Frame {
-                msg_id: frame.msg_id,
+        self.answer(peer, frame.msg_id, response).await;
+        drop(in_progress);
+    }
+
+    async fn answer(&self, peer: SocketAddr, msg_id: u32, response: Option<RpcMessage>) {
+        if let Some(message) = response {
+            let frame = Frame {
+                msg_id,
                 is_request: false,
-                message: resp,
+                message,
             };
-            self.send_frame(peer, &resp_frame).await;
+            self.send_frame(peer, &frame).await;
         }
     }
 
@@ -718,10 +1041,10 @@ impl KademliaProtocol {
                 sender_id,
                 key,
                 value,
-            } => {
-                let status = self.rpc_store(sender_id, sender_addr, key, value).await;
-                Some(RpcMessage::StoreResult { status })
-            }
+            } => self
+                .rpc_store(sender_id, sender_addr, key, value)
+                .await
+                .map(|status| RpcMessage::StoreResult { status }),
             RpcMessage::Update {
                 sender_id,
                 key,
@@ -758,6 +1081,17 @@ impl KademliaProtocol {
                     },
                 })
             }
+            RpcMessage::FindHash { sender_id, key } => {
+                let result = self.rpc_find_value(sender_id, sender_addr, key).await;
+                Some(match result {
+                    FindValueResult::Value(v) => RpcMessage::FindHashHit {
+                        hash: record_hash(&v),
+                    },
+                    FindValueResult::Nodes(ns) => RpcMessage::FindValueNodes {
+                        nodes: ns.iter().map(WireNode::from).collect(),
+                    },
+                })
+            }
             RpcMessage::Leave { sender_id } => {
                 self.rpc_leave(sender_id, sender_addr).await;
                 None
@@ -779,20 +1113,52 @@ impl KademliaProtocol {
         self.source_node.id
     }
 
+    /// Store an authenticated record if this node holds none for `key`.
+    /// `None` means no answer: an empty replica had nobody to ask about the
+    /// record or did not hear from every node it asked, so the sender counts
+    /// it as unavailable.
     pub async fn rpc_store(
         self: &Arc<Self>,
         sender_id: [u8; ID_LEN],
         sender_addr: (String, u16),
         key: [u8; ID_LEN],
         value: Vec<u8>,
-    ) -> StoreStatus {
+    ) -> Option<StoreStatus> {
+        // An empty replica cannot tell a forged record from the owner's: both
+        // are self-signed for the same DID. It asks the network first, and
+        // refuses a record other than the one already there without verifying
+        // it: a new version must arrive as an UPDATE. When some node does not
+        // answer, or it knows nobody to ask, it refuses too (fail-safe
+        // default): accepting would let an attacker win by making answers fail
+        // to arrive, as with soft-fail certificate revocation checks.
+        if self.store_needs_lookup(&key) {
+            match self.network_copy(key, &value).await {
+                NetworkCopy::NoneOrSame => {}
+                NetworkCopy::Other => {
+                    log::warn!(
+                        "rpc_store: the network holds another record for {} (from {})",
+                        hex::encode(key),
+                        sender_addr.0
+                    );
+                    return Some(StoreStatus::Conflict);
+                }
+                NetworkCopy::Unknown => {
+                    log::warn!(
+                        "rpc_store: not every node answered about {}, record from {} refused",
+                        hex::encode(key),
+                        sender_addr.0
+                    );
+                    return None;
+                }
+            }
+        }
         if !self.verify_for_key(&key, &value).await {
             log::warn!(
                 "rpc_store: invalid record for {} from {}",
                 hex::encode(key),
                 sender_addr.0
             );
-            return StoreStatus::InvalidRecord;
+            return Some(StoreStatus::InvalidRecord);
         }
 
         let status = StoreStatus::from(self.storage.insert_if_absent(key.to_vec(), value));
@@ -815,7 +1181,53 @@ impl KademliaProtocol {
             }
             StoreStatus::InvalidRecord => unreachable!("storage does not verify records"),
         }
-        status
+        Some(status)
+    }
+
+    /// A STORE for a DID this node does not hold. A node holding a record
+    /// compares it with the one it is sent; the Status List has rules of its own.
+    fn store_needs_lookup(&self, key: &[u8; ID_LEN]) -> bool {
+        *key != digest(STATUS_LIST_KEY) && self.storage.get(key).is_none()
+    }
+
+    /// What the nodes closest to `key` hold, compared with `value`. The
+    /// lookup asks them for the SHA-256 of their record (`FindHash`) rather
+    /// than the record, asks all of them rather than stopping at the first
+    /// that answers with the hash of `value`, ends at the first other hash,
+    /// gives up after `STORE_LOOKUP_TIMEOUT`, and leaves no copy on any node.
+    /// A hash cannot be verified, so a node answering with another one blocks
+    /// the STORE; it could block it anyway by not answering.
+    async fn network_copy(self: &Arc<Self>, key: [u8; ID_LEN], value: &[u8]) -> NetworkCopy {
+        let target = Node::from_id(key);
+        // Contacts known not to respond are left out, even as a last resort:
+        // the answer to the sender cannot wait for them.
+        let nearest: Vec<Node> = {
+            let router = self.router.read().await;
+            router
+                .find_neighbors(&target, None)
+                .into_iter()
+                .filter(|node| !router.has_failures(&node.id))
+                .collect()
+        };
+        // Nobody to ask, as for a node that has just restarted: it cannot know
+        // what the network holds, which is not the same as knowing it is empty.
+        if nearest.is_empty() {
+            return NetworkCopy::Unknown;
+        }
+        let deadline = tokio::time::Instant::now() + STORE_LOOKUP_TIMEOUT;
+        let own = record_hash(value);
+        let find_hash = |protocol: Arc<Self>, peer, target| protocol.call_find_hash(peer, target);
+        let search =
+            ValueSpiderCrawl::new(Arc::clone(self), target, nearest, self.ksize, self.alpha)
+                .search(Some(deadline), find_hash, |found| async move {
+                    (found.as_slice() != own.as_slice()).then_some(found)
+                })
+                .await;
+        match search {
+            ValueSearch::Found(_) => NetworkCopy::Other,
+            ValueSearch::NotFound => NetworkCopy::NoneOrSame,
+            ValueSearch::Incomplete => NetworkCopy::Unknown,
+        }
     }
 
     pub async fn rpc_update(
@@ -1189,62 +1601,52 @@ impl KademliaProtocol {
     }
 
     /// Add `node` to the routing table and replicate keys that belong to it
-    /// (Kademlia §2.5). Replication fires only when `new_node_close` AND
-    /// `this_closest` are both true. Neighbors are sampled before `add_contact`
-    /// to exclude the new node from distance comparisons.
+    /// (Kademlia §2.5).
     pub async fn welcome_if_new(self: &Arc<Self>, node: Node) {
         if !self.router.read().await.is_new_node(&node) {
             return;
         }
-        self.welcome(node).await;
+        self.add_contact(node.clone()).await;
+        self.replicate_to(&node).await;
     }
 
-    /// Replicate to a node that just joined or just came back, and add it to
-    /// the routing table.
-    async fn welcome(self: &Arc<Self>, node: Node) {
+    /// Send a node that just joined or just came back the records it should
+    /// hold. Replication fires only when `new_node_close` AND `this_closest`
+    /// are both true; `node` is left out of the neighbours it is compared
+    /// with.
+    async fn replicate_to(self: &Arc<Self>, node: &Node) {
         log::info!("Discovered or returning node: {}", node);
 
-        let all_entries = self.storage.iter_all();
         let self_node = self.source_node.clone();
-
-        let keys_to_replicate: Vec<([u8; ID_LEN], Vec<u8>)> = {
+        let mut keys_to_replicate: Vec<([u8; ID_LEN], Vec<u8>)> = Vec::new();
+        let mut entries = self.storage.iter_all().into_iter().peekable();
+        while entries.peek().is_some() {
+            // One read lock per chunk, so that a node making contact meanwhile
+            // does not wait for the whole scan to enter the routing table.
             let router = self.router.read().await;
-            all_entries
-                .into_iter()
-                .filter_map(|(key_vec, value)| {
-                    if key_vec.len() != ID_LEN {
-                        return None;
-                    }
-                    let mut key = [0u8; ID_LEN];
-                    key.copy_from_slice(&key_vec);
-                    let key_node = Node::from_id(key);
+            for (key_vec, value) in entries.by_ref().take(WELCOME_SCAN_CHUNK) {
+                if key_vec.len() != ID_LEN {
+                    continue;
+                }
+                let mut key = [0u8; ID_LEN];
+                key.copy_from_slice(&key_vec);
+                let key_node = Node::from_id(key);
 
-                    let neighbors = router.find_neighbors(&key_node, Some(&node));
+                let neighbors = router.find_neighbors(&key_node, Some(node));
 
-                    let new_node_close = match neighbors.last() {
-                        Some(last) => node.distance_to(&key_node) < last.distance_to(&key_node),
-                        None => true,
-                    };
-                    let this_closest = match neighbors.first() {
-                        Some(first) => {
-                            self_node.distance_to(&key_node) < first.distance_to(&key_node)
-                        }
-                        None => true,
-                    };
+                let new_node_close = match neighbors.last() {
+                    Some(last) => node.distance_to(&key_node) < last.distance_to(&key_node),
+                    None => true,
+                };
+                let this_closest = match neighbors.first() {
+                    Some(first) => self_node.distance_to(&key_node) < first.distance_to(&key_node),
+                    None => true,
+                };
 
-                    if new_node_close && this_closest {
-                        Some((key, value))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        }; // router read lock released here
-
-        let lru = self.router.write().await.add_contact(node.clone());
-        if let Some(lru_node) = lru {
-            let p = Arc::clone(self);
-            self.spawn_task(async move { p.call_ping_node(&lru_node).await });
+                if new_node_close && this_closest {
+                    keys_to_replicate.push((key, value));
+                }
+            }
         }
 
         stream::iter(keys_to_replicate)
@@ -1310,6 +1712,54 @@ pub enum FindValueResult {
     Value(Vec<u8>),
 }
 
+impl KademliaProtocol {
+    /// Ask `peer` whether it holds a record for `target`, receiving its
+    /// SHA-256 (`FindHash`) instead of the record. A hit is returned as
+    /// `FindPayload::Value` holding the hash.
+    pub(crate) async fn call_find_hash(self: Arc<Self>, peer: Node, target: Node) -> RawResponse {
+        let request = RpcMessage::FindHash {
+            sender_id: self.source_node.id,
+            key: target.id,
+        };
+        self.call_find(peer, request).await
+    }
+
+    /// Send a `FindValue` or `FindHash` request and translate the answer.
+    async fn call_find(self: Arc<Self>, peer: Node, request: RpcMessage) -> RawResponse {
+        let addr = match peer.address() {
+            Some(a) => a,
+            None => return RawResponse(false, FindPayload::Empty),
+        };
+        let sock_addr: SocketAddr = match format!("{}:{}", addr.0, addr.1).parse() {
+            Ok(a) => a,
+            Err(_) => return RawResponse(false, FindPayload::Empty),
+        };
+        match self.call(sock_addr, request).await {
+            Some(RpcMessage::FindValueHit { value }) => {
+                self.schedule_welcome_if_new(peer).await;
+                RawResponse(true, FindPayload::Value(value))
+            }
+            Some(RpcMessage::FindHashHit { hash }) => {
+                self.schedule_welcome_if_new(peer).await;
+                RawResponse(true, FindPayload::Value(hash.to_vec()))
+            }
+            Some(RpcMessage::FindValueNodes { nodes }) => {
+                self.schedule_welcome_if_new(peer).await;
+                let tuples = nodes
+                    .into_iter()
+                    .map(|w| (w.id.to_vec(), w.ip, w.port))
+                    .collect();
+                RawResponse(true, FindPayload::Nodes(tuples))
+            }
+            _ => {
+                log::warn!("no response from {}", peer);
+                self.note_failure(&peer).await;
+                RawResponse(false, FindPayload::Empty)
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl SpiderProtocol for KademliaProtocol {
     async fn call_find_node(self: Arc<Self>, peer: Node, target: Node) -> RawResponse {
@@ -1348,42 +1798,11 @@ impl SpiderProtocol for KademliaProtocol {
     }
 
     async fn call_find_value(self: Arc<Self>, peer: Node, target: Node) -> RawResponse {
-        let addr = match peer.address() {
-            Some(a) => a,
-            None => return RawResponse(false, FindPayload::Empty),
+        let request = RpcMessage::FindValue {
+            sender_id: self.source_node.id,
+            key: target.id,
         };
-        let sock_addr: SocketAddr = match format!("{}:{}", addr.0, addr.1).parse() {
-            Ok(a) => a,
-            Err(_) => return RawResponse(false, FindPayload::Empty),
-        };
-        match self
-            .call(
-                sock_addr,
-                RpcMessage::FindValue {
-                    sender_id: self.source_node.id,
-                    key: target.id,
-                },
-            )
-            .await
-        {
-            Some(RpcMessage::FindValueHit { value }) => {
-                self.schedule_welcome_if_new(peer).await;
-                RawResponse(true, FindPayload::Value(value))
-            }
-            Some(RpcMessage::FindValueNodes { nodes }) => {
-                self.schedule_welcome_if_new(peer).await;
-                let tuples = nodes
-                    .into_iter()
-                    .map(|w| (w.id.to_vec(), w.ip, w.port))
-                    .collect();
-                RawResponse(true, FindPayload::Nodes(tuples))
-            }
-            _ => {
-                log::warn!("no response from {}", peer);
-                self.note_failure(&peer).await;
-                RawResponse(false, FindPayload::Empty)
-            }
-        }
+        self.call_find(peer, request).await
     }
 
     async fn call_store(&self, peer: &Node, key: [u8; ID_LEN], value: Vec<u8>) -> bool {
@@ -1401,12 +1820,19 @@ impl SpiderProtocol for KademliaProtocol {
             .map(|node| node.id)
             .collect()
     }
+
+    async fn note_no_answer(&self, nodes: &[Node]) {
+        for node in nodes {
+            self.note_failure(node).await;
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::time::timeout;
 
     use crate::auth_handler::AuthHandlerError;
     use crate::signature_cache::VerificationDomain;
@@ -1489,13 +1915,341 @@ mod tests {
             socket,
             storage,
             20,
+            3,
             handler,
             use_cache.then(|| Arc::new(SignatureCache::new(32))),
         ))
     }
 
+    /// Read datagrams and handle them, as a listening node does.
+    fn serve(protocol: &Arc<KademliaProtocol>) {
+        let protocol = Arc::clone(protocol);
+        tokio::spawn(async move {
+            let socket = Arc::clone(&protocol.socket);
+            let mut buffer = vec![0u8; 65_536];
+            while let Ok((len, from)) = socket.recv_from(&mut buffer).await {
+                protocol.handle_datagram(buffer[..len].to_vec(), from).await;
+            }
+        });
+    }
+
+    /// A node that holds nothing and answers lookups, known to `protocol`, so
+    /// that a STORE to `protocol` can ask the network.
+    async fn give_answering_contact(protocol: &Arc<KademliaProtocol>, id: [u8; ID_LEN]) {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let port = socket.local_addr().unwrap().port();
+        let peer = Arc::new(KademliaProtocol::new(
+            contact_at(id, port),
+            socket,
+            Arc::new(ForgetfulStorage::new(-1)),
+            20,
+            3,
+            Arc::new(TestHandler::new(true, true)),
+            None,
+        ));
+        serve(&peer);
+        serve(protocol);
+        protocol
+            .router
+            .write()
+            .await
+            .add_contact(contact_at(id, port));
+    }
+
+    impl PendingCall {
+        fn new(
+            peer: SocketAddr,
+            expected: ExpectedResponse,
+            reply: oneshot::Sender<RpcMessage>,
+        ) -> Self {
+            Self {
+                peer,
+                expected,
+                reply,
+                received: Arc::new(Notify::new()),
+            }
+        }
+    }
+
     fn contact_at(id: [u8; ID_LEN], port: u16) -> Node {
         Node::new(id, Some("127.0.0.1".to_string()), Some(port))
+    }
+
+    /// A socket standing in for a peer, and the contact that reaches it.
+    async fn raw_peer(id: [u8; ID_LEN]) -> (UdpSocket, Node) {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = socket.local_addr().unwrap().port();
+        (socket, contact_at(id, port))
+    }
+
+    /// Next frame that reaches `socket` within `wait`, which must fit in one
+    /// datagram.
+    async fn try_read_frame(socket: &UdpSocket, wait: Duration) -> Option<(Frame, SocketAddr)> {
+        let mut buffer = vec![0u8; 65_536];
+        let (len, from) = timeout(wait, socket.recv_from(&mut buffer))
+            .await
+            .ok()?
+            .unwrap();
+        let (header, chunk) = parse_fragment(&buffer[..len]).unwrap();
+        assert_eq!(header.total, 1, "a test frame must fit in one datagram");
+        Some((bincode::deserialize(chunk).unwrap(), from))
+    }
+
+    /// Next frame that reaches `socket`. A test waiting for a frame that never
+    /// comes fails instead of hanging.
+    async fn read_frame(socket: &UdpSocket) -> (Frame, SocketAddr) {
+        try_read_frame(socket, RPC_TIMEOUT + Duration::from_millis(500))
+            .await
+            .expect("no frame arrived")
+    }
+
+    /// Next frame of `kind` (`true` for a request) that reaches `socket`,
+    /// skipping the others.
+    async fn read_frame_of_kind(socket: &UdpSocket, request: bool) -> (Frame, SocketAddr) {
+        loop {
+            let (frame, from) = read_frame(socket).await;
+            if frame.is_request == request {
+                return (frame, from);
+            }
+        }
+    }
+
+    async fn send_raw(
+        socket: &UdpSocket,
+        to: SocketAddr,
+        msg_id: u32,
+        is_request: bool,
+        message: RpcMessage,
+    ) {
+        let frame = Frame {
+            msg_id,
+            is_request,
+            message,
+        };
+        for datagram in encode_fragments(msg_id, &bincode::serialize(&frame).unwrap()) {
+            socket.send_to(&datagram, to).await.unwrap();
+        }
+    }
+
+    /// The first copy of a STORE is lost: the sender sends the same request
+    /// again, and does not wait for the RPC timeout.
+    #[tokio::test]
+    async fn a_store_whose_first_copy_is_lost_is_sent_again() {
+        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        serve(&protocol);
+        let (peer, contact) = raw_peer([9; ID_LEN]).await;
+        let started = Instant::now();
+        let sender = Arc::clone(&protocol);
+        let call = tokio::spawn(async move {
+            sender
+                .call_store_rpc(&contact, [7; ID_LEN], b"one".to_vec())
+                .await
+        });
+
+        let (first, _) = read_frame(&peer).await;
+        let (second, from) = read_frame(&peer).await;
+        assert_eq!(second.msg_id, first.msg_id);
+        assert!(matches!(second.message, RpcMessage::Store { .. }));
+        send_raw(
+            &peer,
+            from,
+            second.msg_id,
+            false,
+            RpcMessage::StoreResult {
+                status: StoreStatus::Stored,
+            },
+        )
+        .await;
+
+        assert_eq!(call.await.unwrap(), Some(StoreStatus::Stored));
+        assert!(started.elapsed() < Duration::from_millis(1500));
+    }
+
+    /// Once a peer has answered, a lost request is sent again after a few of
+    /// its round trips, not after the wait for a peer never measured.
+    #[tokio::test]
+    async fn a_measured_peer_is_asked_again_after_a_few_round_trips() {
+        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        serve(&protocol);
+        let (peer, contact) = raw_peer([9; ID_LEN]).await;
+        let address = contact.address().unwrap();
+        let pong = RpcMessage::Pong {
+            sender_id: [9; ID_LEN],
+        };
+
+        let sender = Arc::clone(&protocol);
+        let target = address.clone();
+        let first_call = tokio::spawn(async move { sender.call_ping_addr(&target).await });
+        let (ping, from) = read_frame(&peer).await;
+        send_raw(&peer, from, ping.msg_id, false, pong.clone()).await;
+        assert!(first_call.await.unwrap().0);
+
+        let started = Instant::now();
+        let sender = Arc::clone(&protocol);
+        let second_call = tokio::spawn(async move { sender.call_ping_addr(&address).await });
+        let (lost, _) = read_frame_of_kind(&peer, true).await;
+        let (again, from) = read_frame_of_kind(&peer, true).await;
+        assert_eq!(again.msg_id, lost.msg_id);
+        send_raw(&peer, from, again.msg_id, false, pong).await;
+        assert!(second_call.await.unwrap().0);
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A peer that never answers gets the request once and then
+    /// `MAX_RESENDS` more times, and the call still ends at `RPC_TIMEOUT`.
+    #[tokio::test]
+    async fn a_silent_peer_gets_the_request_at_most_three_times() {
+        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        serve(&protocol);
+        let (peer, contact) = raw_peer([9; ID_LEN]).await;
+        let address = contact.address().unwrap();
+        let started = Instant::now();
+        let sender = Arc::clone(&protocol);
+        let call = tokio::spawn(async move { sender.call_ping_addr(&address).await });
+
+        let mut copies = 0;
+        let end = started + RPC_TIMEOUT + Duration::from_millis(300);
+        while try_read_frame(&peer, end.saturating_duration_since(Instant::now()))
+            .await
+            .is_some()
+        {
+            copies += 1;
+        }
+        assert!(!call.await.unwrap().0);
+        assert_eq!(copies, 1 + crate::retransmit::MAX_RESENDS);
+        assert!(started.elapsed() >= RPC_TIMEOUT);
+    }
+
+    /// A receipt is not the answer. If the answer is lost after the receipt,
+    /// the sender asks again and takes the answer to the copy.
+    #[tokio::test]
+    async fn a_lost_answer_after_a_receipt_is_asked_again() {
+        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        serve(&protocol);
+        let (peer, contact) = raw_peer([9; ID_LEN]).await;
+        let started = Instant::now();
+        let sender = Arc::clone(&protocol);
+        let call = tokio::spawn(async move {
+            sender
+                .call_store_rpc(&contact, [7; ID_LEN], b"one".to_vec())
+                .await
+        });
+
+        let (store, from) = read_frame(&peer).await;
+        send_raw(&peer, from, store.msg_id, false, RpcMessage::Received).await;
+        // The answer to the first copy is lost; the copy finds the record stored.
+        let (again, from) = read_frame(&peer).await;
+        assert_eq!(again.msg_id, store.msg_id);
+        send_raw(
+            &peer,
+            from,
+            again.msg_id,
+            false,
+            RpcMessage::StoreResult {
+                status: StoreStatus::AlreadyStored,
+            },
+        )
+        .await;
+
+        assert_eq!(call.await.unwrap(), Some(StoreStatus::AlreadyStored));
+        assert!(started.elapsed() < Duration::from_millis(1500));
+    }
+
+    /// A STORE that waits for the network check is acknowledged at once. A
+    /// copy that arrives during the check gets the receipt again and does not
+    /// start a second check; another request under the same msg_id does.
+    #[tokio::test]
+    async fn a_store_is_acknowledged_at_once_and_its_copy_is_not_checked_twice() {
+        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        serve(&protocol);
+        // The node's only contact never answers, so the check lasts until
+        // its deadline.
+        let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        protocol
+            .router
+            .write()
+            .await
+            .add_contact(contact_at([5; ID_LEN], silent.local_addr().unwrap().port()));
+        let (client, _) = raw_peer([9; ID_LEN]).await;
+        let node = protocol.socket.local_addr().unwrap();
+        let store = |value: &[u8]| RpcMessage::Store {
+            sender_id: [9; ID_LEN],
+            key: [7; ID_LEN],
+            value: value.to_vec(),
+        };
+
+        send_raw(&client, node, 5, true, store(b"one")).await;
+        let (receipt, _) = timeout(
+            Duration::from_millis(200),
+            read_frame_of_kind(&client, false),
+        )
+        .await
+        .expect("a receipt before the check ends");
+        assert_eq!(receipt.msg_id, 5);
+        assert!(matches!(receipt.message, RpcMessage::Received));
+        assert_eq!(protocol.store_lookups.load(Ordering::Acquire), 1);
+
+        send_raw(&client, node, 5, true, store(b"one")).await;
+        let (receipt, _) = timeout(
+            Duration::from_millis(200),
+            read_frame_of_kind(&client, false),
+        )
+        .await
+        .expect("a receipt for the copy");
+        assert!(matches!(receipt.message, RpcMessage::Received));
+        assert_eq!(protocol.store_lookups.load(Ordering::Acquire), 1);
+
+        send_raw(&client, node, 5, true, store(b"two")).await;
+        timeout(
+            Duration::from_millis(200),
+            read_frame_of_kind(&client, false),
+        )
+        .await
+        .expect("a receipt for the other request");
+        assert_eq!(protocol.store_lookups.load(Ordering::Acquire), 2);
+    }
+
+    /// The network check of a STORE survives a lost question: the node asked
+    /// gets it again, and the STORE is decided well before the check's
+    /// deadline.
+    #[tokio::test]
+    async fn the_store_check_survives_a_lost_question() {
+        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        serve(&protocol);
+        let (peer, contact) = raw_peer([5; ID_LEN]).await;
+        protocol.router.write().await.add_contact(contact);
+        let started = Instant::now();
+        let replica = Arc::clone(&protocol);
+        let store = tokio::spawn(async move {
+            replica
+                .rpc_store(
+                    [2; ID_LEN],
+                    ("127.0.0.1".to_string(), 9015),
+                    [7; ID_LEN],
+                    b"one".to_vec(),
+                )
+                .await
+        });
+
+        let (lost, _) = read_frame_of_kind(&peer, true).await;
+        assert!(matches!(lost.message, RpcMessage::FindHash { .. }));
+        let (again, from) = read_frame_of_kind(&peer, true).await;
+        assert_eq!(again.msg_id, lost.msg_id);
+        send_raw(
+            &peer,
+            from,
+            again.msg_id,
+            false,
+            RpcMessage::FindValueNodes { nodes: vec![] },
+        )
+        .await;
+
+        assert_eq!(store.await.unwrap(), Some(StoreStatus::Stored));
+        assert!(started.elapsed() < Duration::from_millis(1500));
     }
 
     #[tokio::test]
@@ -1606,6 +2360,7 @@ mod tests {
         let protocol =
             test_protocol_with_storage(Arc::new(TestHandler::new(true, true)), false, storage)
                 .await;
+        give_answering_contact(&protocol, [5; ID_LEN]).await;
         let sender = [2; ID_LEN];
         let address = ("127.0.0.1".to_string(), 9010);
         let key = [7; ID_LEN];
@@ -1614,28 +2369,33 @@ mod tests {
             protocol
                 .rpc_store(sender, address.clone(), key, b"one".to_vec())
                 .await,
-            StoreStatus::Stored
+            Some(StoreStatus::Stored)
         );
         assert_eq!(
             protocol
                 .rpc_store(sender, address.clone(), key, b"one".to_vec())
                 .await,
-            StoreStatus::AlreadyStored
+            Some(StoreStatus::AlreadyStored)
         );
         assert_eq!(
             protocol
                 .rpc_store(sender, address.clone(), key, b"two".to_vec())
                 .await,
-            StoreStatus::Conflict
+            Some(StoreStatus::Conflict)
         );
+        // The first STORE added the sender as a contact. The key below is new,
+        // so the node would ask that contact, which does not exist here.
+        let contact = Node::new(sender, Some(address.0.clone()), Some(address.1));
+        protocol.router.write().await.remove_contact(&contact);
         assert_eq!(
             protocol
                 .rpc_store(sender, address, [8; ID_LEN], b"new".to_vec())
                 .await,
-            StoreStatus::CapacityExceeded
+            Some(StoreStatus::CapacityExceeded)
         );
 
         let invalid_protocol = test_protocol(Arc::new(TestHandler::new(false, false)), false).await;
+        give_answering_contact(&invalid_protocol, [6; ID_LEN]).await;
         assert_eq!(
             invalid_protocol
                 .rpc_store(
@@ -1645,8 +2405,74 @@ mod tests {
                     b"bad".to_vec(),
                 )
                 .await,
-            StoreStatus::InvalidRecord
+            Some(StoreStatus::InvalidRecord)
         );
+    }
+
+    /// The network check of a STORE asks for the record's SHA-256, not for
+    /// the record: the answer fits in one datagram, so it is never fragmented.
+    /// A node without the record answers with closer nodes, as for FIND_VALUE.
+    #[tokio::test]
+    async fn find_hash_answers_with_the_record_hash_in_one_datagram() {
+        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        let key = [7; ID_LEN];
+        let record = vec![0xAB; 6000];
+        protocol.storage.set(key.to_vec(), record.clone());
+        let peer: SocketAddr = "127.0.0.1:9014".parse().unwrap();
+
+        let answer = protocol
+            .dispatch_request(
+                RpcMessage::FindHash {
+                    sender_id: [2; ID_LEN],
+                    key,
+                },
+                peer,
+            )
+            .await;
+        let Some(RpcMessage::FindHashHit { hash }) = answer else {
+            panic!("expected the record's hash, got {answer:?}");
+        };
+        assert_eq!(hash, record_hash(&record));
+        let frame = Frame {
+            msg_id: 1,
+            is_request: false,
+            message: RpcMessage::FindHashHit { hash },
+        };
+        assert!(bincode::serialize(&frame).unwrap().len() <= FRAG_CHUNK_SIZE);
+
+        let answer = protocol
+            .dispatch_request(
+                RpcMessage::FindHash {
+                    sender_id: [2; ID_LEN],
+                    key: [8; ID_LEN],
+                },
+                peer,
+            )
+            .await;
+        assert!(
+            matches!(answer, Some(RpcMessage::FindValueNodes { .. })),
+            "{answer:?}"
+        );
+    }
+
+    /// A node that knows nobody, as one that has just restarted, cannot ask
+    /// the network about a record it does not hold: it refuses the STORE and
+    /// does not answer.
+    #[tokio::test]
+    async fn store_to_a_node_that_knows_nobody_gets_no_answer() {
+        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        assert_eq!(
+            protocol
+                .rpc_store(
+                    [2; ID_LEN],
+                    ("127.0.0.1".to_string(), 9012),
+                    [7; ID_LEN],
+                    b"one".to_vec()
+                )
+                .await,
+            None
+        );
+        assert_eq!(protocol.storage.get(&[7; ID_LEN]), None);
     }
 
     #[tokio::test]
@@ -1659,6 +2485,11 @@ mod tests {
             .write()
             .await
             .add_contact(registered.clone());
+        // The node holds a record for the key, so each STORE is verified
+        // without asking the network, whose contact here never answers.
+        protocol
+            .storage
+            .set([15; ID_LEN].to_vec(), b"stored".to_vec());
 
         for _ in 0..3 {
             assert_eq!(
@@ -1670,7 +2501,7 @@ mod tests {
                         b"invalid".to_vec(),
                     )
                     .await,
-                StoreStatus::InvalidRecord
+                Some(StoreStatus::InvalidRecord)
             );
         }
 
@@ -1803,11 +2634,10 @@ mod tests {
         let expected_peer: SocketAddr = "127.0.0.1:9200".parse().unwrap();
         let unexpected_peer: SocketAddr = "127.0.0.1:9201".parse().unwrap();
         let (tx, mut rx) = oneshot::channel();
-        protocol
-            .pending
-            .lock()
-            .await
-            .insert(42, (expected_peer, ExpectedResponse::StoreResult, tx));
+        protocol.pending.lock().await.insert(
+            42,
+            PendingCall::new(expected_peer, ExpectedResponse::StoreResult, tx),
+        );
 
         let encode_response = || {
             let frame = Frame {
@@ -1851,11 +2681,10 @@ mod tests {
         let expected_id = [10; ID_LEN];
         let unexpected_id = [11; ID_LEN];
         let (tx, mut rx) = oneshot::channel();
-        protocol
-            .pending
-            .lock()
-            .await
-            .insert(43, (expected_peer, ExpectedResponse::Pong, tx));
+        protocol.pending.lock().await.insert(
+            43,
+            PendingCall::new(expected_peer, ExpectedResponse::Pong, tx),
+        );
 
         let encode_pong = |sender_id| {
             let frame = Frame {
@@ -1926,11 +2755,10 @@ mod tests {
         let expected_peer: SocketAddr = "127.0.0.1:9220".parse().unwrap();
         let pong_id = [12; ID_LEN];
         let (tx, mut rx) = oneshot::channel();
-        protocol
-            .pending
-            .lock()
-            .await
-            .insert(44, (expected_peer, ExpectedResponse::StoreResult, tx));
+        protocol.pending.lock().await.insert(
+            44,
+            PendingCall::new(expected_peer, ExpectedResponse::StoreResult, tx),
+        );
 
         let encode_response = |message| {
             let frame = Frame {
@@ -2054,6 +2882,190 @@ mod tests {
         assert!(
             fresh_protocol.reassembly.lock().await.is_empty(),
             "an inconsistent fragment total must not poison the reassembly slot"
+        );
+    }
+
+    /// Key of the record used by the welcome tests. This node (`[1; ID_LEN]`)
+    /// is at XOR distance 1 from it, closer than any `id_at_distance`.
+    fn welcome_key() -> [u8; ID_LEN] {
+        let mut key = [1; ID_LEN];
+        key[ID_LEN - 1] = 0;
+        key
+    }
+
+    fn id_at_distance(distance: u8) -> [u8; ID_LEN] {
+        assert!(distance > 1);
+        let mut id = welcome_key();
+        id[ID_LEN - 1] = distance;
+        id
+    }
+
+    /// A node that holds the record of `welcome_key`, serving.
+    async fn node_with_record() -> Arc<KademliaProtocol> {
+        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        protocol
+            .storage
+            .set(welcome_key().to_vec(), b"record".to_vec());
+        serve(&protocol);
+        protocol
+    }
+
+    /// A peer at `distance` from the key makes contact and is sent the record,
+    /// which it never acknowledges: sending it records lasts until the RPC
+    /// timeout.
+    async fn start_slow_replication(protocol: &Arc<KademliaProtocol>, distance: u8) -> UdpSocket {
+        let (peer, contact) = raw_peer(id_at_distance(distance)).await;
+        let to = protocol.socket.local_addr().unwrap();
+        send_raw(
+            &peer,
+            to,
+            1,
+            true,
+            RpcMessage::Ping {
+                sender_id: contact.id,
+            },
+        )
+        .await;
+        let (store, _) = read_frame_of_kind(&peer, true).await;
+        assert!(matches!(store.message, RpcMessage::Store { .. }));
+        peer
+    }
+
+    /// A peer at `distance` from the key pings `protocol` and gets its Pong.
+    async fn meet(protocol: &Arc<KademliaProtocol>, distance: u8) -> (UdpSocket, Node) {
+        let (peer, contact) = raw_peer(id_at_distance(distance)).await;
+        let to = protocol.socket.local_addr().unwrap();
+        send_raw(
+            &peer,
+            to,
+            1,
+            true,
+            RpcMessage::Ping {
+                sender_id: contact.id,
+            },
+        )
+        .await;
+        let (pong, _) = read_frame(&peer).await;
+        assert!(matches!(pong.message, RpcMessage::Pong { .. }));
+        (peer, contact)
+    }
+
+    /// Nodes that make contact while this node is sending records to another
+    /// one all enter its routing table at once (Kademlia §2.2).
+    #[tokio::test]
+    async fn nodes_met_during_a_replication_enter_the_table_at_once() {
+        let protocol = node_with_record().await;
+        let _slow = start_slow_replication(&protocol, 0x40).await;
+
+        let mut met = Vec::new();
+        for distance in [0x10, 0x20, 0x30, 0x50] {
+            met.push(meet(&protocol, distance).await);
+        }
+
+        let router = protocol.router.read().await;
+        for (_, contact) in &met {
+            assert!(
+                router.get_contact(&contact.id).is_some(),
+                "{} is not in the routing table",
+                contact
+            );
+        }
+    }
+
+    /// A node met while this node is sending records to another one still
+    /// receives the records it should hold, once that replication is over
+    /// (Kademlia §2.5).
+    #[tokio::test]
+    async fn a_node_met_during_a_replication_still_receives_its_records() {
+        let protocol = node_with_record().await;
+        let _slow = start_slow_replication(&protocol, 0x40).await;
+
+        // Closer to the key than the slow peer, so the record is due to it.
+        let (peer, _) = meet(&protocol, 0x10).await;
+        let store = loop {
+            let (frame, _) = try_read_frame(&peer, RPC_TIMEOUT * 2)
+                .await
+                .expect("the record never arrived");
+            if frame.is_request {
+                break frame;
+            }
+        };
+        match store.message {
+            RpcMessage::Store { key, value, .. } => {
+                assert_eq!(key, welcome_key());
+                assert_eq!(value, b"record");
+            }
+            other => panic!("expected a Store, got {}", rpc_message_name(&other)),
+        }
+    }
+
+    /// Nodes met while a replication is under way wait for their records in
+    /// a queue, up to its bound; beyond it they are not queued.
+    #[tokio::test]
+    async fn nodes_met_in_a_flood_wait_in_a_bounded_queue() {
+        let protocol = node_with_record().await;
+        let _slow = start_slow_replication(&protocol, 0x40).await;
+
+        let (flood, _) = raw_peer([0; ID_LEN]).await;
+        let to = protocol.socket.local_addr().unwrap();
+        for i in 0..(MAX_WELCOME_QUEUE + 50) as u32 {
+            let mut id = [0xAA; ID_LEN];
+            id[..4].copy_from_slice(&i.to_be_bytes());
+            send_raw(&flood, to, i, true, RpcMessage::Ping { sender_id: id }).await;
+            read_frame_of_kind(&flood, false).await;
+        }
+
+        // The slow replication is still under way: the queue is full.
+        assert_eq!(protocol.welcome_in_flight.len(), MAX_WELCOME_QUEUE);
+    }
+
+    /// New nodes falling into a full bucket ping its oldest contact once at a
+    /// time, not once each (Kademlia §2.2).
+    #[tokio::test]
+    async fn a_full_bucket_pings_its_oldest_contact_once_at_a_time() {
+        // k = 1: one contact fills the bucket away from this node's id.
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let protocol = Arc::new(KademliaProtocol::new(
+            Node::from_id([1; ID_LEN]),
+            socket,
+            Arc::new(ForgetfulStorage::new(-1)),
+            1,
+            3,
+            Arc::new(TestHandler::new(true, true)),
+            None,
+        ));
+        serve(&protocol);
+        let (oldest, contact) = raw_peer([0xF0; ID_LEN]).await;
+        protocol.router.write().await.add_contact(contact);
+
+        let (newcomers, _) = raw_peer([0; ID_LEN]).await;
+        let to = protocol.socket.local_addr().unwrap();
+        for i in 1..=10u8 {
+            let mut id = [0xF0; ID_LEN];
+            id[ID_LEN - 1] = i;
+            send_raw(
+                &newcomers,
+                to,
+                i as u32,
+                true,
+                RpcMessage::Ping { sender_id: id },
+            )
+            .await;
+            let (pong, _) = read_frame_of_kind(&newcomers, false).await;
+            assert!(matches!(pong.message, RpcMessage::Pong { .. }));
+        }
+
+        let mut pings = HashSet::new();
+        while let Some((frame, _)) = try_read_frame(&oldest, Duration::from_millis(1000)).await {
+            if matches!(frame.message, RpcMessage::Ping { .. }) {
+                pings.insert(frame.msg_id);
+            }
+        }
+        assert_eq!(
+            pings.len(),
+            1,
+            "the oldest contact was pinged {} times",
+            pings.len()
         );
     }
 }

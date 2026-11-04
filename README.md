@@ -149,9 +149,57 @@ the default `alpha = 3`, a strict **2-of-3 majority**.
   completes the replicas that missed it. The retry must resend the same bytes.
 - **Replicas without the record:** a replica that holds no record for the DID
   cannot verify the rotation and refuses the update. The updater then sends it
-  the new record as a plain STORE, which it accepts under the usual
-  first-writer-wins rule; a replica holding another record answers `Conflict`
-  and is not changed. A replica that does not answer gets no STORE.
+  the new record as a plain STORE, which it accepts only as described in the
+  next point; a replica holding another record answers `Conflict` and is not
+  changed. A replica that does not answer gets no STORE.
+- **STORE to an empty replica:** a replica cannot tell a forged record from the
+  owner's, because both are self-signed for the same DID. Before storing a
+  record it does not hold, it asks the nodes closest to the DID for the
+  SHA-256 of the record they hold (`FindHash`), not for the record itself. It
+  asks all of them, and leaves no cached copy:
+  - if one of them answers with another hash, it answers `Conflict` without
+    verifying the record it received;
+  - if they answer with the same hash, or hold nothing, it verifies the record
+    and stores it;
+  - if one of them does not answer within 2 s, even after its question is
+    sent again, or it knows nobody to ask, as right after a restart, it
+    refuses and does not answer, so the sender counts it as unavailable.
+
+  A hash answer takes one datagram, against about 6 KB and 5 fragments for a
+  whole record, so the check costs little bandwidth, and a burst of requests
+  cannot make the replica drop answers that arrive in pieces. A hash cannot be
+  verified, so a node can block a STORE by answering with another hash, as it
+  can by not answering; it cannot make the replica accept a record. Nodes that
+  do not know `FindHash` do not answer it, so every node of a network must run
+  a version that does.
+
+  Refusing on silence is the fail-safe default of Saltzer and Schroeder (1975),
+  "base access decisions on permission rather than exclusion". Accepting on
+  silence would repeat the flaw of soft-fail certificate revocation checks: an
+  attacker who can make the answer fail to arrive makes the check pass
+  ([Langley, 2012](https://www.imperialviolet.org/2012/02/05/crlsets.html): "a
+  seat-belt that snaps when you crash"). An earlier version that accepted on
+  silence and received whole records stored up to 86 of 128 forged records
+  under a burst, because the replica dropped the fragmented answers. The price
+  is availability: the first STORE after a node dies is refused by every
+  replica that still asks it, and a retry succeeds. The check is a read before
+  write without consensus. Databases that need a strict "insert if absent"
+  across replicas run a consensus round instead, such as Cassandra's
+  lightweight transactions (`INSERT ... IF NOT EXISTS`, Paxos). It does not
+  help when the network holds no copy yet, as at a first publication, nor
+  against an attacker who controls every node close to the DID.
+  Known gap: while a replica still holds the old version of a rotated record,
+  an empty replica refuses the new version sent as STORE.
+- **Lost datagrams:** a request with no answer after a few round trips of its
+  peer is sent again, at most twice, doubling the wait (round trips estimated
+  per peer as in RFC 6298, measured only on requests sent once). A request
+  that carries a record gets a receipt as soon as it arrives, so the sender
+  does not resend a 6 KB record while an empty replica runs its check; a copy
+  of a request still being handled gets the receipt again and starts nothing.
+  Without this, refusing on silence turned one lost datagram of the check into
+  a missing replica: with 0.5% loss, 30 nodes and k=5, 26 of 80 publications
+  lost a replica, against 7 of 40 without the check; with it, none of 80
+  did, and no publication waited for a timeout.
 - **TTL:** records written to the default storage expire lazily after 14 days.
   Applications that need continued availability must refresh them through a
   legitimate publish or update before expiry.
@@ -232,7 +280,7 @@ algorithm are unchanged.
 | **Lazy TTL expiry** | Records expire after 14 days by default. Expired entries are filtered at read time instead of an O(n) scan on every write. |
 | **Signature cache** | `SignatureCache` (moka, SHA-256 keyed, TTL 1 h, 4096 entries). Repeated reads of the same record pay full Dilithium cost only once; subsequent reads are O(1). DID-to-DHT-key binding is checked before every cache lookup, and any byte-level change forces full signature re-verification. |
 | **Worker pool** | UDP receive loop dispatches via round-robin into `available_parallelism()` workers, each with a dedicated `mpsc::channel(256)`. `try_send` is attempted on each worker in turn; if all are full the loop awaits the base worker, providing backpressure without drops. |
-| **Fire-and-forget routing** | Routing table updates (`welcome_if_new`) are spawned as background tasks in all RPC handlers. RPC responses are sent immediately without waiting for routing convergence. |
+| **Fire-and-forget replication** | A node met through a message enters the routing table at once. Sending it the records it should hold scans the whole storage, so it runs in the background, one node at a time, with at most 256 nodes waiting. RPC responses are sent without waiting for it. |
 | **Replication filter** | On node join, only nodes XOR-closer to a key than the new node replicate it (Kademlia §2.5). Prevents redundant store RPCs from far-away nodes. |
 | **Atomic insert** | `rpc_store` uses a DashMap `Entry`-based `insert_if_absent`; identical retries return `AlreadyStored`, different bytes return `Conflict`, and capacity is reserved before insertion. |
 

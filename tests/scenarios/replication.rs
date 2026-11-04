@@ -25,6 +25,10 @@ fn welcome_if_new_replicates_to_joining_node() {
     rt().block_on(async {
         let (key, record) = make_record();
         let dkey = digest(&key);
+        // Next to the key but not the key itself: lookups leave out a node
+        // whose id is the key, and B must find A when it checks the record.
+        let mut node_a_id = dkey;
+        node_a_id[19] ^= 0x01;
         let mut node_b_id = dkey;
         node_b_id[0] ^= 0x80;
         let mut node_c_id = dkey;
@@ -32,7 +36,7 @@ fn welcome_if_new_replicates_to_joining_node() {
 
         // A is closest to the key and C is closer than B, satisfying both
         // Kademlia §2.5 conditions checked by welcome_if_new.
-        let node_a = start_node_with_id(15787, dkey).await;
+        let node_a = start_node_with_id(15787, node_a_id).await;
         let node_b = start_node_with_id(15788, node_b_id).await;
 
         node_b

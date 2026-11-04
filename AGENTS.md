@@ -18,7 +18,7 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 224 tests
+cargo test                           # all 249 tests
 cargo test <name>                    # single test, e.g. test_update_did_record_key_rotation
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -76,11 +76,12 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 |---|---|
 | `src/protocol.rs` | UDP transport, fragmentation, RPC dispatch (`rpc_store`, `rpc_update`, `rpc_find_node`, `rpc_find_value`) |
 | `src/network.rs` | Public `Server` API: `set/get/update`, bootstrap, refresh and maintenance loops |
-| `src/crawling.rs` | Iterative lookup — `NodeSpiderCrawl` (find nodes) + `ValueSpiderCrawl` (find value) |
+| `src/crawling.rs` | Iterative lookup — `NodeSpiderCrawl` (find nodes) + `ValueSpiderCrawl` (find value; `search` with a deadline tells `NotFound` from `Incomplete`) |
 | `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `find_neighbors` returns the exact local top-k across known primary contacts, skipping failing ones (see Concurrency model); `touch_last_updated()` is called only for the bucket containing the lookup target — bucket staleness reflects lookup activity, not node additions |
 | `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day TTL and configurable byte budget (default 512 MiB), with lazy expiry on read |
 | `src/signature_cache.rs` | `SignatureCache` — moka bounded cache (SHA-256 key, TTL 1 h, 4096 entries) for Dilithium verification results |
 | `src/fragmentation.rs` | KADF fragmentation + reassembly (`encode_fragments`, `parse_fragment`, `ReassemblyMap`) |
+| `src/retransmit.rs` | When to send a request again: per-peer round-trip estimate (`RoundTrips`, RFC 6298), `MAX_RESENDS`, bounds of the wait |
 | `src/auth_handler.rs` | `SignatureVerifierHandler` trait + `DIDSignatureVerifierHandler` (DID record verification) |
 | `src/crypto/signature_verifier.rs` | `SignatureVerifier` trait, `resolve_alg_and_length()`, algorithm registry |
 | `src/crypto/factory.rs` | `SignatureVerifierFactory` + `SignerFactory` — dispatch by algorithm string |
@@ -94,6 +95,10 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `tests/common/mod.rs` | Shared test helpers: `start_node`, `build_did_document`, `build_signed_record`, `generate_did_iiot` |
 | `testbed/node.rs` | Testbed node (`testbed_node` binary): one DHT node per container, driven through a control socket inside the container |
 | `testbed/testbed.py` | Testbed driver: generates the Docker network, applies `tc netem` profiles, sends commands to nodes |
+| `testbed/attack.py` | Testbed attack mode: starts the attacker and runs the `race` scenario on a running network |
+| `testbed/measure.py` | Testbed measurement mode: publication time and availability of the record to other nodes |
+| `testbed/attacker.rs` | Testbed attacker (`testbed_attacker` binary): sniffs the host's packets and races UPDATEs with forged STOREs |
+| `testbed/did.rs` | DID record helpers shared by the two testbed binaries |
 
 ## Wire record format
 ```
@@ -128,6 +133,8 @@ entering the reassembly buffer to bound memory usage.
 | `UpdateStatusList` / `UpdateStatusListResult` | req/resp | Issuer-signed status-list update |
 | `FindNode` / `FindNodeResult` | req/resp | Kademlia FIND_NODE |
 | `FindValue` / `FindValueHit` / `FindValueNodes` | req/resp | Kademlia FIND_VALUE |
+| `FindHash` / `FindHashHit` / `FindValueNodes` | req/resp | SHA-256 of the stored record (`record_hash`), asked by an empty replica before a STORE; one datagram. Added after `Leave`, so older nodes cannot decode it |
+| `Received` | resp | Receipt for a request carrying a record (`Store`, `Update`, `UpdateStatusList`), sent before the answer and again for each copy that arrives while the request is handled. Added after `FindHashHit` |
 | `Leave` | fire-and-forget | Graceful departure, removes node from routing table |
 
 All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_request: bool, message)` envelope. Responses are correlated via `msg_id` through a `PendingMap`.
@@ -135,16 +142,20 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 ## Concurrency model
 - `ForgetfulStorage` is `Arc<ForgetfulStorage>` (no outer `RwLock`). All `IStorage` methods take `&self`; internal synchronization via `DashMap` shards.
 - `rpc_store` uses `insert_if_absent` (DashMap `Entry` API) with atomic global byte reservation. Identical bytes are idempotent; different bytes conflict; active records are never evicted for capacity.
-- All RPC handlers use `self: &Arc<Self>` receiver to enable `tokio::spawn` without cloning the full struct. `welcome_if_new` is always fire-and-forget.
+- A STORE for a key the node does not hold waits for a lookup (see Key invariants), whose answers arrive through the receive workers. `handle_datagram` therefore runs it in its own task (`spawn_task`) instead of on the worker, and answers when it is done; at most `MAX_STORE_LOOKUPS` (256) wait at once, beyond that the STORE is dropped. Handled on the worker, 8 such STOREs at once left the lookups without their answers and forged records were stored 5/5.
+- **Lost datagrams** (`call`, `src/retransmit.rs`): a request with no sign of its peer after `resend_after` is sent again, same msg_id and fragment id, up to `MAX_RESENDS` (2) times, doubling the wait; the call still ends at `RPC_TIMEOUT`. The wait is 3 round trips of that peer, or smoothed + 4 × variation if larger (RFC 6298), within 20 ms–1 s, and 500 ms for a peer never measured. Only requests sent once are measured (Karn). A request carrying a record gets a receipt (`Received`) before it is handled, so the sender does not resend a 6 KB record while an empty replica runs its network check; after a receipt a copy only asks again for an answer that may have been lost (a stored record then answers `AlreadyStored` at once). The receiver recognises a copy of a request it is still handling by sender address and SHA-256 of the whole request (`InProgress`) and answers it with the receipt only, so a copy never starts a second check; another request under the same msg_id is not a copy. Measured before this (0.5% loss, 30 nodes, k=5): the check refused on a single lost datagram and left 15/40 publications degraded, against 7/40 without the check.
+- All RPC handlers use `self: &Arc<Self>` receiver to enable `tokio::spawn` without cloning the full struct.
+- **Futurelock** (Oxide RFD 609): the router is a fair `tokio::sync::RwLock`, so a waiting writer blocks later readers. Never keep futures that may wait for the router in a set the task stops polling while it awaits something else that takes the router (a `FuturesUnordered` pulled with `next()` and an await in the loop body, a `&mut future` in `select!`). `ValueSpiderCrawl::search` reads the router between answers (`failing_among`) and writes it at its deadline (`note_no_answer`), while its requests may wait to write it (`schedule_welcome_if_new` adds a node met in an answer): it therefore spawns them in a `JoinSet`. With a `FuturesUnordered` a node of the 127-node testbed stopped answering two seconds after the first publication, and `a_lookup_keeps_polling_a_request_that_waits_for_the_routing_table` hung. `join_all` (`find_round`) keeps polling every future and is safe.
+- **Nodes met through a message** (`schedule_welcome_if_new`): the sender enters the routing table inline, before the handler answers (Kademlia §2.2); only sending it its records is deferred. That replication scans the whole storage, so it runs one node at a time (`WELCOME_CONCURRENCY`), at most `MAX_WELCOME_QUEUE` (256) nodes wait for it, deduplicated by id, and a node beyond that gets its records from the hourly republication. The scan takes the routing table's read lock per `WELCOME_SCAN_CHUNK` (256) records, because the inline insert needs the write lock. A full bucket's oldest contact is pinged at most once at a time (`oldest_pings_in_flight`). Do not put the insert back behind the replication bound: with one permit and new nodes dropped on contention, 30 nodes after one bootstrap pass knew a median of 20-22 of the 29 others (26-27 now), and quorum GET tests failed about 1 run in 16 because a reader never learned the node holding the valid copy.
 - UDP receive loop dispatches via round-robin to `available_parallelism()` fixed workers, each with a dedicated `mpsc::channel(256)`. `try_send` is attempted on each worker in order; if all channels are full the receive loop awaits the base worker (backpressure without drops). Zero allocations per datagram beyond the payload copy.
 - Blocking thread pool (`spawn_blocking`) is bounded at the runtime level via `max_blocking_threads(available_parallelism())` in `scripts/dht_node.rs`. This caps concurrent Dilithium verifications to the number of physical cores, covering all call sites uniformly (`verify_for_key`, `verify_value`, `update`). `KademliaProtocol` carries no application-level semaphore.
 - `SignatureCache` is keyed on `SHA-256(record_bytes)`. TTL 1 h, capacity 4096 (moka TinyLFU). Eviction = cache miss = full re-verification (never a security bypass). On a cache miss the SHA-256 key is computed once via `compute_key()` and reused for both `get_by_key` and `insert_by_key` — never twice.
-- `welcome_if_new` replication uses two conditions (Kademlia §2.5, matches Python AuthKademlia): `new_node_close` (new node is XOR-closer than the farthest k-neighbor) AND `this_closest` (this node is closer than the nearest k-neighbor). Both must be true to replicate. Neighbors are computed before `add_contact` so the new node is excluded from comparisons.
+- `welcome_if_new` replication uses two conditions (Kademlia §2.5, matches Python AuthKademlia): `new_node_close` (new node is XOR-closer than the farthest k-neighbor) AND `this_closest` (this node is closer than the nearest k-neighbor). Both must be true to replicate. The new node is already in the routing table when the scan runs, so `find_neighbors` excludes it from the comparisons.
 - `schedule_stats_log()` emits a `[stats]` log line every 60 s: routing table size and live contacts, storage record count, used/max storage bytes, and (when enabled) signature cache entries.
-- Every task that holds the protocol (receive loop, workers, refresh, maintenance, stats, save-state, `welcome_if_new`, LRU pings) must start through `KademliaProtocol::spawn_task`, never `tokio::spawn`; otherwise it keeps the socket bound after shutdown. `Server::stop` sends `Leave` without waiting for a reply, cancels those tasks, and returns once the socket is released, so `listen` can be called again. Dropping a `Server` cancels them too, without sending `Leave`.
+- Every task that holds the protocol (receive loop, workers, refresh, maintenance, stats, save-state, `welcome_if_new`, LRU pings) must start through `KademliaProtocol::spawn_task`, never `tokio::spawn`; otherwise it keeps the socket bound after shutdown. The one exception is the requests of a value lookup (`ValueSpiderCrawl::search`), which run in a `JoinSet` owned by the lookup and are aborted when it returns or is dropped. `Server::stop` sends `Leave` without waiting for a reply, cancels those tasks, and returns once the socket is released, so `listen` can be called again. Dropping a `Server` cancels them too, without sending `Leave`.
 - **Unresponsive contacts** (Kademlia §4.1, unlike Python): a timeout calls `record_failure`, it does not remove the contact. Each failure sets a `retry_after` with exponential backoff (5 s to 300 s, plus jitter), and failures inside that window are not counted, so a burst of concurrent timeouts counts once. After `STALE_AFTER_FAILURES` (5) in a row a contact is stale: it is removed only if a replacement exists, otherwise it stays flagged, is not advertised (`find_neighbors_to_advertise`), and gives way to a new contact when its bucket is full. Any response clears the failures; a failing contact is cleared only from its registered endpoint, while a stale one also accepts a new endpoint. `find_neighbors` skips failing contacts while at least `read_quorum(alpha)` healthy ones remain, and uses stale ones last. `Leave` still removes the contact immediately.
 - **Recovery** (`schedule_maintenance`): a 1 s tick pings failing contacts whose backoff has elapsed, so user lookups do not pay for them. While no contact is live it also retries the addresses given to `bootstrap` (`seeds`), with backoff up to 60 s, and runs a self-lookup once reconnected. It does no network work while the table is healthy. A contact silent for at least `RETURNED_AFTER` goes through `welcome` when it comes back, so it receives the records it missed.
-- **Lookups and dead contacts** (Kademlia §2.3, §4.1): a crawl never re-admits a peer that failed during it, and does not query a reported contact this node knows is failing (`SpiderProtocol::failing_among`), because other nodes that have not tried it keep reporting it. Initial peers are exempt, so `find_neighbors` can still use failing contacts as a last resort. The result holds only peers that responded, so no STORE goes to a dead peer. `set_detailed` counts the others in `unavailable_nodes`, not in `expected_replicas`: `Complete` means every node that responded holds the record. The first lookup after a peer dies still waits `RPC_TIMEOUT` (2.5 s) per round that contains a dead peer, because rounds wait for all their RPCs.
+- **Lookups and dead contacts** (Kademlia §2.3, §4.1): a lookup with a deadline (the STORE check) stops waiting at the deadline and marks the peers silent for at least `SILENT_AFTER` (1 s) as failing (`note_no_answer`), since their requests never reached a timeout; the STORE check also leaves failing contacts out entirely. A crawl never re-admits a peer that failed during it, and does not query a reported contact this node knows is failing (`SpiderProtocol::failing_among`), because other nodes that have not tried it keep reporting it. Initial peers are exempt, so `find_neighbors` can still use failing contacts as a last resort. The result holds only peers that responded, so no STORE goes to a dead peer. `set_detailed` counts the others in `unavailable_nodes`, not in `expected_replicas`: `Complete` means every node that responded holds the record. The first lookup after a peer dies still waits `RPC_TIMEOUT` (2.5 s) per round that contains a dead peer, because rounds wait for all their RPCs.
 - **Publication while cut off**: if no remote replica is reachable but the node has known contacts or seeds, `set_detailed` counts one unavailable replica and reports `Degraded`. A node that never had contacts or seeds still reports `Complete 1/1`.
 - **Routing table internals** (`src/routing.rs`): `KBucket.add_node()` does **not** update `last_updated`; only lookups reset the timer. `find_neighbors` touches the bucket containing the lookup target, evaluates every known primary contact with the full 160-bit XOR metric, excludes `target.id` and the optional caller-supplied peer, then returns the exact local top-k. Split condition §4.2: `covers(local_node) OR depth % 5 != 0`.
 
@@ -182,6 +193,29 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
   answer (`call_update_rpc_answer` tells them apart). Never make `rpc_update` accept an
   update without a stored record: with nothing to verify, it would let a forged update
   overwrite a valid record.
+- An empty replica checks the network before a STORE (`rpc_store`, `network_copy`). It
+  asks the nodes closest to the key for the SHA-256 of their record (`FindHash`, through
+  `ValueSpiderCrawl::search`), asking all of them, leaving no cached copy, giving up after
+  `STORE_LOOKUP_TIMEOUT` (2 s, below `RPC_TIMEOUT`). The Status List is exempt.
+  - Another hash: `Conflict`, without verifying anything. A hash cannot be verified, so a
+    node can block a STORE this way, as it can by not answering.
+  - The same hash, or no node holds the key: verify and store.
+  - A node did not answer, even after the resends, or there was nobody to ask (a node that has just restarted
+    knows no contacts yet): `rpc_store` returns `None` and the replica sends no answer,
+    so the sender counts it as unavailable. Nobody to ask is not "nobody holds it": in
+    the testbed a persistent attacker got forged records onto 6/20 restarted replicas
+    through that window.
+
+  **Never make the check accept when a node did not answer** (fail-safe default, Saltzer
+  and Schroeder 1975; accepting on silence is the soft-fail revocation flaw, Langley 2012).
+  With whole records as answers, a burst of forged STOREs made the replica drop the
+  holders' fragmented answers (`MAX_REASSEMBLY_ENTRIES_PER_PEER`), and accepting on
+  timeout stored up to 86/128 forged records. Do not switch the check back to `FindValue`
+  either: a hash answer fits in one datagram, a whole record takes about 6 KB in 5
+  fragments per holder. Cost: the first STORE after a node dies is refused by each replica
+  that still asks it. Known gap: while the old version of a rotated record is anywhere in
+  the network, an empty replica refuses the new one by STORE, so the `update_digest`
+  fallback fails then.
 - There is no DELETE API or RPC. Active records are never removed explicitly;
   TTL expiry is the only record-removal mechanism.
 - DHT key = `digest(did_uuid_string)` where `digest` is SHA-1 → `[u8; 20]`.
@@ -216,8 +250,8 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/scenarios/churn.rs` | 1 | Publisher leaves, record survives for new joiner |
 | `tests/scenarios/worker_pool.rs` | 1 | 40-client burst, all responses delivered |
 | `tests/scenarios/crypto.rs` | 4 | End-to-end crypto invariants (tamper, injection, downgrade, revocation) |
-| `tests/quorum_tests.rs` | 14 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum, delayed UPDATE commit, retry of an applied UPDATE, and UPDATE to replicas without the record |
-| `src/**` (inline) | 118 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
+| `tests/quorum_tests.rs` | 19 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum, delayed UPDATE commit, retry of an applied UPDATE, UPDATE to replicas without the record, and the network check of a STORE to an empty replica |
+| `src/**` (inline) | 138 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 
@@ -252,8 +286,9 @@ All tests are network-clean (loopback only) and run in parallel without interfer
 | 15924–15927 | publication with a dead peer that others keep reporting |
 | 15928–15932 | retry of an already applied UPDATE |
 | 15933–15937 | UPDATE to replicas without the record |
+| 15938–15953 | STORE to an empty replica: network check |
 
-When adding a new integration test use ports **15938+** and document them here (15900 is reserved below).
+When adding a new integration test use ports **15954+** and document them here (15900 is reserved below).
 
 | 15900 | resilience test: Node A victim (host-exposed UDP, Docker only) |
 
@@ -324,8 +359,16 @@ testbed/testbed.py get node-3 --from node-5
 testbed/testbed.py pause node-10             # also: netem, stop, start, logs
 testbed/testbed.py down
 ```
-See `testbed/README.md`. Only the interactive mode exists; the measurement mode
-needs library counters behind a Cargo feature that is off by default.
+The binaries are built only with `--features testbed` (the image enables it).
+Beyond about 30 nodes the host's neighbour table limit (`gc_thresh3`, 1024 by
+default, shared by all containers) must be raised first, or nodes cannot send:
+see "More than about 30 nodes on one machine" in `testbed/README.md`.
+`testbed/attack.py` adds an attacker that reads the traffic and sends forged
+records: `start --mode race|burst|persist`, then the `race` or `restart`
+scenario. `testbed/measure.py publish` measures publication time and when
+other nodes can read the record (`ctl <node> new`, `ctl <node> watch`). See
+`testbed/README.md`. Message and byte counters inside the library are not built
+yet: they need a Cargo feature that is off by default.
 
 ### Resilience / attack test (`resilience/docker-compose.yaml`)
 ```

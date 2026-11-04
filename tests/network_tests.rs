@@ -686,6 +686,9 @@ async fn test_node_joins_when_its_seed_starts_late() {
 
 /// Kademlia §2.3 and §4.1: a dead peer is neither a replica nor worth another
 /// timeout, even though the other nodes have not tried it and keep reporting it.
+/// The empty replicas ask the network before storing, and their first lookup
+/// waits for the dead peer too: they refuse rather than guess, so the first
+/// publication is degraded until a retry, and the second is not.
 #[tokio::test]
 async fn test_set_ignores_a_dead_peer_that_others_keep_reporting() {
     let writer = start_node(15924).await;
@@ -710,10 +713,22 @@ async fn test_set_ignores_a_dead_peer_that_others_keep_reporting() {
     }
 
     let (_, key, record) = new_record();
-    let first = writer.set_detailed(&key, record).await;
-    assert!(matches!(first, SetOutcome::Complete(_)), "{first:?}");
+    let first = writer.set_detailed(&key, record.clone()).await;
+    assert!(matches!(first, SetOutcome::Degraded(_)), "{first:?}");
     assert_eq!(first.report().expected_replicas, 3);
-    assert_eq!(first.report().unavailable_nodes, 1);
+    assert_eq!(
+        first.report().stored_replicas,
+        1,
+        "only the writer's own copy"
+    );
+    assert_eq!(
+        first.report().unavailable_nodes,
+        3,
+        "the dead peer, and the two replicas that could not hear from it"
+    );
+    let retry = writer.set_detailed(&key, record).await;
+    assert!(matches!(retry, SetOutcome::Complete(_)), "{retry:?}");
+    assert_eq!(retry.report().unavailable_nodes, 1);
 
     let (_, key, record) = new_record();
     let started = std::time::Instant::now();

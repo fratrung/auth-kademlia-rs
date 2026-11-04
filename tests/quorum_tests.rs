@@ -2,7 +2,7 @@
 //!
 //! Every test uses real UDP nodes and valid Dilithium records. Records are
 //! injected only after bootstrap so the tests control the exact replica state.
-//! Ports: 15866-15894, 15904-15905, 15913-15923, 15928-15937.
+//! Ports: 15866-15894, 15904-15905, 15913-15923, 15928-15953.
 
 mod common;
 
@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
+use auth_kademlia_rs::fragmentation::MAX_REASSEMBLY_ENTRIES_PER_PEER;
 use auth_kademlia_rs::network::Server;
 use auth_kademlia_rs::node::Node;
 use auth_kademlia_rs::protocol::StoreStatus;
@@ -522,16 +523,22 @@ fn replica_acknowledges_an_update_it_already_holds() {
 }
 
 /// Responsible replicas that do not hold the record cannot verify the
-/// rotation, so they refuse the update. The owner then gives them the new
-/// record through STORE, under the usual first-writer-wins rule.
+/// rotation, so they refuse the update, and the owner sends them the new
+/// record as STORE. An empty replica asks the network first: while the owner
+/// still holds the old record, the new one differs from the copy it finds, so
+/// it refuses the STORE too. The update fails and changes nothing. This is a
+/// known gap: the empty replica has no authorization to check the new record
+/// against the old one.
 #[test]
-fn update_gives_the_record_to_replicas_that_lack_it() {
+fn update_cannot_fill_empty_replicas_while_the_old_record_is_in_the_network() {
     runtime().block_on(async {
         let issuer = Path::new("issuer_pub_key.bin");
         let did = generate_did_iiot();
         let key = did.split(':').next_back().unwrap();
         let dkey = digest(key);
-        let requester = start_node(15933, issuer, dkey).await;
+        // Not the key itself: lookups leave out a node whose id is the key,
+        // and the empty replicas must find the owner's copy.
+        let requester = start_node(15933, issuer, id_at_distance(dkey, 0x01)).await;
         let peer_a = start_node(15934, issuer, node_id(65)).await;
         let peer_b = start_node(15935, issuer, node_id(66)).await;
         bootstrap_to(&requester, &[15934, 15935]).await;
@@ -541,37 +548,27 @@ fn update_gives_the_record_to_replicas_that_lack_it() {
         let authorization = dilithium2::detached_sign(&new_record, &old_secret_key)
             .as_bytes()
             .to_vec();
-        requester.storage.set(dkey.to_vec(), old_record);
+        requester.storage.set(dkey.to_vec(), old_record.clone());
 
         assert_eq!(
-            requester
-                .update(key, new_record.clone(), Some(authorization.clone()))
-                .await,
-            Some(true),
-            "replicas without the record must receive it, and the update succeed"
-        );
-        for (name, server) in [
-            ("requester", &requester),
-            ("peer_a", &peer_a),
-            ("peer_b", &peer_b),
-        ] {
-            assert_eq!(
-                server.storage.get(&dkey).as_ref(),
-                Some(&new_record),
-                "{name} must hold the new record"
-            );
-        }
-        assert_eq!(
             requester.update(key, new_record, Some(authorization)).await,
-            Some(true),
-            "a retry must still succeed"
+            Some(false),
+            "empty replicas must refuse a record other than the one in the network"
         );
+        assert_eq!(
+            requester.storage.get(&dkey),
+            Some(old_record),
+            "the owner must keep the old record"
+        );
+        for (name, server) in [("peer_a", &peer_a), ("peer_b", &peer_b)] {
+            assert_eq!(server.storage.get(&dkey), None, "{name} must stay empty");
+        }
     });
 }
 
-/// The rule behind the previous test: an update is accepted only as a
-/// verified rotation, so a replica without the record refuses it and stays
-/// empty. The same record sent as STORE is stored.
+/// An update is accepted only as a verified rotation, so a replica without
+/// the record refuses it and stays empty. The same record sent as STORE is
+/// stored, because no node holds another one.
 #[test]
 fn replica_without_the_record_refuses_an_update_but_takes_a_store() {
     runtime().block_on(async {
@@ -581,6 +578,8 @@ fn replica_without_the_record_refuses_an_update_but_takes_a_store() {
         let replica_id = node_id(67);
         let replica = start_node(15936, issuer, replica_id).await;
         let sender = start_node(15937, issuer, node_id(68)).await;
+        // The replica must know someone to ask about the record.
+        add_known_peer(&replica, node_id(68), 15937).await;
         let protocol = sender.protocol.as_ref().expect("sender must be listening");
         let target = Node::new(replica_id, Some("127.0.0.1".to_string()), Some(15936));
 
@@ -609,5 +608,198 @@ fn replica_without_the_record_refuses_an_update_but_takes_a_store() {
             "the same record sent as STORE must be stored"
         );
         assert_eq!(replica.storage.get(&dkey), Some(new_record));
+    });
+}
+
+/// An empty replica asks the nodes closest to the key before storing. A
+/// record other than the one they hold is refused and not stored, as a forged
+/// document for an existing DID would be; the record they hold is stored.
+#[test]
+fn empty_replica_refuses_a_record_other_than_the_one_in_the_network() {
+    runtime().block_on(async {
+        let issuer = Path::new("issuer_pub_key.bin");
+        let did = generate_did_iiot();
+        let dkey = digest(did.split(':').next_back().unwrap());
+        let replica_id = node_id(69);
+        let replica = start_node(15938, issuer, replica_id).await;
+        let holder_a = start_node(15939, issuer, node_id(70)).await;
+        let holder_b = start_node(15940, issuer, node_id(71)).await;
+        let sender = start_node(15941, issuer, node_id(72)).await;
+        bootstrap_to(&replica, &[15939, 15940]).await;
+
+        let (record, _) = did_record(&did);
+        let (forged, _) = did_record(&did);
+        holder_a.storage.set(dkey.to_vec(), record.clone());
+        holder_b.storage.set(dkey.to_vec(), record.clone());
+
+        let protocol = sender.protocol.as_ref().expect("sender must be listening");
+        let target = Node::new(replica_id, Some("127.0.0.1".to_string()), Some(15938));
+        assert_eq!(
+            protocol.call_store_rpc(&target, dkey, forged).await,
+            Some(StoreStatus::Conflict),
+            "a record other than the one in the network must be refused"
+        );
+        assert_eq!(
+            replica.storage.get(&dkey),
+            None,
+            "a refused record must not be stored"
+        );
+        assert_eq!(
+            protocol.call_store_rpc(&target, dkey, record.clone()).await,
+            Some(StoreStatus::Stored),
+            "the record the network holds must be stored"
+        );
+        assert_eq!(replica.storage.get(&dkey), Some(record));
+    });
+}
+
+/// A first publication: no node holds the DID, so the empty replica stores
+/// the record.
+#[test]
+fn empty_replica_takes_a_record_no_node_holds() {
+    runtime().block_on(async {
+        let issuer = Path::new("issuer_pub_key.bin");
+        let did = generate_did_iiot();
+        let dkey = digest(did.split(':').next_back().unwrap());
+        let replica_id = node_id(73);
+        let replica = start_node(15942, issuer, replica_id).await;
+        let sender = start_node(15943, issuer, node_id(74)).await;
+        let _other = start_node(15944, issuer, node_id(75)).await;
+        bootstrap_to(&replica, &[15943, 15944]).await;
+
+        let (record, _) = did_record(&did);
+        let protocol = sender.protocol.as_ref().expect("sender must be listening");
+        let target = Node::new(replica_id, Some("127.0.0.1".to_string()), Some(15942));
+        assert_eq!(
+            protocol.call_store_rpc(&target, dkey, record.clone()).await,
+            Some(StoreStatus::Stored),
+            "a record no node holds must be stored"
+        );
+        assert_eq!(replica.storage.get(&dkey), Some(record));
+    });
+}
+
+/// The nodes answer the check with the SHA-256 of the record they hold, and
+/// a hash cannot be verified: a node holding a different record blocks the
+/// STORE even when that record is invalid. Honest nodes store only verified
+/// records, so only a dishonest node holds an invalid one, and it could block
+/// the STORE anyway by not answering.
+#[test]
+fn a_node_holding_an_invalid_copy_blocks_the_store() {
+    runtime().block_on(async {
+        let issuer = Path::new("issuer_pub_key.bin");
+        let did = generate_did_iiot();
+        let dkey = digest(did.split(':').next_back().unwrap());
+        let replica_id = node_id(76);
+        let replica = start_node(15945, issuer, replica_id).await;
+        let liar = start_node(15946, issuer, node_id(77)).await;
+        let sender = start_node(15947, issuer, node_id(78)).await;
+        bootstrap_to(&replica, &[15946]).await;
+
+        let (record, _) = did_record(&did);
+        let (other, _) = did_record(&did);
+        let mut tampered = other;
+        tampered[12] ^= 0xFF;
+        liar.storage.set(dkey.to_vec(), tampered);
+
+        let protocol = sender.protocol.as_ref().expect("sender must be listening");
+        let target = Node::new(replica_id, Some("127.0.0.1".to_string()), Some(15945));
+        assert_eq!(
+            protocol.call_store_rpc(&target, dkey, record).await,
+            Some(StoreStatus::Conflict),
+            "a different hash in the network must block the STORE"
+        );
+        assert_eq!(replica.storage.get(&dkey), None);
+    });
+}
+
+/// A STORE to an empty replica waits for a lookup, whose answers reach the
+/// replica through the same workers that read its requests. Several such
+/// STOREs at once must not hold those workers: every lookup must still
+/// receive its answer and find the record in the network. Answers are spread
+/// over the workers in turn, so a single held worker is enough to delay some.
+/// One sender and one holder: each can have at most
+/// `MAX_REASSEMBLY_ENTRIES_PER_PEER` fragmented messages in flight to the
+/// replica, and the rest would be dropped.
+#[test]
+fn many_stores_to_an_empty_replica_all_get_their_lookup_answers() {
+    runtime().block_on(async {
+        let issuer = Path::new("issuer_pub_key.bin");
+        let replica_id = node_id(79);
+        let replica = start_node(15948, issuer, replica_id).await;
+        let holder = start_node(15949, issuer, node_id(80)).await;
+        let sender = start_node(15950, issuer, node_id(81)).await;
+        bootstrap_to(&replica, &[15949]).await;
+
+        let count = MAX_REASSEMBLY_ENTRIES_PER_PEER;
+        let mut forged_records = Vec::with_capacity(count);
+        for _ in 0..count {
+            let did = generate_did_iiot();
+            let dkey = digest(did.split(':').next_back().unwrap());
+            let (record, _) = did_record(&did);
+            let (forged, _) = did_record(&did);
+            holder.storage.set(dkey.to_vec(), record);
+            forged_records.push((dkey, forged));
+        }
+
+        let protocol = sender.protocol.as_ref().expect("sender must be listening");
+        let target = Node::new(replica_id, Some("127.0.0.1".to_string()), Some(15948));
+        let answers = futures::future::join_all(
+            forged_records
+                .iter()
+                .map(|(dkey, forged)| protocol.call_store_rpc(&target, *dkey, forged.clone())),
+        )
+        .await;
+
+        for (index, answer) in answers.into_iter().enumerate() {
+            assert_eq!(
+                answer,
+                Some(StoreStatus::Conflict),
+                "STORE {index} of {count} must find the record in the network"
+            );
+        }
+        for (dkey, _) in &forged_records {
+            assert_eq!(replica.storage.get(dkey), None);
+        }
+    });
+}
+
+/// When a node the replica asks does not answer, the replica cannot tell
+/// whether it holds another record, so it refuses the STORE (fail-safe
+/// default). It does not answer, and the sender counts it as unavailable.
+/// The silent node is then marked as not responding and left out, so the
+/// next STORE is checked with the sender alone.
+#[test]
+fn empty_replica_refuses_a_store_when_a_node_does_not_answer() {
+    runtime().block_on(async {
+        let issuer = Path::new("issuer_pub_key.bin");
+        let did = generate_did_iiot();
+        let dkey = digest(did.split(':').next_back().unwrap());
+        let replica_id = node_id(82);
+        let replica = start_node(15951, issuer, replica_id).await;
+        let sender = start_node(15952, issuer, node_id(83)).await;
+        let _silent = std::net::UdpSocket::bind(("127.0.0.1", 15953)).expect("bind");
+        add_known_peer(&replica, node_id(84), 15953).await;
+        add_known_peer(&replica, node_id(83), 15952).await;
+
+        let (record, _) = did_record(&did);
+        let protocol = sender.protocol.as_ref().expect("sender must be listening");
+        let target = Node::new(replica_id, Some("127.0.0.1".to_string()), Some(15951));
+        assert_eq!(
+            protocol.call_store_rpc(&target, dkey, record.clone()).await,
+            None,
+            "a replica that did not hear from every node must not answer"
+        );
+        assert_eq!(
+            replica.storage.get(&dkey),
+            None,
+            "a refused record must not be stored"
+        );
+        assert_eq!(
+            protocol.call_store_rpc(&target, dkey, record.clone()).await,
+            Some(StoreStatus::Stored),
+            "the silent node must be left out of the next check"
+        );
+        assert_eq!(replica.storage.get(&dkey), Some(record));
     });
 }
