@@ -147,6 +147,11 @@ the default `alpha = 3`, a strict **2-of-3 majority**.
 - **Retrying an update:** repeating the same update is safe. A replica that
   already holds the new record acknowledges it without writing, and the retry
   completes the replicas that missed it. The retry must resend the same bytes.
+- **Replicas without the record:** a replica that holds no record for the DID
+  cannot verify the rotation and refuses the update. The updater then sends it
+  the new record as a plain STORE, which it accepts under the usual
+  first-writer-wins rule; a replica holding another record answers `Conflict`
+  and is not changed. A replica that does not answer gets no STORE.
 - **TTL:** records written to the default storage expire lazily after 14 days.
   Applications that need continued availability must refresh them through a
   legitimate publish or update before expiry.

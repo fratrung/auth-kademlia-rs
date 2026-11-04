@@ -1042,14 +1042,22 @@ impl KademliaProtocol {
         value: Vec<u8>,
         auth_signature: Vec<u8>,
     ) -> bool {
-        let addr = match peer.address() {
-            Some(a) => a,
-            None => return false,
-        };
-        let sock_addr: SocketAddr = match format!("{}:{}", addr.0, addr.1).parse() {
-            Ok(a) => a,
-            Err(_) => return false,
-        };
+        self.call_update_rpc_answer(peer, key, value, auth_signature)
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Like `call_update_rpc`, but tells a refusal (`Some(false)`) from no
+    /// answer (`None`).
+    pub async fn call_update_rpc_answer(
+        &self,
+        peer: &Node,
+        key: [u8; ID_LEN],
+        value: Vec<u8>,
+        auth_signature: Vec<u8>,
+    ) -> Option<bool> {
+        let addr = peer.address()?;
+        let sock_addr: SocketAddr = format!("{}:{}", addr.0, addr.1).parse().ok()?;
         match self
             .call(
                 sock_addr,
@@ -1064,12 +1072,12 @@ impl KademliaProtocol {
         {
             Some(RpcMessage::UpdateResult { ok }) => {
                 self.note_alive(peer).await;
-                ok
+                Some(ok)
             }
             _ => {
                 log::warn!("no response from {}", peer);
                 self.note_failure(peer).await;
-                false
+                None
             }
         }
     }

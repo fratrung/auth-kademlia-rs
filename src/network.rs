@@ -699,7 +699,20 @@ impl Server {
             } else {
                 let sig = auth_signature.clone().unwrap_or_default();
                 futs.push(Box::pin(async move {
-                    p.call_update_rpc(&n, dkey, v, sig).await
+                    match p.call_update_rpc_answer(&n, dkey, v.clone(), sig).await {
+                        Some(true) => true,
+                        // A replica without the record cannot verify the
+                        // rotation and refuses it. It can take the record
+                        // through STORE, under the same first-writer-wins rule
+                        // as any publication; a replica holding another record
+                        // answers Conflict and is not changed.
+                        Some(false) => matches!(
+                            p.call_store_rpc(&n, dkey, v).await,
+                            Some(StoreStatus::Stored | StoreStatus::AlreadyStored)
+                        ),
+                        // No answer: a STORE would only wait for another timeout.
+                        None => false,
+                    }
                 }));
             }
         }

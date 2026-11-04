@@ -2,7 +2,7 @@
 //!
 //! Every test uses real UDP nodes and valid Dilithium records. Records are
 //! injected only after bootstrap so the tests control the exact replica state.
-//! Ports: 15866-15894, 15904-15905, 15913-15923, 15928-15932.
+//! Ports: 15866-15894, 15904-15905, 15913-15923, 15928-15937.
 
 mod common;
 
@@ -13,6 +13,7 @@ use std::time::Duration;
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::Server;
 use auth_kademlia_rs::node::Node;
+use auth_kademlia_rs::protocol::StoreStatus;
 use auth_kademlia_rs::storage::IStorage;
 use auth_kademlia_rs::utils::{digest, ID_LEN, STATUS_LIST_KEY};
 use pqcrypto_dilithium::dilithium2;
@@ -344,16 +345,21 @@ fn update_without_quorum_preserves_the_local_record() {
         let key = did.split(':').next_back().unwrap();
         let dkey = digest(key);
         let requester = start_node(15878, issuer, dkey).await;
-        let _peer_a = start_node(15879, issuer, node_id(41)).await;
-        let _peer_b = start_node(15880, issuer, node_id(42)).await;
+        let peer_a = start_node(15879, issuer, node_id(41)).await;
+        let peer_b = start_node(15880, issuer, node_id(42)).await;
         bootstrap_to(&requester, &[15879, 15880]).await;
 
         let (old_record, old_secret_key) = did_record(&did);
         let (new_record, _) = did_record(&did);
+        let (other_record, _) = did_record(&did);
         let authorization = dilithium2::detached_sign(&new_record, &old_secret_key)
             .as_bytes()
             .to_vec();
         requester.storage.set(dkey.to_vec(), old_record.clone());
+        // The replicas hold another record for this DID: they refuse the
+        // update, and the STORE that follows it gets a conflict.
+        peer_a.storage.set(dkey.to_vec(), other_record.clone());
+        peer_b.storage.set(dkey.to_vec(), other_record.clone());
 
         assert_eq!(
             requester.update(key, new_record, Some(authorization)).await,
@@ -365,6 +371,13 @@ fn update_without_quorum_preserves_the_local_record() {
             Some(old_record),
             "failed quorum must not commit the new local value"
         );
+        for peer in [&peer_a, &peer_b] {
+            assert_eq!(
+                peer.storage.get(&dkey).as_ref(),
+                Some(&other_record),
+                "a replica holding another record must not be changed"
+            );
+        }
     });
 }
 
@@ -505,5 +518,96 @@ fn replica_acknowledges_an_update_it_already_holds() {
             Some(v3),
             "a refused update must not change the replica"
         );
+    });
+}
+
+/// Responsible replicas that do not hold the record cannot verify the
+/// rotation, so they refuse the update. The owner then gives them the new
+/// record through STORE, under the usual first-writer-wins rule.
+#[test]
+fn update_gives_the_record_to_replicas_that_lack_it() {
+    runtime().block_on(async {
+        let issuer = Path::new("issuer_pub_key.bin");
+        let did = generate_did_iiot();
+        let key = did.split(':').next_back().unwrap();
+        let dkey = digest(key);
+        let requester = start_node(15933, issuer, dkey).await;
+        let peer_a = start_node(15934, issuer, node_id(65)).await;
+        let peer_b = start_node(15935, issuer, node_id(66)).await;
+        bootstrap_to(&requester, &[15934, 15935]).await;
+
+        let (old_record, old_secret_key) = did_record(&did);
+        let (new_record, _) = did_record(&did);
+        let authorization = dilithium2::detached_sign(&new_record, &old_secret_key)
+            .as_bytes()
+            .to_vec();
+        requester.storage.set(dkey.to_vec(), old_record);
+
+        assert_eq!(
+            requester
+                .update(key, new_record.clone(), Some(authorization.clone()))
+                .await,
+            Some(true),
+            "replicas without the record must receive it, and the update succeed"
+        );
+        for (name, server) in [
+            ("requester", &requester),
+            ("peer_a", &peer_a),
+            ("peer_b", &peer_b),
+        ] {
+            assert_eq!(
+                server.storage.get(&dkey).as_ref(),
+                Some(&new_record),
+                "{name} must hold the new record"
+            );
+        }
+        assert_eq!(
+            requester.update(key, new_record, Some(authorization)).await,
+            Some(true),
+            "a retry must still succeed"
+        );
+    });
+}
+
+/// The rule behind the previous test: an update is accepted only as a
+/// verified rotation, so a replica without the record refuses it and stays
+/// empty. The same record sent as STORE is stored.
+#[test]
+fn replica_without_the_record_refuses_an_update_but_takes_a_store() {
+    runtime().block_on(async {
+        let issuer = Path::new("issuer_pub_key.bin");
+        let did = generate_did_iiot();
+        let dkey = digest(did.split(':').next_back().unwrap());
+        let replica_id = node_id(67);
+        let replica = start_node(15936, issuer, replica_id).await;
+        let sender = start_node(15937, issuer, node_id(68)).await;
+        let protocol = sender.protocol.as_ref().expect("sender must be listening");
+        let target = Node::new(replica_id, Some("127.0.0.1".to_string()), Some(15936));
+
+        let (_old_record, old_secret_key) = did_record(&did);
+        let (new_record, _) = did_record(&did);
+        let authorization = dilithium2::detached_sign(&new_record, &old_secret_key)
+            .as_bytes()
+            .to_vec();
+
+        assert!(
+            !protocol
+                .call_update_rpc(&target, dkey, new_record.clone(), authorization)
+                .await,
+            "a replica without the record cannot verify the rotation and must refuse it"
+        );
+        assert_eq!(
+            replica.storage.get(&dkey),
+            None,
+            "a refused update must store nothing"
+        );
+        assert_eq!(
+            protocol
+                .call_store_rpc(&target, dkey, new_record.clone())
+                .await,
+            Some(StoreStatus::Stored),
+            "the same record sent as STORE must be stored"
+        );
+        assert_eq!(replica.storage.get(&dkey), Some(new_record));
     });
 }
