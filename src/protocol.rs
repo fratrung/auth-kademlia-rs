@@ -1127,11 +1127,22 @@ impl KademliaProtocol {
         // An empty replica cannot tell a forged record from the owner's: both
         // are self-signed for the same DID. It asks the network first, and
         // refuses a record other than the one already there without verifying
-        // it: a new version must arrive as an UPDATE. When some node does not
-        // answer, or it knows nobody to ask, it refuses too (fail-safe
+        // its signature: a new version must arrive as an UPDATE. When some node
+        // does not answer, or it knows nobody to ask, it refuses too (fail-safe
         // default): accepting would let an attacker win by making answers fail
         // to arrive, as with soft-fail certificate revocation checks.
         if self.store_needs_lookup(&key) {
+            // The binding costs a JSON parse, the lookup a message to every
+            // node close to the key: a record that does not belong to `key`
+            // never starts one.
+            if !self.key_binding_is_valid(&key, &value) {
+                log::warn!(
+                    "rpc_store: record from {} is not bound to {}",
+                    sender_addr.0,
+                    hex::encode(key)
+                );
+                return Some(StoreStatus::InvalidRecord);
+            }
             match self.network_copy(key, &value).await {
                 NetworkCopy::NoneOrSame => {}
                 NetworkCopy::Other => {
@@ -2472,6 +2483,43 @@ mod tests {
                 .await,
             None
         );
+        assert_eq!(protocol.storage.get(&[7; ID_LEN]), None);
+    }
+
+    /// An empty replica refuses a record that does not belong to the key before
+    /// asking the network: the binding costs a JSON parse, the lookup a message
+    /// to every node close to the key. The signature is not checked either.
+    #[tokio::test]
+    async fn a_record_bound_to_another_key_is_refused_before_the_network_check() {
+        let handler = Arc::new(TestHandler::new(true, true).with_key_binding_result(false));
+        let protocol = test_protocol(handler.clone(), false).await;
+        let (peer, contact) = raw_peer([5; ID_LEN]).await;
+        protocol.router.write().await.add_contact(contact);
+        let started = Instant::now();
+
+        assert_eq!(
+            protocol
+                .rpc_store(
+                    [2; ID_LEN],
+                    ("127.0.0.1".to_string(), 9016),
+                    [7; ID_LEN],
+                    b"bound to another key".to_vec(),
+                )
+                .await,
+            Some(StoreStatus::InvalidRecord)
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(
+            try_read_frame(&peer, Duration::from_millis(200))
+                .await
+                .is_none(),
+            "the replica asked the network about a record bound to another key"
+        );
+        assert_eq!(handler.self_signed_calls.load(Ordering::Relaxed), 0);
         assert_eq!(protocol.storage.get(&[7; ID_LEN]), None);
     }
 

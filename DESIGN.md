@@ -250,12 +250,15 @@ sequenceDiagram
     participant C as Nodes closest to the DID
     S->>R: STORE(key, record)
     Note over R: no record for key, so it cannot tell<br/>a forged record from the owner's
+    opt record not bound to key (malformed, or another DID)
+        R-->>S: InvalidRecord (nobody asked)
+    end
     R->>C: FindHash(key), all of them, deadline 2 s
     C-->>R: SHA-256 of their record, or closer nodes
     alt another hash
-        R-->>S: Conflict (nothing verified, nothing stored)
+        R-->>S: Conflict (signature not verified, nothing stored)
     else same hash, or no node holds the key
-        Note over R: verify DID binding and signature,<br/>then insert if still absent
+        Note over R: verify the signature,<br/>then insert if still absent
         R-->>S: Stored
     else a node did not answer, or nobody to ask
         Note over R: refuse: fail-safe default
@@ -263,12 +266,15 @@ sequenceDiagram
     end
 ```
 
-1. It sends `FindHash` to the nodes closest to the key, all of them rather than
+1. It checks the DID binding of section 3, a JSON parse. A record that does not
+   belong to the key is `InvalidRecord`, and nobody is asked: a malformed
+   STORE does not cost a lookup.
+2. It sends `FindHash` to the nodes closest to the key, all of them rather than
    stopping at the first answer, and leaves no cached copy behind.
-2. **Another hash:** it answers `Conflict` without verifying anything.
-3. **The same hash, or no node holds the key:** it verifies the record and
-   stores it.
-4. **A node did not answer within 2 s, or it knows nobody to ask:** it refuses
+3. **Another hash:** it answers `Conflict` without verifying the signature.
+4. **The same hash, or no node holds the key:** it verifies the signature and
+   stores the record.
+5. **A node did not answer within 2 s, or it knows nobody to ask:** it refuses
    and sends no answer, so the sender counts it as unavailable.
 
 **Why hashes, not records.** A node holding the record answers with its

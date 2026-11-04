@@ -156,11 +156,13 @@ the default `alpha = 3`, a strict **2-of-3 majority**.
   owner's, because both are self-signed for the same DID. Before storing a
   record it does not hold, it asks the nodes closest to the DID for the
   SHA-256 of the record they hold (`FindHash`), not for the record itself. It
-  asks all of them, and leaves no cached copy:
+  asks all of them, and leaves no cached copy. A record that is malformed or
+  does not belong to the DID's key is refused as `InvalidRecord` before anyone
+  is asked. Then:
   - if one of them answers with another hash, it answers `Conflict` without
-    verifying the record it received;
-  - if they answer with the same hash, or hold nothing, it verifies the record
-    and stores it;
+    verifying the signature of the record it received;
+  - if they answer with the same hash, or hold nothing, it verifies the
+    signature and stores the record;
   - if one of them does not answer within 2 s, even after its question is
     sent again, or it knows nobody to ask, as right after a restart, it
     refuses and does not answer, so the sender counts it as unavailable.

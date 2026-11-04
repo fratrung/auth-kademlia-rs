@@ -5,12 +5,15 @@ sequenceDiagram
     participant C as Nodes closest to the DID
     S->>R: STORE(key, record)
     Note over R: no record for key, so it cannot tell<br/>a forged record from the owner's
+    opt record not bound to key (malformed, or another DID)
+        R-->>S: InvalidRecord (nobody asked)
+    end
     R->>C: FindHash(key), all of them, deadline 2 s
     C-->>R: SHA-256 of their record, or closer nodes
     alt another hash
-        R-->>S: Conflict (nothing verified, nothing stored)
+        R-->>S: Conflict (signature not verified, nothing stored)
     else same hash, or no node holds the key
-        Note over R: verify DID binding and signature,<br/>then insert if still absent
+        Note over R: verify the signature,<br/>then insert if still absent
         R-->>S: Stored
     else a node did not answer, or nobody to ask
         Note over R: refuse: fail-safe default
