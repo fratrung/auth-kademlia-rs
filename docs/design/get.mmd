@@ -7,6 +7,6 @@ sequenceDiagram
     else
         V->>N: FIND_VALUE(key), iterative
         N-->>V: record, or closer nodes
-        Note over V: first record that passes DID binding<br/>and signature wins, no vote;<br/>a record that fails is discarded
+        Note over V: first record that passes DID binding<br/>and signature wins, no vote.<br/>A record that fails is discarded
     end
     Note over V: the application compares the public key<br/>with the hash in the Verifiable Credential

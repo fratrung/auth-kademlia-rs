@@ -3,8 +3,9 @@
 This document explains how AuthKademlia-RS works and why: what a node stores,
 how records are published, read and rotated, and what each choice defends
 against. It describes the protocol, not the API: see `README.md` for usage and
-`AGENTS.md` for the code map. The diagrams are Mermaid blocks, which GitHub
-draws; the same sources are in `docs/design/`.
+`AGENTS.md` for the code map. The diagrams are PNG images drawn from the
+Mermaid sources in `docs/design/` (`*.mmd`), so that they show where Mermaid is
+not drawn, as in the GitHub mobile app.
 
 ## Contents
 
@@ -26,43 +27,15 @@ draws; the same sources are in `docs/design/`.
 
 ## 1. Purpose
 
-AuthKademlia is the Verifiable Data Registry (VDR) of the `did:iiot` method,
-the identity layer of a security architecture for legacy industrial control
-systems [Trungadi 2025]. Every device gets a proxy; every proxy has a DID whose
-DID Document, holding its post-quantum public keys, is stored in the DHT.
-Peers read each other's DID Documents to run an authenticated key exchange
-(Dilithium signatures, Kyber key encapsulation). An issuer node issues
-Verifiable Credentials (VCs) and signs a Status List of revocations.
+AuthKademlia is the Verifiable Data Registry (VDR) of the `did:iiot` method
+[Trungadi 2025]. It stores two kinds of records: DID Documents, which hold a
+device's post-quantum public keys (Dilithium, Kyber), and the Status List of
+revoked credentials, signed by an issuer.
 
 The DHT is Kademlia [Maymounkov 2002] with one change that shapes everything
 else: **a node stores a value only if it is an authenticated record**, a DID
 Document signed by the key it contains, or the Status List signed by the
 issuer.
-
-```mermaid
-flowchart LR
-    subgraph proxy["Device proxy (one per PLC, HMI, SCADA)"]
-        app["Python application<br/>provisioning, REST, handshake"]
-        binding["PyO3 binding<br/>releases the GIL"]
-        core["Rust core<br/>Server: set / get / update"]
-        app --> binding --> core
-    end
-    issuer["Issuer node<br/>issues VCs, signs the Status List"]
-    subgraph dht["AuthKademlia DHT over UDP"]
-        n1["node"]
-        n2["node"]
-        n3["node"]
-        n1 <--> n2 <--> n3 <--> n1
-    end
-    core <-->|"RPC, KADF fragments"| n1
-    issuer -->|"Status List"| n2
-    verifier["Verifier<br/>reads a DID Document,<br/>checks the key against the VC"] -->|"get"| n3
-```
-
-The Rust core holds the network and the cryptography. Dilithium verification is
-CPU-bound (about 5 ms on x86, more on ARM boards), and the Python binding
-releases the GIL so that all cores can verify in parallel. Application logic
-stays in Python.
 
 ## 2. Threat model
 
@@ -195,23 +168,9 @@ node has no live contact, retries its bootstrap seeds.
 
 ## 6. Publication (SET)
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant O as Owner
-    participant N as Nodes on the path
-    participant R as Replicas (k closest to the DID)
-    Note over O: record = algorithm | signature | DID Document<br/>key = SHA-1(UUID of the DID)
-    O->>N: FIND_VALUE(key), iterative, alpha at a time
-    N-->>O: closer nodes, no record
-    Note over O: no record found, so the k closest are the replicas
-    par to each replica
-        O->>R: STORE(key, record)
-        Note over R: empty, so it checks the network first<br/>(see the STORE check diagram)
-        R-->>O: Stored
-    end
-    Note over O: Complete if every replica stored it,<br/>Degraded if some did not answer the STORE
-```
+![Sequence diagram of a publication: lookup of the k closest nodes, then STORE to each replica](docs/design/publish.png)
+
+*Source: [`docs/design/publish.mmd`](docs/design/publish.mmd).*
 
 The owner first looks the key up. If the network already holds a different
 valid record, publication is refused: records are immutable once created, and
@@ -242,29 +201,9 @@ UPDATE and raced a forged STORE to a replica that had just restarted won 16 to
 17 rounds out of 20 on WAN profiles. So an empty replica asks the network
 before storing:
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant S as Sender
-    participant R as Empty replica
-    participant C as Nodes closest to the DID
-    S->>R: STORE(key, record)
-    Note over R: no record for key, so it cannot tell<br/>a forged record from the owner's
-    opt record not bound to key (malformed, or another DID)
-        R-->>S: InvalidRecord (nobody asked)
-    end
-    R->>C: FindHash(key), all of them at once, deadline 2 s
-    C-->>R: SHA-256 of their record, or closer nodes
-    alt another hash
-        R-->>S: Conflict (signature not verified, nothing stored)
-    else same hash, or no node holds the key
-        Note over R: verify the signature,<br/>then insert if still absent
-        R-->>S: Stored
-    else a node did not answer, or nobody to ask
-        Note over R: refuse: fail-safe default
-        R--xS: no answer, the sender counts it unavailable
-    end
-```
+![Sequence diagram of a STORE to an empty replica: binding check, FindHash to the closest nodes, then Conflict, Stored, or no answer](docs/design/store-check.png)
+
+*Source: [`docs/design/store-check.mmd`](docs/design/store-check.mmd).*
 
 1. It checks the DID binding of section 3, a JSON parse. A record that does not
    belong to the key is `InvalidRecord`, and nobody is asked: a malformed
@@ -318,47 +257,24 @@ transactions [Cassandra LWT]. It does not protect a first publication, when
 the network holds nothing yet: an attacker who learns a UUID before the owner
 publishes it can publish first, and one that sees the owner's first STOREs can
 race them to nodes that do not hold the record yet. It does not help against an attacker who
-controls every node close to the DID.
+controls every node close to the DID. It hears every node the replica knows,
+not every node that exists: a node that answers with made-up nodes closer to
+the key can still push out of the lookup a holder the replica learns of only
+from another answer, before it is asked.
 
 The check runs outside the workers that read incoming datagrams (section 12),
 because the answers to its own lookup arrive through those workers. Run on a
 worker, 8 such STOREs at once left their lookups without answers.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant O as Owner
-    participant A as Attacker (reads the traffic)
-    participant E as Empty replica (just restarted)
-    participant H as Other replicas
-    O->>E: UPDATE(v2, auth = sign(v2, old key))
-    A-->>A: sees the UPDATE, signs a forged<br/>document for the same DID
-    E-->>O: refused: no record to verify the rotation against
-    A->>E: STORE(forged)
-    E->>H: FindHash(key)
-    H-->>E: hash(v1) or hash(v2)
-    E-->>A: Conflict: the network holds another record
-    O->>E: STORE(v2), fallback after the refusal
-    E->>H: FindHash(key)
-    H-->>E: hash(v2) from all: stored<br/>hash(v1) from one: Conflict (known gap)
-```
+![Sequence diagram of the race attack: a forged STORE races the owner's record to a restarted replica](docs/design/attack.png)
+
+*Source: [`docs/design/attack.mmd`](docs/design/attack.mmd).*
 
 ## 8. Reading (GET)
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant V as Reader
-    participant N as Nodes closest to the DID
-    alt the reader holds a valid local copy
-        Note over V: returned at once, no network
-    else
-        V->>N: FIND_VALUE(key), iterative
-        N-->>V: record, or closer nodes
-        Note over V: first record that passes DID binding<br/>and signature wins, no vote;<br/>a record that fails is discarded
-    end
-    Note over V: the application compares the public key<br/>with the hash in the Verifiable Credential
-```
+![Sequence diagram of a GET: local copy, or iterative FIND_VALUE until the first record that passes binding and signature](docs/design/get.png)
+
+*Source: [`docs/design/get.mmd`](docs/design/get.mmd).*
 
 A node that holds a valid copy returns it at once. Otherwise it runs the
 Kademlia value lookup and, as in Kademlia §2.3, stops at the first record that
@@ -373,24 +289,9 @@ public key with the hash in the Verifiable Credential.**
 
 ## 9. Key rotation (UPDATE)
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant O as Owner
-    participant R1 as Replica holding v1
-    participant R2 as Replica without the record
-    Note over O: v2 with new Dilithium and Kyber keys<br/>auth = sign(v2, secret key of v1)
-    O->>O: get the current record (v1), verify auth<br/>against it and the self-signature of v2
-    O->>R1: UPDATE(v2, auth)
-    Note over R1: auth valid under the key of the stored v1,<br/>v2 self-signed: replace v1
-    R1-->>O: ok
-    O->>R2: UPDATE(v2, auth)
-    R2-->>O: refused: nothing to verify against
-    O->>R2: STORE(v2)
-    Note over R2: STORE check: accepted only if<br/>the network holds v2 or nothing
-    R2-->>O: Stored or Conflict
-    Note over O: strict majority of the consistency group (alpha),<br/>then commit the local copy
-```
+![Sequence diagram of a key rotation: UPDATE to replicas holding v1, STORE to a replica without the record](docs/design/update.png)
+
+*Source: [`docs/design/update.mmd`](docs/design/update.mmd).*
 
 A rotation replaces the Dilithium and Kyber keys together and needs new VCs.
 The new record `v2` carries an authorization: `auth = sign(v2, secret key of
@@ -485,7 +386,8 @@ Trans-Atlantic), and an attacker that reads all the containers' traffic. Its
 modes are a forged STORE per UPDATE (`race`), many at once (`burst`), and
 forged records sent to every node all the time (`persist`). A measurement
 mode times publications and the moment other nodes can read the record. See
-`testbed/README.md` for the commands and the recorded results.
+`testbed/README.md` for the commands, and `EXPERIMENTS.md` for the experiments
+that validate the current code and their results.
 
 ## 15. References
 
