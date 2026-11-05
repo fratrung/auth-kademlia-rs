@@ -25,6 +25,7 @@ use tokio::sync::{oneshot, Mutex, Notify, RwLock, Semaphore};
 use tokio::task::JoinSet;
 
 use crate::auth_handler::SignatureVerifierHandler;
+use crate::counters::{CheckEnd, Counters};
 use crate::crawling::{FindPayload, RawResponse, SpiderProtocol, ValueSearch, ValueSpiderCrawl};
 use crate::fragmentation::{
     encode_fragments, parse_fragment, ReassemblyEntry, ReassemblyMap, FRAG_CHUNK_SIZE,
@@ -415,6 +416,8 @@ pub struct KademliaProtocol {
     round_trips: RoundTrips,
     /// Requests carrying a record being handled (`InProgress`).
     requests_in_progress: Arc<DashMap<RequestKey, ()>>,
+    /// What this node sent (feature `counters`; empty without it).
+    counters: Counters,
     next_msg_id: AtomicU32,
     next_frag_id: AtomicU32,
     reassembly: ReassemblyMap,
@@ -453,6 +456,7 @@ impl KademliaProtocol {
             pending: Arc::new(Mutex::new(HashMap::new())),
             round_trips: RoundTrips::default(),
             requests_in_progress: Arc::new(DashMap::new()),
+            counters: Counters::default(),
             next_msg_id: AtomicU32::new(0),
             next_frag_id: AtomicU32::new(0),
             reassembly: Arc::new(Mutex::new(HashMap::new())),
@@ -656,14 +660,20 @@ impl KademliaProtocol {
         Some(datagrams)
     }
 
-    /// Send the datagrams of one frame. Returns false if any fails to be
-    /// transmitted.
-    async fn send_datagrams(&self, addr: SocketAddr, datagrams: &[Vec<u8>]) -> bool {
+    /// Send the datagrams of one frame, a message of type `kind`. Returns
+    /// false if any fails to be transmitted.
+    async fn send_datagrams(
+        &self,
+        addr: SocketAddr,
+        kind: &'static str,
+        datagrams: &[Vec<u8>],
+    ) -> bool {
         for dg in datagrams {
             if let Err(e) = self.socket.send_to(dg, addr).await {
                 log::warn!("UDP send to {} failed: {}", addr, e);
                 return false;
             }
+            self.counters.sent(kind, dg.len());
         }
         true
     }
@@ -672,7 +682,10 @@ impl KademliaProtocol {
     /// fragment fails to be transmitted.
     async fn send_frame(&self, addr: SocketAddr, frame: &Frame) -> bool {
         match self.encode_frame(addr, frame) {
-            Some(datagrams) => self.send_datagrams(addr, &datagrams).await,
+            Some(datagrams) => {
+                self.send_datagrams(addr, rpc_message_name(&frame.message), &datagrams)
+                    .await
+            }
             None => false,
         }
     }
@@ -697,6 +710,7 @@ impl KademliaProtocol {
         // The answer to a request carrying a record comes after the record is
         // handled, so it does not measure the round trip; its receipt does.
         let answer_measures = carried_record(&frame.message).is_none();
+        let kind = rpc_message_name(&frame.message);
         let datagrams = self.encode_frame(addr, &frame)?;
 
         let (reply, mut answer) = oneshot::channel();
@@ -717,9 +731,10 @@ impl KademliaProtocol {
 
         let first_sent = tokio::time::Instant::now();
         let deadline = first_sent + RPC_TIMEOUT;
-        if !self.send_datagrams(addr, &datagrams).await {
+        if !self.send_datagrams(addr, kind, &datagrams).await {
             return None;
         }
+        let measured = self.round_trips.is_measured(addr);
         let mut wait = self.round_trips.resend_after(addr);
         let mut next_send = first_sent + wait;
         let mut resends = 0;
@@ -767,7 +782,8 @@ impl KademliaProtocol {
                         resends,
                         MAX_RESENDS
                     );
-                    if !self.send_datagrams(addr, &datagrams).await {
+                    self.counters.resent(measured);
+                    if !self.send_datagrams(addr, kind, &datagrams).await {
                         return None;
                     }
                     wait *= 2;
@@ -1141,6 +1157,7 @@ impl KademliaProtocol {
                     sender_addr.0,
                     hex::encode(key)
                 );
+                self.counters.check(CheckEnd::Unbound, 0, Duration::ZERO);
                 return Some(StoreStatus::InvalidRecord);
             }
             match self.network_copy(key, &value).await {
@@ -1209,6 +1226,7 @@ impl KademliaProtocol {
     /// A hash cannot be verified, so a node answering with another one blocks
     /// the STORE; it could block it anyway by not answering.
     async fn network_copy(self: &Arc<Self>, key: [u8; ID_LEN], value: &[u8]) -> NetworkCopy {
+        let started = Instant::now();
         let target = Node::from_id(key);
         // Contacts known not to respond are left out, even as a last resort:
         // the answer to the sender cannot wait for them.
@@ -1231,6 +1249,8 @@ impl KademliaProtocol {
         // Nobody to ask, as for a node that has just restarted: it cannot know
         // what the network holds, which is not the same as knowing it is empty.
         if nearest.is_empty() {
+            self.counters
+                .check(CheckEnd::NobodyToAsk, 0, started.elapsed());
             return NetworkCopy::Unknown;
         }
         let deadline = tokio::time::Instant::now() + STORE_LOOKUP_TIMEOUT;
@@ -1251,11 +1271,19 @@ impl KademliaProtocol {
                 (found.as_slice() != own.as_slice()).then_some(found)
             })
             .await;
-        match search {
-            ValueSearch::Found(_) => NetworkCopy::Other,
-            ValueSearch::NotFound => NetworkCopy::NoneOrSame,
-            ValueSearch::Incomplete => NetworkCopy::Unknown,
-        }
+        let (copy, end) = match search {
+            ValueSearch::Found(_) => (NetworkCopy::Other, CheckEnd::Other),
+            ValueSearch::NotFound => (NetworkCopy::NoneOrSame, CheckEnd::NoneOrSame),
+            ValueSearch::Incomplete => (NetworkCopy::Unknown, CheckEnd::NoAnswer),
+        };
+        self.counters.check(end, crawl.rounds(), started.elapsed());
+        copy
+    }
+
+    /// What this node has sent since it started (feature `counters`).
+    #[cfg(feature = "counters")]
+    pub fn counters(&self) -> crate::counters::CounterSnapshot {
+        self.counters.snapshot()
     }
 
     pub async fn rpc_update(
@@ -2501,6 +2529,8 @@ mod tests {
             None
         );
         assert_eq!(protocol.storage.get(&[7; ID_LEN]), None);
+        #[cfg(feature = "counters")]
+        assert_eq!(protocol.counters().checks.nobody_to_ask, 1);
     }
 
     /// An empty replica refuses a record that does not belong to the key before
@@ -2538,6 +2568,60 @@ mod tests {
         );
         assert_eq!(handler.self_signed_calls.load(Ordering::Relaxed), 0);
         assert_eq!(protocol.storage.get(&[7; ID_LEN]), None);
+        #[cfg(feature = "counters")]
+        assert_eq!(protocol.counters().checks.unbound, 1);
+    }
+
+    /// The counters of a STORE check: the question and its copy, sent to a
+    /// peer never measured, the lookup's single round, and how it ended.
+    #[cfg(feature = "counters")]
+    #[tokio::test]
+    async fn counters_record_a_store_check_and_its_resend() {
+        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        serve(&protocol);
+        let (peer, contact) = raw_peer([5; ID_LEN]).await;
+        protocol.router.write().await.add_contact(contact);
+        let replica = Arc::clone(&protocol);
+        let store = tokio::spawn(async move {
+            replica
+                .rpc_store(
+                    [2; ID_LEN],
+                    ("127.0.0.1".to_string(), 9020),
+                    [7; ID_LEN],
+                    b"one".to_vec(),
+                )
+                .await
+        });
+
+        let (lost, _) = read_frame_of_kind(&peer, true).await;
+        let (again, from) = read_frame_of_kind(&peer, true).await;
+        assert_eq!(again.msg_id, lost.msg_id);
+        send_raw(
+            &peer,
+            from,
+            again.msg_id,
+            false,
+            RpcMessage::FindValueNodes { nodes: vec![] },
+        )
+        .await;
+        assert_eq!(store.await.unwrap(), Some(StoreStatus::Stored));
+
+        let counters = protocol.counters();
+        let find_hash = counters.sent["FindHash"];
+        assert_eq!(find_hash.datagrams, 2);
+        let question = Frame {
+            msg_id: lost.msg_id,
+            is_request: true,
+            message: lost.message,
+        };
+        let one_copy = encode_fragments(0, &bincode::serialize(&question).unwrap())[0].len();
+        assert_eq!(find_hash.bytes, 2 * one_copy as u64);
+        assert_eq!(counters.sent.len(), 1, "{:?}", counters.sent);
+        assert_eq!(counters.resends_to_unmeasured_peers, 1);
+        assert_eq!(counters.resends_to_measured_peers, 0);
+        assert_eq!(counters.checks.none_or_same, 1);
+        assert_eq!(counters.checks.rounds, vec![1, 0, 0, 0, 0]);
+        assert_eq!(counters.checks.duration_ms.iter().sum::<u64>(), 1);
     }
 
     /// Answer every request that reaches `socket` with `answer`, until no

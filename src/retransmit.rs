@@ -65,6 +65,11 @@ impl RoundTrips {
         wait.clamp(MIN_RESEND_AFTER, MAX_RESEND_AFTER)
     }
 
+    /// Whether `peer`'s round trip has been measured.
+    pub(crate) fn is_measured(&self, peer: SocketAddr) -> bool {
+        self.peers.contains_key(&peer)
+    }
+
     /// `peer` answered a request sent once after `sample`.
     pub(crate) fn record(&self, peer: SocketAddr, sample: Duration) {
         let now = Instant::now();

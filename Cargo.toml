@@ -37,7 +37,10 @@ default = []
 #   maturin build   --features python
 python = ["dep:pyo3", "pyo3/extension-module", "dep:pyo3-async-runtimes"]
 # Docker testbed binaries (testbed/): the node and the attacker. Off by default.
-testbed = ["dep:libc"]
+testbed = ["dep:libc", "counters"]
+# Count the datagrams and bytes a node sends, its resends and its STORE checks
+# (src/counters.rs). Off by default.
+counters = []
 
 [dependencies]
 # Async runtime

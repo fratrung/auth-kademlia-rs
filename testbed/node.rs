@@ -107,13 +107,14 @@ async fn handle(node: &Node, line: &str) -> Value {
             _ => json!({ "error": "usage: watch <did|uuid> <ms>" }),
         },
         "stats" => stats(node).await,
+        "counters" => counters(node).await,
         "storage" => storage(node).await,
         "routing" => routing(node).await,
         other => json!({
             "error": format!("unknown command '{other}'"),
             "commands": ["info", "new", "publish", "update", "discard", "forget",
-                         "get <did|uuid>", "watch <did|uuid> <ms>", "stats", "storage",
-                         "routing"],
+                         "get <did|uuid>", "watch <did|uuid> <ms>", "stats", "counters",
+                         "storage", "routing"],
         }),
     }
 }
@@ -366,6 +367,12 @@ async fn stats(node: &Node) -> Value {
         "records": stats.storage_records,
         "storage_bytes": stats.storage_bytes,
     })
+}
+
+/// What the node has sent since it started (`src/counters.rs`).
+async fn counters(node: &Node) -> Value {
+    let counters = node.server.read().await.counters();
+    json!({ "name": node.name, "counters": counters })
 }
 
 async fn storage(node: &Node) -> Value {

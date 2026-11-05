@@ -132,6 +132,8 @@ pub struct SpiderCrawl<P: SpiderProtocol> {
     /// Ask every uncontacted peer in each round, not `alpha`
     /// (`ValueSpiderCrawl::asking_everyone`).
     ask_everyone: bool,
+    /// Rounds that asked at least one peer.
+    rounds: usize,
 }
 
 impl<P: SpiderProtocol> SpiderCrawl<P> {
@@ -153,6 +155,7 @@ impl<P: SpiderProtocol> SpiderCrawl<P> {
             failed: HashSet::new(),
             skipped: HashSet::new(),
             ask_everyone: false,
+            rounds: 0,
         }
     }
 
@@ -247,6 +250,9 @@ impl<P: SpiderProtocol> SpiderCrawl<P> {
         for peer in &peers {
             self.nearest.mark_contacted(peer);
         }
+        if !peers.is_empty() {
+            self.rounds += 1;
+        }
         peers
     }
 }
@@ -305,6 +311,11 @@ impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
     pub fn asking_everyone(mut self) -> Self {
         self.base.ask_everyone = true;
         self
+    }
+
+    /// Rounds of this lookup so far that asked at least one peer.
+    pub fn rounds(&self) -> usize {
+        self.base.rounds
     }
 
     /// Run the lookup. Returns the found value and the k-closest nodes discovered.
@@ -371,7 +382,7 @@ impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
     /// Kademlia §2.3 halts a value lookup when a node returns the value. A
     /// rejected value is discarded and the lookup continues, so one bad replica
     /// cannot end a read. Requests still in flight are cancelled.
-    pub async fn find_first_valid<A, Fut>(self, accept: A) -> Option<Vec<u8>>
+    pub async fn find_first_valid<A, Fut>(mut self, accept: A) -> Option<Vec<u8>>
     where
         A: Fn(Vec<u8>) -> Fut,
         Fut: std::future::Future<Output = Option<Vec<u8>>>,
@@ -399,7 +410,7 @@ impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
     /// released, and the node would stop (futurelock, Oxide RFD 609). The
     /// requests still running when the lookup returns are aborted.
     pub async fn search<R, RFut, A, Fut>(
-        mut self,
+        &mut self,
         deadline: Option<tokio::time::Instant>,
         rpc: R,
         accept: A,
@@ -733,14 +744,14 @@ mod quorum_tests {
             });
             read_table_briefly(&table, 50).await;
 
-            let search = ValueSpiderCrawl::new(
+            let mut crawl = ValueSpiderCrawl::new(
                 protocol,
                 Node::from_id([0; ID_LEN]),
                 vec![writer, reporter],
                 20,
                 3,
-            )
-            .search(
+            );
+            let search = crawl.search(
                 None,
                 |protocol, peer, target| protocol.call_find_value(peer, target),
                 |_| async { None },
@@ -768,13 +779,13 @@ mod quorum_tests {
             read_table_briefly(&table, 1200).await;
             let deadline = tokio::time::Instant::now() + Duration::from_millis(1100);
 
-            let search =
-                ValueSpiderCrawl::new(protocol, Node::from_id([0; ID_LEN]), vec![writer], 20, 3)
-                    .search(
-                        Some(deadline),
-                        |protocol, peer, target| protocol.call_find_value(peer, target),
-                        |_| async { None },
-                    );
+            let mut crawl =
+                ValueSpiderCrawl::new(protocol, Node::from_id([0; ID_LEN]), vec![writer], 20, 3);
+            let search = crawl.search(
+                Some(deadline),
+                |protocol, peer, target| protocol.call_find_value(peer, target),
+                |_| async { None },
+            );
             let outcome = tokio::time::timeout(Duration::from_secs(3), search)
                 .await
                 .expect("the lookup is stuck on the routing table");

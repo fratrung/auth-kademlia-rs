@@ -1,4 +1,5 @@
 pub mod auth_handler;
+pub mod counters;
 pub mod crawling;
 pub mod crypto;
 pub mod fragmentation;

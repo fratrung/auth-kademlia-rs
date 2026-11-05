@@ -10,8 +10,9 @@ Modes:
 - **Attack** (`attack.py`), built on the interactive network: an attacker that
   reads the traffic and races updates with forged records.
 - **Measurement** (`measure.py`): publication time, and when other nodes can
-  read the record. Message and byte counters inside the library are not built
-  yet; traffic was measured from the host (see below).
+  read the record. With `--counters`, also what every node sent, read from the
+  library's counters (`src/counters.rs`, on in the testbed image). The traffic
+  tables below were measured from the host, before the counters existed.
 
 The testbed binaries (`testbed_node`, `testbed_attacker`) are built only with
 `--features testbed`, which the image enables; a normal build of the library
@@ -23,14 +24,17 @@ does not include them.
 - A Linux kernel with `sch_netem`. Containers get `NET_ADMIN` only to run `tc`
   on their own interface.
 - Python 3, standard library only.
-- Beyond about 30 nodes, a larger neighbour table on the host (see below).
+- Beyond about 30 nodes, a larger neighbour table and a longer receive backlog
+  on the host (see below).
 
 ### More than about 30 nodes on one machine
 
-Raise the host's neighbour table limits before `up`:
+Raise the host's neighbour table limits and its per-CPU receive backlog
+before `up`:
 
 ```
 sudo sysctl -w net.ipv4.neigh.default.gc_thresh1=4096 net.ipv4.neigh.default.gc_thresh2=16384 net.ipv4.neigh.default.gc_thresh3=32768
+sudo sysctl -w net.core.netdev_max_backlog=16384
 ```
 
 The values last until the next reboot. Why: to send a datagram to another
@@ -49,6 +53,23 @@ minutes. Their sends failed inside the kernel (`SndbufErrors` in
 `/proc/net/snmp` in the container), and the host's kernel log said
 `neighbour: arp_cache: neighbor table overflow!`. With the limits above, all
 127 nodes had contacts 1 s after start and no send failed.
+
+**The receive backlog.** A datagram from one container to another crosses two
+`veth` pairs and the bridge, all in the host's kernel. Each `veth` hands it to
+a per-CPU queue of at most `netdev_max_backlog` packets (1000 by default), and
+a packet arriving at a full queue is dropped. A broadcast, such as an ARP
+request, is copied to every port of the bridge, 127 packets at once. The drop
+is silent for the testbed: `tc` shows none, the containers' `RcvbufErrors`
+stay at 0; it shows in the second column of `/proc/net/softnet_stat` and as
+`tx_dropped` on the host side of the `veth`s (`ip -s link`). On 2026-11-04,
+127 nodes, WAN Europe without emulated loss: in 10 publications 34 of about
+27,000 datagrams sent never arrived, and the nodes sent requests again (59
+times); in 40 publications 99 of 792 STORE checks lasted 1 to 2 s. With
+16384, 10 publications lost none (27,987 sent, 27,987 received), no check
+lasted more than 200 ms, and no request to a peer never measured was sent
+again. A
+real deployment does not have this queue shared by every node. Runs before
+that date may contain such drops.
 
 ## Quick start
 
@@ -303,6 +324,26 @@ It prints the publication time, the time until the first watcher reads the
 record (counted from the start of the publication; containers share the host
 clock), the reads that found it right after, and the remote read time. The
 rounds are saved in `.generated/publish-*.json`.
+
+```
+testbed/measure.py publish --rounds 20 --watchers 0 --counters
+```
+
+`--counters` reads every node's counters (`ctl <node> counters`) right before
+the publication, 0.3 s after it (`--settle`), and after the reads that follow.
+It prints, as medians per publication, the datagrams and bytes all nodes sent
+by message type; over all rounds, the resends to peers whose round trip was
+measured or not, and the STORE checks by outcome, lookup rounds and duration;
+and the mean traffic of a remote read (a node with a local copy sends
+nothing). Reading the counters runs `docker exec` in every container, which
+loads the host: time publications without `--counters`. Bytes are UDP payloads,
+KADF header included, without IP, UDP and Ethernet headers. Watchers' reads are
+counted too, so `--watchers 0` counts the publication alone.
+
+The results below come before two changes to the check: the DID binding is
+checked before asking the network (`e383d17`), and a replica asks all the
+nodes it knows at once instead of three at a time (`fc79016`). They have not
+been measured again yet.
 
 Results on 2026-11-03, 30 nodes, k=5, alpha=3:
 

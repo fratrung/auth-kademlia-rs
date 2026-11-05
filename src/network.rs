@@ -843,6 +843,13 @@ impl Server {
         }
     }
 
+    /// What this node has sent since it started listening (feature
+    /// `counters`), or `None` before `listen`. See `src/counters.rs`.
+    #[cfg(feature = "counters")]
+    pub fn counters(&self) -> Option<crate::counters::CounterSnapshot> {
+        self.protocol.as_ref().map(|protocol| protocol.counters())
+    }
+
     /// Persist node state (ksize, alpha, id, neighbours) to a JSON file.
     pub async fn save_state(&self, fname: &str) {
         let neighbors = self.bootstrappable_neighbors().await;

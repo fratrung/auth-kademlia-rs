@@ -19,6 +19,7 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
 cargo test                           # all 253 tests
+cargo test --features counters       # 256: also the counters' own tests
 cargo test <name>                    # single test, e.g. test_update_did_record_key_rotation
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -82,6 +83,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/signature_cache.rs` | `SignatureCache` — moka bounded cache (SHA-256 key, TTL 1 h, 4096 entries) for Dilithium verification results |
 | `src/fragmentation.rs` | KADF fragmentation + reassembly (`encode_fragments`, `parse_fragment`, `ReassemblyMap`) |
 | `src/retransmit.rs` | When to send a request again: per-peer round-trip estimate (`RoundTrips`, RFC 6298), `MAX_RESENDS`, bounds of the wait |
+| `src/counters.rs` | Datagrams, bytes, resends and STORE checks counted for measurements (feature `counters`, off by default; empty without it) |
 | `src/auth_handler.rs` | `SignatureVerifierHandler` trait + `DIDSignatureVerifierHandler` (DID record verification) |
 | `src/crypto/signature_verifier.rs` | `SignatureVerifier` trait, `resolve_alg_and_length()`, algorithm registry |
 | `src/crypto/factory.rs` | `SignatureVerifierFactory` + `SignerFactory` — dispatch by algorithm string |
@@ -372,14 +374,34 @@ testbed/testbed.py down
 ```
 The binaries are built only with `--features testbed` (the image enables it).
 Beyond about 30 nodes the host's neighbour table limit (`gc_thresh3`, 1024 by
-default, shared by all containers) must be raised first, or nodes cannot send:
-see "More than about 30 nodes on one machine" in `testbed/README.md`.
+default, shared by all containers) must be raised first, or nodes cannot send,
+and so must the per-CPU receive backlog (`net.core.netdev_max_backlog`, 1000 by
+default), or the host drops datagrams silently even without emulated loss: see
+"More than about 30 nodes on one machine" in `testbed/README.md`.
 `testbed/attack.py` adds an attacker that reads the traffic and sends forged
 records: `start --mode race|burst|persist`, then the `race` or `restart`
 scenario. `testbed/measure.py publish` measures publication time and when
 other nodes can read the record (`ctl <node> new`, `ctl <node> watch`). See
-`testbed/README.md`. Message and byte counters inside the library are not built
-yet: they need a Cargo feature that is off by default.
+`testbed/README.md`. With `--counters` it also reads every node's counters
+(`ctl <node> counters`) before and after each publication.
+
+`EXPERIMENTS.md` holds the experiments that validate the current code
+(latency, traffic, check, attacks) with their setup and results; rerun and
+update it when a change affects them. `testbed/README.md` keeps the commands
+and the measurements that led to fixes.
+
+### Counters (`src/counters.rs`, feature `counters`)
+Off by default; the `testbed` feature turns them on. Without the feature
+`Counters` is an empty struct and its methods do nothing. They count, per node:
+datagrams and bytes sent by message type (in `send_datagrams`, so first copies
+and resends together, KADF header included); resends, split by whether the
+peer's round trip was measured when the request was first sent; and the STORE
+checks of empty replicas, by outcome (`unbound`, `nobody_to_ask`,
+`none_or_same`, `other`, `no_answer`), lookup rounds and duration.
+`KademliaProtocol::counters` and `Server::counters` return a
+`CounterSnapshot`; counters only grow, so a measurement is the difference of
+two snapshots. Keep `MESSAGE_TYPES` in step with `rpc_message_name` when adding
+a message type: an unknown name is not counted.
 
 ### Resilience / attack test (`resilience/docker-compose.yaml`)
 ```
@@ -390,6 +412,17 @@ DURATION_SECS=300 CONCURRENCY=40 docker compose up --build   # custom intensity
 Node A (victim) pre-seeds 5 records; Node B (attacker) floods with valid/invalid
 SETs and GETs. Final report shows timeout rate and security verdict.
 See `resilience/README.md` for full details.
+
+## Diagrams (`docs/design/`)
+`DESIGN.md` shows each diagram as a PNG next to its Mermaid source (`*.mmd`),
+because the GitHub mobile app does not draw Mermaid blocks. Edit the `.mmd`,
+then draw it again with mermaid-cli and commit both:
+```
+cd docs/design && mmdc -i store-check.mmd -o store-check.png -b white -s 2 -w 1000
+```
+On Ubuntu 23.10+ headless Chrome needs `-p` with a puppeteer config holding
+`{"args": ["--no-sandbox"]}`. In a sequence diagram a `;` ends the statement,
+so do not use it inside a note or a message.
 
 ## Adding a new crypto algorithm
 1. Implement `SignatureVerifier` (and optionally `Signer`) in `src/crypto/<alg>.rs`.
