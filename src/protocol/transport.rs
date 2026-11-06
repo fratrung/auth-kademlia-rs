@@ -12,21 +12,18 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
+use tokio::sync::{oneshot, Mutex, Notify};
 
+use crate::fragmentation::{
+    accept_fragment, encode_fragments, parse_fragment, FRAG_CHUNK_SIZE, MAX_MESSAGE_SIZE,
+    REASSEMBLY_GC_INTERVAL, REASSEMBLY_TTL,
+};
+use crate::node::Node;
 use crate::protocol::messages::{
     carried_record, record_hash, rpc_message_name, ExpectedResponse, Frame, RpcMessage,
     RECORD_HASH_LEN,
 };
-use tokio::sync::{oneshot, Mutex, Notify};
-
 use crate::protocol::store_check::{StoreLookupSlot, MAX_STORE_LOOKUPS};
-
-use crate::fragmentation::{
-    encode_fragments, parse_fragment, ReassemblyEntry, FRAG_CHUNK_SIZE, MAX_MESSAGE_SIZE,
-    MAX_REASSEMBLY_ENTRIES, MAX_REASSEMBLY_ENTRIES_PER_PEER, REASSEMBLY_GC_INTERVAL,
-    REASSEMBLY_TTL,
-};
-use crate::node::Node;
 use crate::retransmit::MAX_RESENDS;
 
 use super::KademliaProtocol;
@@ -323,84 +320,9 @@ impl KademliaProtocol {
 
             self.gc_reassembly().await;
 
-            let key = (peer, header.frag_id);
-            let mut map = self.reassembly.lock().await;
-            if !map.contains_key(&key) {
-                if map.len() >= MAX_REASSEMBLY_ENTRIES {
-                    log::warn!("Discarded fragment from {}: reassembly map is full", peer);
-                    return;
-                }
-                let peer_entries = map
-                    .keys()
-                    .filter(|(entry_peer, _)| *entry_peer == peer)
-                    .count();
-                if peer_entries >= MAX_REASSEMBLY_ENTRIES_PER_PEER {
-                    log::warn!(
-                        "Discarded fragment from {}: per-peer reassembly limit reached",
-                        peer
-                    );
-                    return;
-                }
-                map.insert(key, ReassemblyEntry::new(header.total));
-            }
-
-            let expected_total = match map.get(&key) {
-                Some(entry) => entry.total,
-                None => {
-                    log::warn!(
-                        "Discarded fragment from {}: reassembly entry disappeared",
-                        peer
-                    );
-                    return;
-                }
-            };
-            if expected_total != header.total {
-                map.remove(&key);
-                log::warn!(
-                    "Inconsistent total for frag_id={} from {} (got {}, expected {})",
-                    header.frag_id,
-                    peer,
-                    header.total,
-                    expected_total
-                );
-                return;
-            }
-
-            let complete = match map.get_mut(&key) {
-                Some(entry) => entry.insert(header.index, chunk.to_vec()),
-                None => {
-                    log::warn!(
-                        "Discarded fragment from {}: reassembly entry disappeared",
-                        peer
-                    );
-                    return;
-                }
-            };
-            if !complete {
-                return;
-            }
-
-            let entry = match map.remove(&key) {
-                Some(entry) => entry,
-                None => {
-                    log::warn!(
-                        "Discarded complete message from {}: reassembly entry disappeared",
-                        peer
-                    );
-                    return;
-                }
-            };
-            drop(map);
-            match entry.assemble() {
-                Some(p) => p,
-                None => {
-                    log::warn!(
-                        "Assembly failed for frag_id={} from {}",
-                        header.frag_id,
-                        peer
-                    );
-                    return;
-                }
+            match accept_fragment(&self.reassembly, peer, &header, chunk).await {
+                Some(payload) => payload,
+                None => return,
             }
         };
 
@@ -546,6 +468,7 @@ mod tests {
 
     use tokio::time::timeout;
 
+    use crate::fragmentation::MAX_REASSEMBLY_ENTRIES;
     use crate::protocol::messages::{ExpectedResponse, Frame, RpcMessage, StoreStatus};
     use crate::protocol::test_support::*;
     use crate::utils::ID_LEN;

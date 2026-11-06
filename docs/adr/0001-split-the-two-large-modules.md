@@ -136,8 +136,10 @@ one: same code lines, same test names, all the checks.
    It is security code, so its commit does nothing else; `crypto_tests`,
    `quorum_tests` and the cache tests check it.
 5. Repeated code: the reassembly moves from `handle_datagram` to
-   `fragmentation.rs`; the address parse (`format!("{}:{}").parse()`, seven
-   times) and the set-up of a lookup (nine times) get one helper each.
+   `fragmentation.rs` (`accept_fragment`); the address parse
+   (`format!("{}:{}").parse()`, seven times) gets one helper. The set-up of a
+   lookup, repeated nine times, stays: the copies differ in what they do with
+   an empty list of neighbours, so one helper would change behaviour.
 6. Dead code and documents: unused public items are removed (`gather_dict`,
    `shared_prefix`, `bytes_to_bit_string` in `utils.rs`, `Node::random`,
    `KademliaProtocol::welcome_if_new`; the crate is not on crates.io, checked

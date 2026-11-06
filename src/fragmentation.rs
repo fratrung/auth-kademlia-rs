@@ -148,6 +148,97 @@ pub fn parse_fragment(data: &[u8]) -> Option<(FragHeader, &[u8])> {
     ))
 }
 
+/// Add one fragment of a message from `peer`, and return the message once its
+/// last fragment has arrived. `None` while fragments are missing, or when the
+/// fragment is discarded (and logged): the map is full, the peer already has
+/// `MAX_REASSEMBLY_ENTRIES_PER_PEER` messages in reassembly, or the fragment's
+/// total differs from the first fragment's, which drops the whole message.
+/// The lock on the map is released before the message is assembled.
+pub(crate) async fn accept_fragment(
+    reassembly: &ReassemblyMap,
+    peer: SocketAddr,
+    header: &FragHeader,
+    chunk: &[u8],
+) -> Option<Vec<u8>> {
+    let key = (peer, header.frag_id);
+    let mut map = reassembly.lock().await;
+    if !map.contains_key(&key) {
+        if map.len() >= MAX_REASSEMBLY_ENTRIES {
+            log::warn!("Discarded fragment from {}: reassembly map is full", peer);
+            return None;
+        }
+        let peer_entries = map
+            .keys()
+            .filter(|(entry_peer, _)| *entry_peer == peer)
+            .count();
+        if peer_entries >= MAX_REASSEMBLY_ENTRIES_PER_PEER {
+            log::warn!(
+                "Discarded fragment from {}: per-peer reassembly limit reached",
+                peer
+            );
+            return None;
+        }
+        map.insert(key, ReassemblyEntry::new(header.total));
+    }
+
+    let expected_total = match map.get(&key) {
+        Some(entry) => entry.total,
+        None => {
+            log::warn!(
+                "Discarded fragment from {}: reassembly entry disappeared",
+                peer
+            );
+            return None;
+        }
+    };
+    if expected_total != header.total {
+        map.remove(&key);
+        log::warn!(
+            "Inconsistent total for frag_id={} from {} (got {}, expected {})",
+            header.frag_id,
+            peer,
+            header.total,
+            expected_total
+        );
+        return None;
+    }
+
+    let complete = match map.get_mut(&key) {
+        Some(entry) => entry.insert(header.index, chunk.to_vec()),
+        None => {
+            log::warn!(
+                "Discarded fragment from {}: reassembly entry disappeared",
+                peer
+            );
+            return None;
+        }
+    };
+    if !complete {
+        return None;
+    }
+
+    let entry = match map.remove(&key) {
+        Some(entry) => entry,
+        None => {
+            log::warn!(
+                "Discarded complete message from {}: reassembly entry disappeared",
+                peer
+            );
+            return None;
+        }
+    };
+    drop(map);
+    let payload = entry.assemble();
+    if payload.is_none() {
+        log::warn!(
+            "Assembly failed for frag_id={} from {}",
+            header.frag_id,
+            peer
+        );
+    }
+    payload
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

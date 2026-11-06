@@ -17,13 +17,8 @@ use super::KademliaProtocol;
 #[async_trait]
 impl SpiderProtocol for KademliaProtocol {
     async fn call_find_node(self: Arc<Self>, peer: Node, target: Node) -> RawResponse {
-        let addr = match peer.address() {
-            Some(a) => a,
-            None => return RawResponse(false, FindPayload::Empty),
-        };
-        let sock_addr: SocketAddr = match format!("{}:{}", addr.0, addr.1).parse() {
-            Ok(a) => a,
-            Err(_) => return RawResponse(false, FindPayload::Empty),
+        let Some(sock_addr) = socket_addr_of(&peer) else {
+            return RawResponse(false, FindPayload::Empty);
         };
         match self
             .call(
@@ -84,9 +79,8 @@ impl SpiderProtocol for KademliaProtocol {
 
 impl KademliaProtocol {
     pub async fn call_ping_addr(&self, addr: &(String, u16)) -> (bool, Vec<u8>) {
-        let sock_addr: SocketAddr = match format!("{}:{}", addr.0, addr.1).parse() {
-            Ok(a) => a,
-            Err(_) => return (false, vec![]),
+        let Some(sock_addr) = socket_addr(addr) else {
+            return (false, vec![]);
         };
         let resp = self
             .call(
@@ -108,8 +102,7 @@ impl KademliaProtocol {
         key: [u8; ID_LEN],
         value: Vec<u8>,
     ) -> Option<StoreStatus> {
-        let addr = peer.address()?;
-        let sock_addr: SocketAddr = format!("{}:{}", addr.0, addr.1).parse().ok()?;
+        let sock_addr = socket_addr_of(peer)?;
         match self
             .call(
                 sock_addr,
@@ -154,8 +147,7 @@ impl KademliaProtocol {
         value: Vec<u8>,
         auth_signature: Vec<u8>,
     ) -> Option<bool> {
-        let addr = peer.address()?;
-        let sock_addr: SocketAddr = format!("{}:{}", addr.0, addr.1).parse().ok()?;
+        let sock_addr = socket_addr_of(peer)?;
         match self
             .call(
                 sock_addr,
@@ -186,13 +178,8 @@ impl KademliaProtocol {
         key: [u8; ID_LEN],
         value: Vec<u8>,
     ) -> bool {
-        let addr = match peer.address() {
-            Some(a) => a,
-            None => return false,
-        };
-        let sock_addr: SocketAddr = match format!("{}:{}", addr.0, addr.1).parse() {
-            Ok(a) => a,
-            Err(_) => return false,
+        let Some(sock_addr) = socket_addr_of(peer) else {
+            return false;
         };
         match self
             .call(
@@ -220,13 +207,8 @@ impl KademliaProtocol {
     /// Notify `peer` of this node's departure. `Leave` has no response, so
     /// delivery is best-effort and there is nothing to wait for.
     pub async fn call_leave_rpc(&self, peer: &Node) {
-        let addr = match peer.address() {
-            Some(a) => a,
-            None => return,
-        };
-        let sock_addr: SocketAddr = match format!("{}:{}", addr.0, addr.1).parse() {
-            Ok(a) => a,
-            Err(_) => return,
+        let Some(sock_addr) = socket_addr_of(peer) else {
+            return;
         };
         let frame = Frame {
             msg_id: self.next_id(),
@@ -251,13 +233,8 @@ impl KademliaProtocol {
 
     /// Send a `FindValue` or `FindHash` request and translate the answer.
     async fn call_find(self: Arc<Self>, peer: Node, request: RpcMessage) -> RawResponse {
-        let addr = match peer.address() {
-            Some(a) => a,
-            None => return RawResponse(false, FindPayload::Empty),
-        };
-        let sock_addr: SocketAddr = match format!("{}:{}", addr.0, addr.1).parse() {
-            Ok(a) => a,
-            Err(_) => return RawResponse(false, FindPayload::Empty),
+        let Some(sock_addr) = socket_addr_of(&peer) else {
+            return RawResponse(false, FindPayload::Empty);
         };
         match self.call(sock_addr, request).await {
             Some(RpcMessage::FindValueHit { value }) => {
@@ -283,4 +260,15 @@ impl KademliaProtocol {
             }
         }
     }
+}
+
+/// The socket address of `addr`. `None` if its IP does not parse.
+fn socket_addr(addr: &(String, u16)) -> Option<SocketAddr> {
+    format!("{}:{}", addr.0, addr.1).parse().ok()
+}
+
+/// The socket address of `peer`. `None` for a node without an address (a
+/// target in the key space), or one whose IP does not parse.
+fn socket_addr_of(peer: &Node) -> Option<SocketAddr> {
+    socket_addr(&peer.address()?)
 }

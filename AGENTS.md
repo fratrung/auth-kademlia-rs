@@ -93,7 +93,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `find_neighbors` returns the exact local top-k across known primary contacts, skipping failing ones (see Concurrency model); `touch_last_updated()` is called only for the bucket containing the lookup target — bucket staleness reflects lookup activity, not node additions |
 | `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day TTL and configurable byte budget (default 512 MiB), with lazy expiry on read |
 | `src/signature_cache.rs` | `SignatureCache` — moka bounded cache (SHA-256 key, TTL 1 h, 4096 entries) for Dilithium verification results |
-| `src/fragmentation.rs` | KADF fragmentation + reassembly (`encode_fragments`, `parse_fragment`, `ReassemblyMap`) |
+| `src/fragmentation.rs` | KADF fragmentation + reassembly (`encode_fragments`, `parse_fragment`, `accept_fragment`, `ReassemblyMap`) |
 | `src/retransmit.rs` | When to send a request again: per-peer round-trip estimate (`RoundTrips`, RFC 6298), `MAX_RESENDS`, bounds of the wait |
 | `src/counters.rs` | Datagrams, bytes, resends and STORE checks counted for measurements (feature `counters`, off by default; empty without it) |
 | `src/auth_handler.rs` | `SignatureVerifierHandler` trait + `DIDSignatureVerifierHandler` (DID record verification); `verify_record`, `verify_rotation`, `verify_issuer_signed`: how a node runs it (binding first, signature cache, blocking thread), shared by protocol and network |
@@ -134,7 +134,7 @@ Total header: **12 bytes**. `frag_id` is unique per logical message per sender.
 `index` is 0-based; `total` is the number of fragments (≥ 1).
 Constants: `FRAG_CHUNK_SIZE=1400`, `FRAG_HEADER_LEN=12`,
 `MAX_MESSAGE_SIZE=256 KB`, `REASSEMBLY_TTL=10 s`.
-`handle_datagram()` in `src/protocol/transport.rs` reassembles transparently before deserialising.
+`handle_datagram()` in `src/protocol/transport.rs` reassembles transparently before deserialising (`accept_fragment`).
 Oversized messages (projected size > `MAX_MESSAGE_SIZE`) are discarded before
 entering the reassembly buffer to bound memory usage.
 
