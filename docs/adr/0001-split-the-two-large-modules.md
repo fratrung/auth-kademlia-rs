@@ -113,7 +113,8 @@ Rules for the split:
   (`cargo test -- --list`).
 - **Exhaustive matches.** Every `match` on `RpcMessage` lists all variants.
 - **Checks after every commit.**
-  - `cargo test`: 253 tests; `cargo test --features counters`: 256.
+  - `cargo test` and `cargo test --features counters` pass (253 and 256 tests
+    when this was decided).
   - `cargo clippy --all-targets`: no new warning.
   - `cargo fmt --check`.
   - `cargo build --features testbed` and `cargo check --features python`.
@@ -128,7 +129,9 @@ one: same code lines, same test names, all the checks.
 2. `network.rs` split into the files of `network/`.
 3. Messages: every `match` on `RpcMessage` lists all variants; a test ties
    `MESSAGE_TYPES` to `rpc_message_name`; `FindHash` gets its own handler,
-   which hashes the stored record without copying it.
+   `rpc_find_hash`, which the reservation and O3 will change. It answers as
+   today: what it costs (a copy of the record and a JSON parse per question)
+   is measured and changed with O3 and O5, not here.
 4. The verification of a record for a key, written once in `auth_handler.rs`.
    It is security code, so its commit does nothing else; `crypto_tests`,
    `quorum_tests` and the cache tests check it.

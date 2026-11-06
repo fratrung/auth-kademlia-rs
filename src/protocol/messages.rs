@@ -165,7 +165,17 @@ impl ExpectedResponse {
             RpcMessage::FindValue { .. } => Self::FindValueResult,
             RpcMessage::FindHash { .. } => Self::FindHashResult,
             RpcMessage::Leave { .. } => Self::NoResponse,
-            _ => Self::NoResponse,
+            // Answers are not requests; listed so that a new message type
+            // does not compile until its expected answer is chosen here.
+            RpcMessage::Pong { .. }
+            | RpcMessage::StoreResult { .. }
+            | RpcMessage::UpdateResult { .. }
+            | RpcMessage::UpdateStatusListResult { .. }
+            | RpcMessage::FindNodeResult { .. }
+            | RpcMessage::FindValueNodes { .. }
+            | RpcMessage::FindValueHit { .. }
+            | RpcMessage::FindHashHit { .. }
+            | RpcMessage::Received => Self::NoResponse,
         }
     }
 
@@ -241,6 +251,55 @@ pub(super) fn carried_record(message: &RpcMessage) -> Option<&[u8]> {
         RpcMessage::Store { value, .. }
         | RpcMessage::Update { value, .. }
         | RpcMessage::UpdateStatusList { value, .. } => Some(value),
-        _ => None,
+        RpcMessage::Ping { .. }
+        | RpcMessage::Pong { .. }
+        | RpcMessage::StoreResult { .. }
+        | RpcMessage::UpdateResult { .. }
+        | RpcMessage::UpdateStatusListResult { .. }
+        | RpcMessage::FindNode { .. }
+        | RpcMessage::FindNodeResult { .. }
+        | RpcMessage::FindValue { .. }
+        | RpcMessage::FindValueNodes { .. }
+        | RpcMessage::FindValueHit { .. }
+        | RpcMessage::Leave { .. }
+        | RpcMessage::FindHash { .. }
+        | RpcMessage::FindHashHit { .. }
+        | RpcMessage::Received => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::counters::MESSAGE_TYPES;
+
+    use super::*;
+
+    /// One message of each type, in the order of `RpcMessage`. bincode writes
+    /// a message as the index of its variant followed by its fields, and zero
+    /// bytes decode as the fields of any variant (zero ids, empty vectors,
+    /// `None`, the first `StoreStatus`). So this decodes every variant,
+    /// including one added later, and stops at the first index that is none.
+    fn one_message_of_each_type() -> Vec<RpcMessage> {
+        (0u32..)
+            .map_while(|index| {
+                let mut bytes = index.to_le_bytes().to_vec();
+                bytes.extend([0u8; 64]);
+                bincode::deserialize::<RpcMessage>(&bytes).ok()
+            })
+            .collect()
+    }
+
+    /// The counters count a datagram under `rpc_message_name`, and only the
+    /// names in `MESSAGE_TYPES`: a message type missing there is not counted.
+    #[test]
+    fn every_message_type_is_counted() {
+        let mut names: Vec<&str> = one_message_of_each_type()
+            .iter()
+            .map(rpc_message_name)
+            .collect();
+        names.sort_unstable();
+        let mut counted = MESSAGE_TYPES.to_vec();
+        counted.sort_unstable();
+        assert_eq!(names, counted);
     }
 }

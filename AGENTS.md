@@ -18,8 +18,8 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 253 tests
-cargo test --features counters       # 256: also the counters' own tests
+cargo test                           # all 254 tests
+cargo test --features counters       # 257: also the counters' own tests
 cargo test <name>                    # single test, e.g. test_update_did_record_key_rotation
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -276,7 +276,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/scenarios/worker_pool.rs` | 1 | 40-client burst, all responses delivered |
 | `tests/scenarios/crypto.rs` | 4 | End-to-end crypto invariants (tamper, injection, downgrade, revocation) |
 | `tests/quorum_tests.rs` | 19 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum, delayed UPDATE commit, retry of an applied UPDATE, UPDATE to replicas without the record, and the network check of a STORE to an empty replica |
-| `src/**` (inline) | 142 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
+| `src/**` (inline) | 143 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 
@@ -413,7 +413,10 @@ checks of empty replicas, by outcome (`unbound`, `nobody_to_ask`,
 `KademliaProtocol::counters` and `Server::counters` return a
 `CounterSnapshot`; counters only grow, so a measurement is the difference of
 two snapshots. Keep `MESSAGE_TYPES` in step with `rpc_message_name` when adding
-a message type: an unknown name is not counted.
+a message type: an unknown name is not counted. The test
+`every_message_type_is_counted` fails until they match, and every `match` on
+`RpcMessage` lists all variants, so a new one does not compile until each
+place handles it.
 
 ### Resilience / attack test (`resilience/docker-compose.yaml`)
 ```

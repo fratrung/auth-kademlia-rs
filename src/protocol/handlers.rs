@@ -77,21 +77,21 @@ impl KademliaProtocol {
                 })
             }
             RpcMessage::FindHash { sender_id, key } => {
-                let result = self.rpc_find_value(sender_id, sender_addr, key).await;
-                Some(match result {
-                    FindValueResult::Value(v) => RpcMessage::FindHashHit {
-                        hash: record_hash(&v),
-                    },
-                    FindValueResult::Nodes(ns) => RpcMessage::FindValueNodes {
-                        nodes: ns.iter().map(WireNode::from).collect(),
-                    },
-                })
+                Some(self.rpc_find_hash(sender_id, sender_addr, key).await)
             }
             RpcMessage::Leave { sender_id } => {
                 self.rpc_leave(sender_id, sender_addr).await;
                 None
             }
-            _ => {
+            RpcMessage::Pong { .. }
+            | RpcMessage::StoreResult { .. }
+            | RpcMessage::UpdateResult { .. }
+            | RpcMessage::UpdateStatusListResult { .. }
+            | RpcMessage::FindNodeResult { .. }
+            | RpcMessage::FindValueNodes { .. }
+            | RpcMessage::FindValueHit { .. }
+            | RpcMessage::FindHashHit { .. }
+            | RpcMessage::Received => {
                 log::warn!("Received unexpected message type");
                 None
             }
@@ -255,6 +255,25 @@ impl KademliaProtocol {
             .await
             .find_neighbors_to_advertise(&target, Some(&source));
         FindValueResult::Nodes(neighbors)
+    }
+
+    /// Answer `FindHash`: the SHA-256 of the record held for `key`
+    /// (`FindHashHit`), or else the nodes closest to it, as `rpc_find_value`
+    /// chooses them.
+    async fn rpc_find_hash(
+        self: &Arc<Self>,
+        sender_id: [u8; ID_LEN],
+        sender_addr: (String, u16),
+        key: [u8; ID_LEN],
+    ) -> RpcMessage {
+        match self.rpc_find_value(sender_id, sender_addr, key).await {
+            FindValueResult::Value(v) => RpcMessage::FindHashHit {
+                hash: record_hash(&v),
+            },
+            FindValueResult::Nodes(ns) => RpcMessage::FindValueNodes {
+                nodes: ns.iter().map(WireNode::from).collect(),
+            },
+        }
     }
 
     pub async fn rpc_leave(&self, sender_id: [u8; ID_LEN], sender_addr: (String, u16)) {
