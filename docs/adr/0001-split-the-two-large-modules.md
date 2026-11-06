@@ -73,13 +73,13 @@ src/
     welcome.rs          schedule_welcome_if_new, replicate_to, their bounds
     test_support.rs     helpers shared by the tests of protocol (cfg(test))
   network/
-    mod.rs              Server, SetReport and the other public types, new,
-                        listen, stop, bootstrap, Drop
-    publish.rs          set, set_detailed and their lookups
+    mod.rs              Server, new, listen, stop, bootstrap, Drop
+    publish.rs          set, set_detailed, their lookups, SetReport,
+                        SetOutcome
     read.rs             get
     update.rs           update, update_digest
-    maintenance.rs      refresh, republication, maintenance tick, stats,
-                        saved state
+    maintenance.rs      refresh, republication, maintenance tick, stats
+                        (ServerStats), saved state
   py_bindings.rs        unchanged
 ```
 

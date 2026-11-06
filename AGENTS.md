@@ -84,7 +84,11 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/protocol/contacts.rs` | Failing and returning contacts, pings of failing contacts, refresh ids |
 | `src/protocol/welcome.rs` | Nodes met through a message: inline routing insert, bounded replication queue |
 | `src/protocol/test_support.rs` | Helpers shared by the protocol tests |
-| `src/network.rs` | Public `Server` API: `set/get/update`, bootstrap, refresh and maintenance loops |
+| `src/network/mod.rs` | Public `Server` API: the struct, `new`, `listen`, `stop`, `bootstrap`; the other files of `network/` each hold one operation |
+| `src/network/publish.rs` | SET (`set`, `set_detailed`) and its report (`SetReport`, `SetOutcome`) |
+| `src/network/read.rs` | GET |
+| `src/network/update.rs` | UPDATE (`update`, `update_digest`) |
+| `src/network/maintenance.rs` | Refresh and republication, recovery tick, stats (`ServerStats`), saved state |
 | `src/crawling.rs` | Iterative lookup — `NodeSpiderCrawl` (find nodes) + `ValueSpiderCrawl` (find value; `search` with a deadline tells `NotFound` from `Incomplete`) |
 | `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `find_neighbors` returns the exact local top-k across known primary contacts, skipping failing ones (see Concurrency model); `touch_last_updated()` is called only for the bucket containing the lookup target — bucket staleness reflects lookup activity, not node additions |
 | `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day TTL and configurable byte budget (default 512 MiB), with lazy expiry on read |
