@@ -26,3 +26,6 @@ dht_robustness_issues.md
 
 # Testbed: generated compose file and configuration
 testbed/.generated/
+
+# Session resume notes (AGENTS.md), deleted at the start of the next session
+RESUME_BEFORE_COMPACT.md
