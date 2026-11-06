@@ -84,7 +84,8 @@ impl RPCFindResponse {
 /// This trait is implemented by `KademliaProtocol` and can be mocked in tests.
 #[async_trait::async_trait]
 pub trait SpiderProtocol: Send + Sync {
-    /// `Arc<Self>` receiver so implementations can spawn `welcome_if_new` tasks.
+    /// `Arc<Self>` receiver so implementations can start tasks
+    /// (`schedule_welcome_if_new`).
     async fn call_find_node(self: Arc<Self>, peer: Node, target: Node) -> RawResponse;
     async fn call_find_value(self: Arc<Self>, peer: Node, target: Node) -> RawResponse;
     async fn call_store(&self, peer: &Node, key: [u8; ID_LEN], value: Vec<u8>) -> bool;
@@ -590,7 +591,7 @@ impl<P: SpiderProtocol + 'static> NodeSpiderCrawl<P> {
 }
 
 #[cfg(test)]
-mod quorum_tests {
+mod tests {
     use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, Mutex};
 

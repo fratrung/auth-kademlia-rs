@@ -1,7 +1,7 @@
 //! Python bindings for the AuthKademlia DHT server.
 //!
 //! Exposes the high-level [`Server`] struct as a Python class named `Server`
-//! inside the `authkademlia_rs` module.
+//! inside the `authkademlia_py` module.
 //!
 //! # Build
 //! ```bash
@@ -337,7 +337,7 @@ impl PyServer {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             // Read lock: same rationale as set — Server::update takes &self and
-            // delegates all storage mutations to the internal RwLock<ForgetfulStorage>.
+            // the storage (a DashMap) synchronises its own writes.
             let s = inner.read().await;
             Ok(s.update(&key, value, auth_signature).await)
         })

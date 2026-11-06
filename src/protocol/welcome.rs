@@ -65,16 +65,6 @@ impl KademliaProtocol {
         });
     }
 
-    /// Add `node` to the routing table and replicate keys that belong to it
-    /// (Kademlia §2.5).
-    pub async fn welcome_if_new(self: &Arc<Self>, node: Node) {
-        if !self.router.read().await.is_new_node(&node) {
-            return;
-        }
-        self.add_contact(node.clone()).await;
-        self.replicate_to(&node).await;
-    }
-
     /// Send a node that just joined or just came back the records it should
     /// hold. Replication fires only when `new_node_close` AND `this_closest`
     /// are both true; `node` is left out of the neighbours it is compared

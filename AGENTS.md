@@ -18,8 +18,8 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 254 tests
-cargo test --features counters       # 257: also the counters' own tests
+cargo test                           # all 251 tests
+cargo test --features counters       # 254: also the counters' own tests
 cargo test <name>                    # single test, e.g. test_update_did_record_key_rotation
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -164,9 +164,9 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 - UDP receive loop dispatches via round-robin to `available_parallelism()` fixed workers, each with a dedicated `mpsc::channel(256)`. `try_send` is attempted on each worker in order; if all channels are full the receive loop awaits the base worker (backpressure without drops). Zero allocations per datagram beyond the payload copy.
 - Blocking thread pool (`spawn_blocking`) is bounded at the runtime level via `max_blocking_threads(available_parallelism())` in `scripts/dht_node.rs`. This caps concurrent Dilithium verifications to the number of physical cores, covering all call sites uniformly (`verify_for_key`, `verify_value`, `update`). `KademliaProtocol` carries no application-level semaphore.
 - `SignatureCache` is keyed on `SHA-256(record_bytes)`. TTL 1 h, capacity 4096 (moka TinyLFU). Eviction = cache miss = full re-verification (never a security bypass). On a cache miss the SHA-256 key is computed once via `compute_key()` and reused for both `get_by_key` and `insert_by_key` — never twice.
-- `welcome_if_new` replication uses two conditions (Kademlia §2.5, matches Python AuthKademlia): `new_node_close` (new node is XOR-closer than the farthest k-neighbor) AND `this_closest` (this node is closer than the nearest k-neighbor). Both must be true to replicate. The new node is already in the routing table when the scan runs, so `find_neighbors` excludes it from the comparisons.
+- The replication to a new node (`replicate_to`) uses two conditions (Kademlia §2.5, matches Python AuthKademlia): `new_node_close` (new node is XOR-closer than the farthest k-neighbor) AND `this_closest` (this node is closer than the nearest k-neighbor). Both must be true to replicate. The new node is already in the routing table when the scan runs, so `find_neighbors` excludes it from the comparisons.
 - `schedule_stats_log()` emits a `[stats]` log line every 60 s: routing table size and live contacts, storage record count, used/max storage bytes, and (when enabled) signature cache entries.
-- Every task that holds the protocol (receive loop, workers, refresh, maintenance, stats, save-state, `welcome_if_new`, LRU pings) must start through `KademliaProtocol::spawn_task`, never `tokio::spawn`; otherwise it keeps the socket bound after shutdown. The one exception is the requests of a value lookup (`ValueSpiderCrawl::search`), which run in a `JoinSet` owned by the lookup and are aborted when it returns or is dropped. `Server::stop` sends `Leave` without waiting for a reply, cancels those tasks, and returns once the socket is released, so `listen` can be called again. Dropping a `Server` cancels them too, without sending `Leave`.
+- Every task that holds the protocol (receive loop, workers, refresh, maintenance, stats, save-state, the replication to new nodes, LRU pings) must start through `KademliaProtocol::spawn_task`, never `tokio::spawn`; otherwise it keeps the socket bound after shutdown. The one exception is the requests of a value lookup (`ValueSpiderCrawl::search`), which run in a `JoinSet` owned by the lookup and are aborted when it returns or is dropped. `Server::stop` sends `Leave` without waiting for a reply, cancels those tasks, and returns once the socket is released, so `listen` can be called again. Dropping a `Server` cancels them too, without sending `Leave`.
 - **Unresponsive contacts** (Kademlia §4.1, unlike Python): a timeout calls `record_failure`, it does not remove the contact. Each failure sets a `retry_after` with exponential backoff (5 s to 300 s, plus jitter), and failures inside that window are not counted, so a burst of concurrent timeouts counts once. After `STALE_AFTER_FAILURES` (5) in a row a contact is stale: it is removed only if a replacement exists, otherwise it stays flagged, is not advertised (`find_neighbors_to_advertise`), and gives way to a new contact when its bucket is full. Any response clears the failures; a failing contact is cleared only from its registered endpoint, while a stale one also accepts a new endpoint. `find_neighbors` skips failing contacts while at least `read_quorum(alpha)` healthy ones remain, and uses stale ones last. `Leave` still removes the contact immediately.
 - **Recovery** (`schedule_maintenance`): a 1 s tick pings failing contacts whose backoff has elapsed, so user lookups do not pay for them. While no contact is live it also retries the addresses given to `bootstrap` (`seeds`), with backoff up to 60 s, and runs a self-lookup once reconnected. It does no network work while the table is healthy. A contact silent for at least `RETURNED_AFTER` goes through `welcome` when it comes back, so it receives the records it missed.
 - **Lookups and dead contacts** (Kademlia §2.3, §4.1): a lookup with a deadline (the STORE check) stops waiting at the deadline and marks the peers silent for at least `SILENT_AFTER` (1 s) as failing (`note_no_answer`), since their requests never reached a timeout; the STORE check also leaves failing contacts out entirely. A crawl never re-admits a peer that failed during it, and does not query a reported contact this node knows is failing (`SpiderProtocol::failing_among`), because other nodes that have not tried it keep reporting it. Initial peers are exempt, so `find_neighbors` can still use failing contacts as a last resort. The result holds only peers that responded, so no STORE goes to a dead peer. `set_detailed` counts the others in `unavailable_nodes`, not in `expected_replicas`: `Complete` means every node that responded holds the record. The first lookup after a peer dies still waits `RPC_TIMEOUT` (2.5 s) per round that contains a dead peer, because rounds wait for all their RPCs.
@@ -259,8 +259,9 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
   and collides ids.
 - `STATUS_LIST_KEY = digest("status-list")` uses issuer-node
   verification instead of DID-owner verification.
-- `issuer.bin` is read lazily; if absent, a `log::warn!` is emitted at startup
-  and only `STATUS_LIST_KEY` operations are affected (normal DID records are not).
+- `issuer.bin` is read lazily, on each issuer verification; if absent, only
+  `STATUS_LIST_KEY` operations fail (normal DID records are not affected).
+  `scripts/dht_node.rs` logs a warning at startup when the file is missing.
 
 ## Test suite structure
 | File | Count | Notes |
@@ -270,19 +271,20 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/routing_tests.rs` | 22 | Routing table unit tests |
 | `tests/storage_tests.rs` | 15 | `ForgetfulStorage` unit tests (includes `insert_if_absent` cases) |
 | `tests/dht_integration.rs` | 1 | Legacy 3-node end-to-end scenario |
-| `tests/scenarios/replication.rs` | 1 | welcome_if_new replication (3-node join) |
+| `tests/scenarios/replication.rs` | 1 | replication to a joining node (3-node join) |
 | `tests/scenarios/cache.rs` | 2 | SignatureCache hit-rate + false caching |
 | `tests/scenarios/churn.rs` | 1 | Publisher leaves, record survives for new joiner |
 | `tests/scenarios/worker_pool.rs` | 1 | 40-client burst, all responses delivered |
 | `tests/scenarios/crypto.rs` | 4 | End-to-end crypto invariants (tamper, injection, downgrade, revocation) |
 | `tests/quorum_tests.rs` | 19 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum, delayed UPDATE commit, retry of an applied UPDATE, UPDATE to replicas without the record, and the network check of a STORE to an empty replica |
-| `src/**` (inline) | 143 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
+| `src/**` (inline) | 140 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 
 ## Test port allocation (run in parallel — do not reuse)
 | Range | Test |
 |---|---|
+| 5678–5680 | legacy 3-node scenario (`tests/dht_integration.rs`) |
 | 15700–15701 | two-node bootstrap |
 | 15710–15711 | cross-node set/get |
 | 15720–15721 | idempotent SET retry + conflicting value rejection |
@@ -291,7 +293,7 @@ All tests are network-clean (loopback only) and run in parallel without interfer
 | 15760 | unreachable peer |
 | 15780–15781, 15885 | update rejected on invalid new-record self-signature (three replicas) |
 | 15782–15784 | update rejected when auth_sig uses wrong key |
-| 15787–15789 | scenario: welcome_if_new replication (A, B, C) |
+| 15787–15789 | scenario: replication to a joining node (A, B, C) |
 | 15790 | scenario: signature cache hit rate |
 | 15792–15795 | scenario: churn survivability (A seed, B publisher, C stays, D new joiner) |
 | 15800–15840 | scenario: worker pool burst (target + 40 clients) |
@@ -441,7 +443,7 @@ so do not use it inside a note or a message.
 
 ## Adding a new crypto algorithm
 1. Implement `SignatureVerifier` (and optionally `Signer`) in `src/crypto/<alg>.rs`.
-2. Register in `src/crypto/factory.rs` → `SignatureVerifierFactory::create()` and `SignerFactory::create()`.
+2. Register in `src/crypto/factory.rs` → `SignatureVerifierFactory::get_verifier()` and `SignerFactory::get_signer()`.
 3. Add the algorithm string + signature length to `resolve_alg_and_length()` in
    `src/crypto/signature_verifier.rs`.
 4. Add tests in `tests/crypto_tests.rs`.

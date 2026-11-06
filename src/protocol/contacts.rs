@@ -71,7 +71,7 @@ impl KademliaProtocol {
     ///
     /// A failure is counted, and the node is replaced once stale if a replacement
     /// is available (`record_failure`). On success the Pong response triggers
-    /// `welcome_if_new` in `handle_datagram`, refreshing the routing table.
+    /// `schedule_welcome_if_new` in `handle_datagram`, refreshing the routing table.
     pub async fn call_ping_node(self: &Arc<Self>, node: &Node) {
         let addr = match node.address() {
             Some(a) => a,
@@ -82,7 +82,7 @@ impl KademliaProtocol {
             log::warn!("ping: no response from {}", node);
             self.note_failure(node).await;
         }
-        // On success: Pong received in handle_datagram already calls welcome_if_new.
+        // On success: the Pong, in handle_datagram, already calls schedule_welcome_if_new.
     }
 
     /// Return a random ID for each lonely bucket, constrained to that bucket's

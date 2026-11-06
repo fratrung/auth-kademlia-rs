@@ -2,7 +2,7 @@
 //!
 //! Simulates the IoT scenario where the node that published a record restarts.
 //! The record must remain retrievable via the nodes that received it through
-//! `welcome_if_new` replication.
+//! replication to a new node (`schedule_welcome_if_new`).
 //!
 //! Topology:
 //!   A (seed, stays online)
@@ -34,7 +34,7 @@ fn record_survives_publisher_leaving_network() {
             .await;
         tokio::time::sleep(Duration::from_millis(400)).await;
 
-        // B publishes the record; welcome_if_new replicates to A and C.
+        // B publishes the record; schedule_welcome_if_new replicates to A and C.
         let (key, record) = make_record();
         assert_eq!(
             node_b.set(&key, record.clone()).await,
@@ -51,7 +51,7 @@ fn record_survives_publisher_leaving_network() {
         .await;
         assert!(
             replicated.is_some(),
-            "record must reach A via welcome_if_new before B leaves"
+            "record must reach A via the replication to new nodes before B leaves"
         );
 
         // B leaves the network.

@@ -42,14 +42,6 @@ impl Node {
         Self::new(id, None, None)
     }
 
-    /// Create a node with a random ID.
-    pub fn random() -> Self {
-        use rand::RngCore;
-        let mut id = [0u8; ID_LEN];
-        rand::thread_rng().fill_bytes(&mut id);
-        Self::from_id(id)
-    }
-
     /// Interpret a 20-byte ID as a big-endian 160-bit integer (held in a
     /// `U256`). No bits are discarded — the top 12 bytes of the `U256` are
     /// always zero, so the value lies in `[0, 2^160)`.
