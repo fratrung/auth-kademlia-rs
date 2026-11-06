@@ -75,7 +75,15 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 ## Module map
 | File | Role |
 |---|---|
-| `src/protocol.rs` | UDP transport, fragmentation, RPC dispatch (`rpc_store`, `rpc_update`, `rpc_find_node`, `rpc_find_value`) |
+| `src/protocol/mod.rs` | `KademliaProtocol`: the struct, its constructor and its tasks; the other files of `protocol/` each hold one part of its methods |
+| `src/protocol/messages.rs` | `RpcMessage` (the wire format: variants are encoded by position, so new ones go at the end), `Frame`, `ExpectedResponse` |
+| `src/protocol/transport.rs` | Sending and receiving: KADF fragments and reassembly, `call` with its resends, `handle_datagram`, `InProgress` |
+| `src/protocol/handlers.rs` | `dispatch_request` and the handlers of every request except STORE (`rpc_update`, `rpc_find_node`, `rpc_find_value`, ...); verification of a record for a key |
+| `src/protocol/store_check.rs` | `rpc_store` and the network check of an empty replica (`network_copy`) |
+| `src/protocol/client.rs` | Outgoing calls (`call_*`) and `SpiderProtocol`, the requests of the lookups |
+| `src/protocol/contacts.rs` | Failing and returning contacts, pings of failing contacts, refresh ids |
+| `src/protocol/welcome.rs` | Nodes met through a message: inline routing insert, bounded replication queue |
+| `src/protocol/test_support.rs` | Helpers shared by the protocol tests |
 | `src/network.rs` | Public `Server` API: `set/get/update`, bootstrap, refresh and maintenance loops |
 | `src/crawling.rs` | Iterative lookup — `NodeSpiderCrawl` (find nodes) + `ValueSpiderCrawl` (find value; `search` with a deadline tells `NotFound` from `Incomplete`) |
 | `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `find_neighbors` returns the exact local top-k across known primary contacts, skipping failing ones (see Concurrency model); `touch_last_updated()` is called only for the bucket containing the lookup target — bucket staleness reflects lookup activity, not node additions |
@@ -122,11 +130,11 @@ Total header: **12 bytes**. `frag_id` is unique per logical message per sender.
 `index` is 0-based; `total` is the number of fragments (≥ 1).
 Constants: `FRAG_CHUNK_SIZE=1400`, `FRAG_HEADER_LEN=12`,
 `MAX_MESSAGE_SIZE=256 KB`, `REASSEMBLY_TTL=10 s`.
-`handle_datagram()` in `protocol.rs` reassembles transparently before deserialising.
+`handle_datagram()` in `src/protocol/transport.rs` reassembles transparently before deserialising.
 Oversized messages (projected size > `MAX_MESSAGE_SIZE`) are discarded before
 entering the reassembly buffer to bound memory usage.
 
-## RPC message types (`src/protocol.rs`)
+## RPC message types (`src/protocol/messages.rs`)
 | Variant | Direction | Purpose |
 |---|---|---|
 | `Ping` / `Pong` | req/resp | Liveness check + node discovery |

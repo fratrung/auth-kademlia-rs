@@ -57,11 +57,12 @@ src/
                         written once, used by protocol and network
   crypto/               unchanged: algorithms only, no knowledge of DIDs
   protocol/
-    mod.rs              KademliaProtocol, new, tasks, shutdown, seeds, ids
+    mod.rs              KademliaProtocol, new, tasks, shutdown, seeds
     messages.rs         RpcMessage, StoreStatus, WireNode, record_hash, Frame,
                         ExpectedResponse, rpc_message_name, carried_record
-    transport.rs        encoding, sending, call with its resends,
-                        handle_datagram, answer, InProgress, PendingCall
+    transport.rs        message and fragment ids, encoding, sending, call
+                        with its resends, handle_datagram, answer,
+                        InProgress, PendingCall
     handlers.rs         dispatch_request; Ping, Update, UpdateStatusList,
                         FindNode, FindValue, FindHash, Leave
     store_check.rs      rpc_store, network_copy, StoreLookupSlot
@@ -119,32 +120,25 @@ Rules for the split:
 
 ## Steps
 
-One commit each, in this order.
+Six commits, each about one thing. A large move is checked as well as a small
+one: same code lines, same test names, all the checks.
 
-Structure, moves only:
-1. `git mv src/protocol.rs src/protocol/mod.rs`.
-2. One file of `protocol/` per commit: `messages`, `test_support`, `transport`,
-   `store_check`, `handlers`, `client`, `contacts`, `welcome`.
-3. `network.rs` the same way: `network/mod.rs`, then `publish`, `read`,
-   `update`, `maintenance`.
-
-Cleanups, each one change:
-4. Exhaustive matches on `RpcMessage`, and a test that ties `MESSAGE_TYPES` to
-   `rpc_message_name`.
-5. `rpc_find_hash`: `FindHash` gets its own handler, which hashes the stored
-   record without copying it.
-6. The verification of a record for a key, written once in `auth_handler.rs`.
+1. `protocol.rs` split into the files of `protocol/` (after a first commit that
+   only renames it to `protocol/mod.rs`, so that git follows the history).
+2. `network.rs` split into the files of `network/`.
+3. Messages: every `match` on `RpcMessage` lists all variants; a test ties
+   `MESSAGE_TYPES` to `rpc_message_name`; `FindHash` gets its own handler,
+   which hashes the stored record without copying it.
+4. The verification of a record for a key, written once in `auth_handler.rs`.
    It is security code, so its commit does nothing else; `crypto_tests`,
    `quorum_tests` and the cache tests check it.
-7. The reassembly moves from `handle_datagram` to `fragmentation.rs`.
-8. Unused public items are removed: `gather_dict`, `shared_prefix`,
-   `bytes_to_bit_string` (`utils.rs`), `Node::random`,
-   `KademliaProtocol::welcome_if_new`. The crate is not on crates.io
-   (checked 2026-11-06), so nobody outside this repository uses them.
-9. Repeated code: the address parse (`format!("{}:{}").parse()`, seven times)
-   and the set-up of a lookup (nine times) get one helper each.
-10. Comments and documents that name code that no longer exists, and the
-    module map in `AGENTS.md`.
+5. Repeated code: the reassembly moves from `handle_datagram` to
+   `fragmentation.rs`; the address parse (`format!("{}:{}").parse()`, seven
+   times) and the set-up of a lookup (nine times) get one helper each.
+6. Dead code and documents: unused public items are removed (`gather_dict`,
+   `shared_prefix`, `bytes_to_bit_string` in `utils.rs`, `Node::random`,
+   `KademliaProtocol::welcome_if_new`; the crate is not on crates.io, checked
+   2026-11-06); comments and documents that name code that no longer exists.
 
 Then ADR 0002.
 
