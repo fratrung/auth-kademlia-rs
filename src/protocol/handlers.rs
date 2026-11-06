@@ -7,9 +7,9 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use crate::auth_handler::{is_bound_to_key, verify_issuer_signed, verify_record, verify_rotation};
 use crate::node::Node;
 use crate::protocol::messages::{record_hash, RpcMessage, WireNode};
-use crate::signature_cache::{SignatureCache, VerificationDomain};
 use crate::storage::{IStorage, StorageWriteStatus};
 use crate::utils::{digest, ID_LEN, STATUS_LIST_KEY};
 
@@ -133,22 +133,14 @@ impl KademliaProtocol {
         if old_value == value {
             return true;
         }
-        let handler = Arc::clone(&self.signature_handler);
-        let v = value.clone();
-        let expected_key = key;
-        let ok = tokio::task::spawn_blocking(move || {
-            handler
-                .handle_key_binding_verification(&expected_key, &old_value)
-                .unwrap_or(false)
-                && handler
-                    .handle_key_binding_verification(&expected_key, &v)
-                    .unwrap_or(false)
-                && handler
-                    .handle_update_verification(&v, &old_value, &auth_signature)
-                    .unwrap_or(false)
-        })
-        .await
-        .unwrap_or(false);
+        let ok = verify_rotation(
+            &self.signature_handler,
+            &key,
+            &value,
+            &old_value,
+            &auth_signature,
+        )
+        .await;
         if !ok {
             log::error!(
                 "rpc_update: invalid or unauthorized update for {}",
@@ -189,15 +181,7 @@ impl KademliaProtocol {
             );
             return false;
         }
-        let handler = Arc::clone(&self.signature_handler);
-        let v = value.clone();
-        let ok = tokio::task::spawn_blocking(move || {
-            handler
-                .handle_issuer_node_signature_verification(&v)
-                .unwrap_or(false)
-        })
-        .await
-        .unwrap_or(false);
+        let ok = verify_issuer_signed(&self.signature_handler, &value).await;
         if !ok {
             log::error!("rpc_update_status_list: unauthenticated update");
             return false;
@@ -294,52 +278,20 @@ impl KademliaProtocol {
         }
     }
 
-    /// Verify `value` for `key`, using the signature cache to skip redundant
-    /// PQ crypto on repeated calls with the same record bytes.
+    /// Verify `value` for `key` (`auth_handler::verify_record`).
     pub(super) async fn verify_for_key(&self, key: &[u8; ID_LEN], value: &[u8]) -> bool {
-        let is_status = *key == digest(STATUS_LIST_KEY);
-        if !self.key_binding_is_valid(key, value) {
-            return false;
-        }
-        let domain = if is_status {
-            VerificationDomain::IssuerSigned
-        } else {
-            VerificationDomain::SelfSigned
-        };
-        let cache_key = self
-            .sig_cache
-            .as_ref()
-            .map(|_| SignatureCache::compute_key(domain, value));
-        if let (Some(cache), Some(ck)) = (&self.sig_cache, &cache_key) {
-            if let Some(cached) = cache.get_by_key(ck) {
-                return cached;
-            }
-        }
-        let handler = Arc::clone(&self.signature_handler);
-        let v = value.to_vec();
-        let result = tokio::task::spawn_blocking(move || {
-            if is_status {
-                handler
-                    .handle_issuer_node_signature_verification(&v)
-                    .unwrap_or(false)
-            } else {
-                handler.handle_signature_verification(&v).unwrap_or(false)
-            }
-        })
+        verify_record(
+            &self.signature_handler,
+            self.sig_cache.as_deref(),
+            key,
+            value,
+        )
         .await
-        .unwrap_or(false);
-        if let (Some(cache), Some(ck)) = (&self.sig_cache, cache_key) {
-            cache.insert_by_key(ck, result);
-        }
-        result
     }
 
+    /// Whether `value` belongs to `key` (`auth_handler::is_bound_to_key`).
     pub(super) fn key_binding_is_valid(&self, key: &[u8; ID_LEN], value: &[u8]) -> bool {
-        *key == digest(STATUS_LIST_KEY)
-            || self
-                .signature_handler
-                .handle_key_binding_verification(key, value)
-                .unwrap_or(false)
+        is_bound_to_key(self.signature_handler.as_ref(), key, value)
     }
 }
 
@@ -350,7 +302,7 @@ mod tests {
     use crate::fragmentation::FRAG_CHUNK_SIZE;
     use crate::protocol::messages::{record_hash, Frame, RpcMessage};
     use crate::protocol::test_support::*;
-    use crate::signature_cache::VerificationDomain;
+    use crate::signature_cache::{SignatureCache, VerificationDomain};
     use crate::storage::ForgetfulStorage;
 
     use super::*;

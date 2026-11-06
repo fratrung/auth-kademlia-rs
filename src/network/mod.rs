@@ -14,20 +14,19 @@ mod update;
 
 pub use maintenance::ServerStats;
 pub use publish::{SetOutcome, SetRejection, SetReport};
-use read::read_quorum;
-
 use std::sync::Arc;
 
+use read::read_quorum;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::error::TrySendError;
 
-use crate::auth_handler::SignatureVerifierHandler;
+use crate::auth_handler::{verify_record, SignatureVerifierHandler};
 use crate::crawling::NodeSpiderCrawl;
 use crate::node::Node;
 use crate::protocol::KademliaProtocol;
-use crate::signature_cache::{SignatureCache, VerificationDomain};
+use crate::signature_cache::SignatureCache;
 use crate::storage::{ForgetfulStorage, DEFAULT_TTL};
-use crate::utils::{digest, digest_bytes, ID_LEN, STATUS_LIST_KEY};
+use crate::utils::{digest, digest_bytes, ID_LEN};
 
 pub struct Server {
     pub ksize: usize,
@@ -226,50 +225,15 @@ impl Server {
         Some(Node::new(id, Some(addr.0), Some(addr.1)))
     }
 
+    /// Verify `value` for `key` (`auth_handler::verify_record`).
     async fn verify_value(&self, key: &str, value: &[u8]) -> bool {
-        let is_status = key == STATUS_LIST_KEY;
-        if !is_status
-            && !self
-                .signature_handler
-                .handle_key_binding_verification(&digest(key), value)
-                .unwrap_or(false)
-        {
-            return false;
-        }
-        let domain = if is_status {
-            VerificationDomain::IssuerSigned
-        } else {
-            VerificationDomain::SelfSigned
-        };
-        let cache_key = self
-            .sig_cache
-            .as_ref()
-            .map(|_| SignatureCache::compute_key(domain, value));
-        if let (Some(cache), Some(ck)) = (&self.sig_cache, &cache_key) {
-            if let Some(cached) = cache.get_by_key(ck) {
-                return cached;
-            }
-        }
-        let handler = Arc::clone(&self.signature_handler);
-        let v = value.to_vec();
-        let result = tokio::task::spawn_blocking(move || {
-            if is_status {
-                handler
-                    .handle_issuer_node_signature_verification(&v)
-                    .unwrap_or(false)
-            } else {
-                handler.handle_signature_verification(&v).unwrap_or(false)
-            }
-        })
+        verify_record(
+            &self.signature_handler,
+            self.sig_cache.as_deref(),
+            &digest(key),
+            value,
+        )
         .await
-        .unwrap_or(false);
-        if result && is_status {
-            log::info!("Status-list signature verified");
-        }
-        if let (Some(cache), Some(ck)) = (&self.sig_cache, cache_key) {
-            cache.insert_by_key(ck, result);
-        }
-        result
     }
 
     /// Return the addresses of known neighbours suitable for bootstrapping.

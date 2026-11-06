@@ -1,13 +1,16 @@
-/// Signature verification handlers for authenticated DHT operations.
-///
-/// `SignatureVerifierHandler` is the abstract interface consumed by the
-/// protocol and server layers. `DIDSignatureVerifierHandler` is the concrete
-/// implementation that understands the DID-document record format:
-///
-/// ```text
-/// | algorithm (12 bytes, null-padded) | signature | DID Document (JSON) |
-/// ```
+//! Verification of DID records.
+//!
+//! `SignatureVerifierHandler` is the rule, and it is pluggable:
+//! `DIDSignatureVerifierHandler` checks records in the DID-document format
+//! below. The functions after it are how a node runs the rule, shared by
+//! `protocol` and `network`: the binding to the key first, then the signature
+//! cache, then the signature on a blocking thread.
+//!
+//! ```text
+//! | algorithm (12 bytes, null-padded) | signature | DID Document (JSON) |
+//! ```
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::Value;
@@ -16,7 +19,8 @@ use uuid::Uuid;
 
 use crate::crypto::factory::SignatureVerifierFactory;
 use crate::crypto::signature_verifier::{resolve_alg_and_length, VerifierError};
-use crate::utils::{digest, ID_LEN};
+use crate::signature_cache::{SignatureCache, VerificationDomain};
+use crate::utils::{digest, ID_LEN, STATUS_LIST_KEY};
 
 #[derive(Debug, Error)]
 pub enum AuthHandlerError {
@@ -235,6 +239,117 @@ impl SignatureVerifierHandler for DIDSignatureVerifierHandler {
         let verifier = SignatureVerifierFactory::get_verifier(&alg)?;
         Ok(verifier.verify(&issuer_pub_key, signature, data)?)
     }
+}
+
+/// Whether `value` belongs to `key`: its DID Document names the DID whose UUID
+/// hashes to `key`. A JSON parse, no signature. The Status List is exempt: its
+/// key is fixed and its record is signed by the issuer.
+pub(crate) fn is_bound_to_key(
+    handler: &dyn SignatureVerifierHandler,
+    key: &[u8; ID_LEN],
+    value: &[u8],
+) -> bool {
+    *key == digest(STATUS_LIST_KEY)
+        || handler
+            .handle_key_binding_verification(key, value)
+            .unwrap_or(false)
+}
+
+/// Whether `value` is a valid record for `key`, as a node checks it before
+/// storing or returning it: bound to `key`, then signed with the key in its
+/// own DID Document, or by the issuer for the Status List.
+///
+/// The binding comes first, so a record of another key never reaches the
+/// cache. The result of the signature check is cached (`cache`, when enabled)
+/// under the SHA-256 of the record, in separate domains for self-signed and
+/// issuer-signed records. The signature runs on a blocking thread, so
+/// Dilithium does not stall the async workers.
+pub(crate) async fn verify_record(
+    handler: &Arc<dyn SignatureVerifierHandler>,
+    cache: Option<&SignatureCache>,
+    key: &[u8; ID_LEN],
+    value: &[u8],
+) -> bool {
+    let is_status = *key == digest(STATUS_LIST_KEY);
+    if !is_bound_to_key(handler.as_ref(), key, value) {
+        return false;
+    }
+    let domain = if is_status {
+        VerificationDomain::IssuerSigned
+    } else {
+        VerificationDomain::SelfSigned
+    };
+    let cache_key = cache.map(|_| SignatureCache::compute_key(domain, value));
+    if let (Some(cache), Some(ck)) = (cache, &cache_key) {
+        if let Some(cached) = cache.get_by_key(ck) {
+            return cached;
+        }
+    }
+    let handler = Arc::clone(handler);
+    let v = value.to_vec();
+    let result = tokio::task::spawn_blocking(move || {
+        if is_status {
+            handler
+                .handle_issuer_node_signature_verification(&v)
+                .unwrap_or(false)
+        } else {
+            handler.handle_signature_verification(&v).unwrap_or(false)
+        }
+    })
+    .await
+    .unwrap_or(false);
+    if result && is_status {
+        log::info!("Status-list signature verified");
+    }
+    if let (Some(cache), Some(ck)) = (cache, cache_key) {
+        cache.insert_by_key(ck, result);
+    }
+    result
+}
+
+/// Whether `new` may replace `old` for `key` (a key rotation): both are bound
+/// to `key`, `auth_signature` signs `new` with the key of `old`, and `new` is
+/// self-signed. Not cached. Runs on a blocking thread.
+pub(crate) async fn verify_rotation(
+    handler: &Arc<dyn SignatureVerifierHandler>,
+    key: &[u8; ID_LEN],
+    new: &[u8],
+    old: &[u8],
+    auth_signature: &[u8],
+) -> bool {
+    let handler = Arc::clone(handler);
+    let (key, new, old, auth_signature) =
+        (*key, new.to_vec(), old.to_vec(), auth_signature.to_vec());
+    tokio::task::spawn_blocking(move || {
+        handler
+            .handle_key_binding_verification(&key, &old)
+            .unwrap_or(false)
+            && handler
+                .handle_key_binding_verification(&key, &new)
+                .unwrap_or(false)
+            && handler
+                .handle_update_verification(&new, &old, &auth_signature)
+                .unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Whether `value` is signed by the issuer node (an update of the Status
+/// List). Not cached. Runs on a blocking thread.
+pub(crate) async fn verify_issuer_signed(
+    handler: &Arc<dyn SignatureVerifierHandler>,
+    value: &[u8],
+) -> bool {
+    let handler = Arc::clone(handler);
+    let value = value.to_vec();
+    tokio::task::spawn_blocking(move || {
+        handler
+            .handle_issuer_node_signature_verification(&value)
+            .unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false)
 }
 
 #[cfg(test)]

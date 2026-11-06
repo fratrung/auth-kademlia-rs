@@ -96,7 +96,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/fragmentation.rs` | KADF fragmentation + reassembly (`encode_fragments`, `parse_fragment`, `ReassemblyMap`) |
 | `src/retransmit.rs` | When to send a request again: per-peer round-trip estimate (`RoundTrips`, RFC 6298), `MAX_RESENDS`, bounds of the wait |
 | `src/counters.rs` | Datagrams, bytes, resends and STORE checks counted for measurements (feature `counters`, off by default; empty without it) |
-| `src/auth_handler.rs` | `SignatureVerifierHandler` trait + `DIDSignatureVerifierHandler` (DID record verification) |
+| `src/auth_handler.rs` | `SignatureVerifierHandler` trait + `DIDSignatureVerifierHandler` (DID record verification); `verify_record`, `verify_rotation`, `verify_issuer_signed`: how a node runs it (binding first, signature cache, blocking thread), shared by protocol and network |
 | `src/crypto/signature_verifier.rs` | `SignatureVerifier` trait, `resolve_alg_and_length()`, algorithm registry |
 | `src/crypto/factory.rs` | `SignatureVerifierFactory` + `SignerFactory` — dispatch by algorithm string |
 | `src/crypto/dilithium.rs` | Dilithium-2/3/5 verifier + signer |

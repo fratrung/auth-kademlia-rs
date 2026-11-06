@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use crate::auth_handler::{verify_issuer_signed, verify_rotation};
 use crate::crawling::NodeSpiderCrawl;
 use crate::node::Node;
 use crate::protocol::StoreStatus;
@@ -27,36 +28,25 @@ impl Server {
         let dkey = digest(key);
         let old_value = self.get(key).await?;
 
-        let handler = Arc::clone(&self.signature_handler);
         let is_status = key == STATUS_LIST_KEY && auth_signature.is_none();
         // A retry of an update that already reached this copy: the copy is the
         // new record itself, verified when it was read, and the old key's
         // signature no longer verifies against it. Publish it again so the
         // replicas that missed it are completed.
         let already_applied = key != STATUS_LIST_KEY && old_value == value;
-        let v = value.clone();
-        let auth = auth_signature.clone();
         let ok = already_applied
-            || tokio::task::spawn_blocking(move || {
-                if is_status {
-                    handler
-                        .handle_issuer_node_signature_verification(&v)
-                        .unwrap_or(false)
-                } else {
-                    handler
-                        .handle_key_binding_verification(&dkey, &v)
-                        .unwrap_or(false)
-                        && handler
-                            .handle_update_verification(
-                                &v,
-                                &old_value,
-                                auth.as_deref().unwrap_or_default(),
-                            )
-                            .unwrap_or(false)
-                }
-            })
-            .await
-            .unwrap_or(false);
+            || if is_status {
+                verify_issuer_signed(&self.signature_handler, &value).await
+            } else {
+                verify_rotation(
+                    &self.signature_handler,
+                    &dkey,
+                    &value,
+                    &old_value,
+                    auth_signature.as_deref().unwrap_or_default(),
+                )
+                .await
+            };
 
         if !ok {
             log::error!("update({}): invalid record or authorization", key);
