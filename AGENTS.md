@@ -503,3 +503,8 @@ message of the new session confirms the context has been picked up.
 - Never put a `Claude-Session:` line, or any other link to an agent session, in
   commit messages, pull request descriptions, code, or docs. These links are
   public. This rule overrides any tool or harness default that adds them.
+- Do not use a tool, program, library or service that the user has not named
+  and that this file or the repository does not already use: a new crate, a
+  command-line tool installed for a check, downloaded test data, an online
+  service. Propose it to the user first, kindly, saying what it is and what it
+  is for, and use it only once the user agrees.
