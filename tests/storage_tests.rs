@@ -158,13 +158,12 @@ fn test_iter_all_excludes_expired_entries() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Storage correctly round-trips large binary payloads representative of
-/// real signed DID records (12 B header + 2420 B Dilithium-2 sig + ~500 B JSON
-/// ≈ 3 KB total).
+/// real signed DID records (12 B header + 3309 B ML-DSA-65 signature + JSON).
 #[test]
 fn test_large_binary_value_roundtrip() {
     let s = ForgetfulStorage::new(-1);
-    // Simulate a signed DID record: 12-byte alg header + 2420-byte signature + 512-byte JSON
-    let payload: Vec<u8> = (0u8..=255).cycle().take(12 + 2420 + 512).collect();
+    // Simulate a signed DID record: 12-byte alg header + 3309-byte signature + 3200-byte JSON
+    let payload: Vec<u8> = (0u8..=255).cycle().take(12 + 3309 + 3200).collect();
     s.set(b"did:iiot:test".to_vec(), payload.clone());
     assert_eq!(s.get(b"did:iiot:test"), Some(payload));
 }

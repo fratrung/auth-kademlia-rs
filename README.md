@@ -18,7 +18,7 @@ The original [AuthKademlia](https://github.com/fratrung/AuthKademlia) is written
 
 ### The GIL bottleneck on CPU-bound workloads
 
-Python's **Global Interpreter Lock (GIL)** permits only one thread to execute bytecode at a time. For I/O-bound tasks this is rarely a bottleneck, but Dilithium-2 signature verification is purely computational. In CPython, even with `threading` or `asyncio`, all verification calls are serialised to one core:
+Python's **Global Interpreter Lock (GIL)** permits only one thread to execute bytecode at a time. For I/O-bound tasks this is rarely a bottleneck, but ML-DSA-65 signature verification is purely computational. In CPython, even with `threading` or `asyncio`, all verification calls are serialised to one core:
 
 ```
 Python (N cores):  throughput ≈ 1 core × ops/s        (GIL ceiling)
@@ -43,7 +43,7 @@ The Python binding (built with [maturin](https://github.com/PyO3/maturin) via Py
 |-------------------------|-----------------|------------------------------------|
 |Record integrity         |None             |Cryptographic signature verification|
 |Identity support         |None             |Native DID Document storage         |
-|Post-quantum cryptography|None             |Dilithium & Kyber key support       |
+|Post-quantum cryptography|None             |ML-DSA-65 signatures (FIPS 204)     |
 |Verifiable Data Registry |None             |Built-in VDR semantics              |
 |Language                 |Various          |Rust (memory-safe, high-performance)|
 
@@ -72,7 +72,7 @@ Signature validation is handled automatically by the integrated verifier at inse
 
 ## Network Layer & Application-Level Fragmentation
 
-Since Post-Quantum Cryptography (PQC) records—containing Dilithium signatures and Kyber keys—often exceed the standard UDP MTU, **AuthKademlia-RS** implements a custom application-level fragmentation and reassembly system.
+Since Post-Quantum Cryptography (PQC) records—containing ML-DSA-65 signatures and public keys—often exceed the standard UDP MTU, **AuthKademlia-RS** implements a custom application-level fragmentation and reassembly system.
 
 This ensures that messages remain within safe network limits, avoiding unreliable IP-level fragmentation and improving delivery rates across different network topologies.
 
@@ -81,7 +81,7 @@ This ensures that messages remain within safe network limits, avoiding unreliabl
 When a node publishes or retrieves a record, the data passes through a structured lifecycle:
 
 1.  **Serialize**: The record is serialized using `bincode` for high-performance binary encoding.
-2.  **Split**: The payload is split into chunks of up to **1400 bytes** each, every chunk prefixed with a `KADF` header. A typical Dilithium-2 record (~6 KB) produces 5 fragments.
+2.  **Split**: The payload is split into chunks of up to **1400 bytes** each, every chunk prefixed with a `KADF` header. A typical ML-DSA-65 record (~6.5 KB) produces 5 fragments.
 3.  **Send**: Fragments are transmitted independently from sender to receiver.
 4.  **Recv**: The receiver populates a `ReassemblyMap` keyed by `(peer_addr, frag_id)`; slots fill as fragments arrive.
 5.  **Assemble**: Once all fragments are received, they are concatenated in index order.
@@ -99,8 +99,8 @@ Each UDP datagram sent by this layer has the following layout (all multi-byte in
 Total header: **12 bytes**. `frag_id` is unique per logical message per sender. `index` is 0-based; `total` is the number of fragments (≥ 1). When `total == 1` the datagram carries the entire frame.
 
 By inspecting fragments you can identify the internal composition of a PQC record:
-* **Dilithium-2 signature** (2420 B): spans roughly the first two fragments.
-* **DID Document JSON** (with base64-encoded Kyber/Dilithium public keys): in the remaining fragments.
+* **ML-DSA-65 signature** (3309 B): spans roughly the first three fragments.
+* **DID Document JSON** (with the base64url-encoded ML-DSA-65 public key): in the remaining fragments.
 
 -----
 
@@ -280,7 +280,7 @@ algorithm are unchanged.
 |---|---|
 | **Concurrent storage** | `DashMap` keeps per-key operations parallel; an atomic byte reservation enforces the per-node budget without a global async lock. |
 | **Lazy TTL expiry** | Records expire after 14 days by default. Expired entries are filtered at read time instead of an O(n) scan on every write. |
-| **Signature cache** | `SignatureCache` (moka, SHA-256 keyed, TTL 1 h, 4096 entries). Repeated reads of the same record pay full Dilithium cost only once; subsequent reads are O(1). DID-to-DHT-key binding is checked before every cache lookup, and any byte-level change forces full signature re-verification. |
+| **Signature cache** | `SignatureCache` (moka, SHA-256 keyed, TTL 1 h, 4096 entries). Repeated reads of the same record pay the full ML-DSA cost only once; subsequent reads are O(1). DID-to-DHT-key binding is checked before every cache lookup, and any byte-level change forces full signature re-verification. |
 | **Worker pool** | UDP receive loop dispatches via round-robin into `available_parallelism()` workers, each with a dedicated `mpsc::channel(256)`. `try_send` is attempted on each worker in turn; if all are full the loop awaits the base worker, providing backpressure without drops. |
 | **Fire-and-forget replication** | A node met through a message enters the routing table at once. Sending it the records it should hold scans the whole storage, so it runs in the background, one node at a time, with at most 256 nodes waiting. RPC responses are sent without waiting for it. |
 | **Replication filter** | On node join, only nodes XOR-closer to a key than the new node replicate it (Kademlia §2.5). Prevents redundant store RPCs from far-away nodes. |
@@ -300,7 +300,7 @@ cores and memory are scarce.
 | Type | Created by | Scheduled by | Count | Used for |
 |---|---|---|---|---|
 | **Worker thread** (OS) | Tokio runtime at startup | Kernel | `available_parallelism()` | Executing async tasks |
-| **Blocking thread** (OS) | Tokio on-demand | Kernel | ≤ `available_parallelism()` | Dilithium verification |
+| **Blocking thread** (OS) | Tokio on-demand | Kernel | ≤ `available_parallelism()` | ML-DSA verification |
 | **Task** (coroutine) | `tokio::spawn` | Tokio scheduler | Many | All async logic |
 
 Worker threads and blocking threads are real OS threads visible to the
@@ -318,7 +318,7 @@ Hardware proxy (N cores)
 │   Tasks yield at every .await, freeing the thread immediately.
 │
 └─ Tokio blocking pool  [OS threads, max = available_parallelism()]
-    Created on-demand for spawn_blocking (Dilithium verify/sign).
+    Created on-demand for spawn_blocking (ML-DSA verify/sign).
     Capped via max_blocking_threads() — see runtime configuration.
 ```
 
@@ -356,12 +356,12 @@ Kernel  ──epoll──►  Tokio wakes {recv loop task}
                         │
                         └─ store / update
                             verify_for_key()
-                              spawn_blocking(Dilithium)
+                              spawn_blocking(ML-DSA)
                               .await  ← task suspended, worker thread FREE
                                           │
                                           ▼
                                     Blocking OS thread
-                                    Dilithium verify  (~5–50 ms on ARM)
+                                    ML-DSA-65 verify
                                           │
                                           ▼
                               task resumes on any free worker thread
@@ -397,7 +397,7 @@ The `SignatureCache` (moka, SHA-256 keyed, TTL 1 h) lifts most GET
 operations entirely out of the blocking pool:
 
 ```
-GET cold:  SHA-256(record) → cache miss → spawn_blocking(Dilithium) → cache.insert
+GET cold:  SHA-256(record) → cache miss → spawn_blocking(ML-DSA)   → cache.insert
 GET warm:  SHA-256(record) → cache hit  → return immediately  (no blocking thread)
 ```
 
@@ -410,9 +410,10 @@ path dominates and the blocking pool stays nearly idle.
 
 ### Throughput limits
 
-Each `set` → `get` round-trip includes a full Dilithium-2 signature verification
-(~5 ms CPU time on a modern x86 core). Peak verification throughput scales linearly
-with core count — approximately `N_cores / 5 ms` unique verifications per second.
+Each `set` → `get` round-trip includes a full ML-DSA-65 signature verification.
+Peak verification throughput scales linearly with core count — approximately
+`N_cores / t_verify` unique verifications per second, where `t_verify` is the
+time of one verification on the target core (measure it with `cache_bench`).
 
 The `SignatureCache` substantially raises the practical ceiling: once a record has
 been verified once, subsequent reads return the cached result in O(1) time with no
@@ -423,11 +424,11 @@ blocking work.
 `examples/cache_bench.rs` measures two isolated phases:
 
 - **Phase 1 — DHT SET throughput**: two sequential clusters (cached vs uncached) running real network operations with no CPU contention between them.
-- **Phase 2 — Signature verification micro-benchmark**: records injected directly into local storage, sequential `get()` calls, zero network variance. Isolates the exact Dilithium-2 vs cache-hit cost.
+- **Phase 2 — Signature verification micro-benchmark**: records injected directly into local storage, sequential `get()` calls, zero network variance. Isolates the exact ML-DSA-65 vs cache-hit cost.
 
 The expected behaviour:
-- *GET cold*: cache miss → SHA-256(record) + `moka.get()` miss + `spawn_blocking(Dilithium-2)` + `moka.insert()`. The SHA-256 overhead is small relative to Dilithium (~5 ms); on first read the cached node pays a marginal extra cost.
-- *GET warm*: cache hit → SHA-256(record) + `moka.get()` → result returned immediately. No blocking work. Speedup is proportional to the Dilithium-2 cost on the target hardware.
+- *GET cold*: cache miss → SHA-256(record) + `moka.get()` miss + `spawn_blocking(ML-DSA-65)` + `moka.insert()`. The SHA-256 overhead is small relative to ML-DSA; on first read the cached node pays a marginal extra cost.
+- *GET warm*: cache hit → SHA-256(record) + `moka.get()` → result returned immediately. No blocking work. Speedup is proportional to the ML-DSA-65 cost on the target hardware.
 - *DHT SET*: dominated by network round-trip; cache has negligible effect on write throughput.
 
 Run `cargo run --release --example cache_bench` to collect measurements on your
@@ -519,11 +520,12 @@ its own runtime and let the OS scheduler arbitrate CPU time fairly, while
 
 This implementation is designed to interoperate with the [`did:iiot` method](https://github.com/fratrung/did-iiot), an open DID method targeting **Industrial IoT** environments.
 
-DID Documents stored in the DHT embed **post-quantum public keys** (Dilithium for authentication, Kyber for key exchange), enabling:
+DID Documents stored in the DHT embed a **post-quantum public key** (ML-DSA-65, as an RFC 9964 JWK), enabling:
 
 - Secure device authentication
-- Post-quantum key exchange
 - Verifiable credential issuance and resolution
+
+Key exchange between devices uses ephemeral ML-KEM keys outside the DHT, signed with the device's ML-DSA-65 key (ADR 0003), so DID Documents carry no key agreement key.
 
 A complete end-to-end integration example is available at [fratrung/did-iiot-dht](https://github.com/fratrung/did-iiot-dht).
 
@@ -549,10 +551,7 @@ use std::path::PathBuf;
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::Server;
 
-use pqcrypto_dilithium::dilithium2;
-use pqcrypto_kyber::kyber512;
-use pqcrypto_traits::sign::{PublicKey, DetachedSignature};
-use pqcrypto_traits::kem::PublicKey as KemPublicKey;
+use auth_kademlia_rs::crypto::mldsa::{self, MlDsa65KeyPair};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
@@ -591,11 +590,11 @@ fn sort_json_keys(v: &Value) -> Value {
 /// Build the signed record:
 ///
 /// ```text
-/// | algorithm (12 bytes, null-padded) | Dilithium signature | DID Document (JSON) |
+/// | algorithm (12 bytes, null-padded) | ML-DSA-65 signature | DID Document (JSON) |
 /// ```
 fn build_signed_record(
     doc: &Value,
-    secret_key: &dilithium2::SecretKey,
+    key_pair: &MlDsa65KeyPair,
     algorithm: &str,
 ) -> Vec<u8> {
     let doc_bytes = encode_did_document(doc);
@@ -606,14 +605,13 @@ fn build_signed_record(
     let copy_len = alg_bytes.len().min(12);
     alg_field[..copy_len].copy_from_slice(&alg_bytes[..copy_len]);
 
-    // Sign using the detached API — returns only the signature bytes.
-    let detached_sig = dilithium2::detached_sign(&doc_bytes, secret_key);
-    let signature = detached_sig.as_bytes();
+    // ML-DSA-65 (aws-lc-rs) signature over the document, empty context.
+    let signature = key_pair.sign(&doc_bytes).expect("ML-DSA-65 signing");
 
     // Concatenate: alg_field || signature || doc_bytes
     let mut record = Vec::with_capacity(12 + signature.len() + doc_bytes.len());
     record.extend_from_slice(&alg_field);
-    record.extend_from_slice(signature);
+    record.extend_from_slice(&signature);
     record.extend_from_slice(&doc_bytes);
     record
 }
@@ -623,15 +621,9 @@ fn generate_did_iiot() -> String {
     format!("did:iiot:{}", Uuid::new_v4())
 }
 
-/// Build a minimal `did:iiot` DID Document with one Dilithium and one Kyber key.
-fn build_did_document(
-    did: &str,
-    dilithium_pk: &dilithium2::PublicKey,
-    kyber_pk: &kyber512::PublicKey,
-) -> Value {
-    let dilithium_x = base64url_encode(dilithium_pk.as_bytes());
-    let kyber_x = base64url_encode(kyber_pk.as_bytes());
-
+/// Build a minimal `did:iiot` DID Document with its ML-DSA-65 key, as an
+/// RFC 9964 JWK. It has no key agreement key (ADR 0003).
+fn build_did_document(did: &str, signing_pk: &[u8]) -> Value {
     json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
         "id": did,
@@ -641,24 +633,13 @@ fn build_did_document(
                 "type": "JsonWebKey2020",
                 "controller": did,
                 "publicKeyJwk": {
-                    "kty": "OKP",
-                    "crv": "Dilithium2",
-                    "x": dilithium_x
-                }
-            },
-            {
-                "id": format!("{}#k1", did),
-                "type": "JsonWebKey2020",
-                "controller": did,
-                "publicKeyJwk": {
-                    "kty": "OKP",
-                    "crv": "Kyber512",
-                    "x": kyber_x
+                    "kty": "AKP",
+                    "alg": "ML-DSA-65",
+                    "pub": base64url_encode(signing_pk)
                 }
             }
         ],
         "authentication": [ format!("{}#k0", did) ],
-        "keyAgreement":   [ format!("{}#k1", did) ],
         "service": [
             {
                 "id": format!("{}#device", did),
@@ -697,12 +678,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     node_2.bootstrap(vec![("127.0.0.1".to_string(), 5678)]).await;
 
-    let (dilithium_pk, dilithium_sk) = dilithium2::keypair();
-    let (kyber_pk, _) = kyber512::keypair();
+    let key_pair = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
     let did = generate_did_iiot();
-    let did_doc = build_did_document(&did, &dilithium_pk, &kyber_pk);
+    let did_doc = build_did_document(&did, key_pair.public_key());
     let dht_key = did.split(':').next_back().expect("invalid DID").to_string();
-    let signed_record = build_signed_record(&did_doc, &dilithium_sk, "Dilithium-2");
+    let signed_record = build_signed_record(&did_doc, &key_pair, "ML-DSA-65");
 
     match node_2.set(&dht_key, signed_record).await {
         Some(true) => println!("Record published under key {}", dht_key),
@@ -711,7 +691,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     match node_1.get(&dht_key).await {
         Some(record) => {
-            let doc_start = 12 + dilithium2::signature_bytes();
+            let doc_start = 12 + mldsa::signature_len();
             if let Ok(doc) = serde_json::from_slice::<Value>(&record[doc_start..]) {
                 println!("Retrieved DID: {}", doc["id"]);
             }
@@ -726,7 +706,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Tokio runtime configuration
 
-`auth_kademlia_rs` does not create a Tokio runtime — the caller owns it. Dilithium-2
+`auth_kademlia_rs` does not create a Tokio runtime — the caller owns it. ML-DSA-65
 verification is CPU-bound and runs on Tokio's blocking thread pool via `spawn_blocking`.
 On embedded hardware (2–4 core ARM SoCs) the default pool cap of 512 threads causes
 unnecessary context-switching overhead. Cap it to the number of physical cores:
@@ -737,7 +717,7 @@ fn main() {
         .map(|p| p.get())
         .unwrap_or(4);
     tokio::runtime::Builder::new_multi_thread()
-        .max_blocking_threads(parallelism)  // bounds concurrent Dilithium verifications
+        .max_blocking_threads(parallelism)  // bounds concurrent ML-DSA verifications
         .enable_all()
         .build()
         .unwrap()

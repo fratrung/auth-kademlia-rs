@@ -2,9 +2,9 @@
 // Application-level fragmentation
 // ---------------------------------------------------------------------------
 //
-// Post-quantum signed records (Dilithium-2 signature alone is 2420 bytes,
-// plus the JSON DID Document with base64-encoded Kyber/Dilithium public keys)
-// routinely produce UDP payloads of ~6 KB. Relying on kernel-level IP
+// Post-quantum signed records (the ML-DSA-65 signature alone is 3309 bytes,
+// plus the JSON DID Document with the base64url-encoded public key) routinely
+// produce UDP payloads of ~6.5 KB. Relying on kernel-level IP
 // fragmentation is unreliable on UDP: losing a single fragment causes the
 // whole datagram to be silently dropped, and middleboxes often filter
 // fragmented IP traffic. We therefore implement explicit, application-level
@@ -265,9 +265,9 @@ mod tests {
         entry?.assemble()
     }
 
-    fn dilithium2_sized_payload() -> Vec<u8> {
-        // ~6 KB: 12 B alg + 2420 B signature + a JSON-sized DID Document.
-        (0..6000u32).map(|i| (i % 251) as u8).collect()
+    fn record_sized_payload() -> Vec<u8> {
+        // ~6.5 KB: 12 B alg + 3309 B signature + a JSON-sized DID Document.
+        (0..6500u32).map(|i| (i % 251) as u8).collect()
     }
 
     #[test]
@@ -279,8 +279,8 @@ mod tests {
     }
 
     #[test]
-    fn dilithium2_record_round_trip_byte_identical() {
-        let payload = dilithium2_sized_payload();
+    fn record_round_trip_byte_identical() {
+        let payload = record_sized_payload();
         let dgs = encode_fragments(42, &payload);
         assert!(dgs.len() > 1, "a 6 KB record must span multiple fragments");
         assert_eq!(dgs.len(), payload.len().div_ceil(FRAG_CHUNK_SIZE));
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn reassembles_out_of_order() {
-        let payload = dilithium2_sized_payload();
+        let payload = record_sized_payload();
         let mut dgs = encode_fragments(1, &payload);
         dgs.reverse(); // deliver last fragment first
         assert_eq!(reassemble(&dgs), Some(payload));
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn duplicate_fragments_are_tolerated() {
-        let payload = dilithium2_sized_payload();
+        let payload = record_sized_payload();
         let dgs = encode_fragments(9, &payload);
         // Inject a duplicate of the first fragment mid-stream.
         let mut with_dup = vec![dgs[0].clone()];
@@ -308,8 +308,8 @@ mod tests {
     #[test]
     fn inconsistent_total_fails_clean() {
         // Two fragments sharing a frag_id but disagreeing on `total`.
-        let a = dilithium2_sized_payload();
-        let b = dilithium2_sized_payload();
+        let a = record_sized_payload();
+        let b = record_sized_payload();
         let dg_a = encode_fragments(5, &a); // total = N
         let dg_b = encode_fragments(5, &b[..1000]); // total = 1
         let mixed = vec![dg_a[0].clone(), dg_b[0].clone()];

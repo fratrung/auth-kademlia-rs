@@ -1,12 +1,11 @@
-/// Key manager for Dilithium, Kyber, and Ed25519 key pairs.
+/// Key manager for ML-DSA-65, Kyber, and Ed25519 key pairs.
 ///
 /// Mirrors the Python `KeyManager` ABC and its concrete implementations:
-/// `DilithiumKeyManager`, `KyberKeyManager`, `Ed25519KeyManager`.
+/// `MlDsaKeyManager`, `KyberKeyManager`, `Ed25519KeyManager`.
 ///
-/// Each manager stores its security level at construction time so that
-/// `generate_keypair`, `sign`, and `verify_signature` do not require it
-/// as a runtime argument (unlike the Python API which threads it through
-/// every call).
+/// `MlDsaKeyManager` handles ML-DSA-65 only, the algorithm of every record
+/// (ADR 0003). `KyberKeyManager` stores its security level at construction
+/// time.
 ///
 /// File conventions (same as Python):
 ///   `<keys_dir>/<key_name>.public`  — raw public key bytes
@@ -16,14 +15,12 @@ use std::fs;
 use std::path::PathBuf;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use pqcrypto_dilithium::{dilithium2, dilithium3, dilithium5};
 use pqcrypto_kyber::{kyber1024, kyber512, kyber768};
 use pqcrypto_traits::kem::{PublicKey as KemPublicKey, SecretKey as KemSecretKey};
-use pqcrypto_traits::sign::{PublicKey as SignPublicKey, SecretKey as SignSecretKey};
 use thiserror::Error;
 
-use crate::crypto::dilithium::{DilithiumSignatureVerifier, DilithiumSigner};
 use crate::crypto::ed25519::{Ed25519SignatureVerifier, Ed25519Signer};
+use crate::crypto::mldsa::{MlDsa65KeyPair, MlDsa65SignatureVerifier, MlDsa65Signer, ML_DSA_65};
 use crate::crypto::signature_verifier::{SignatureVerifier, Signer, VerifierError};
 
 #[derive(Debug, Error)]
@@ -84,62 +81,39 @@ fn read_key(path: &PathBuf, key_name: &str) -> Result<Vec<u8>, KeyManagerError> 
     fs::read(path).map_err(|_| KeyManagerError::NotFound(key_name.to_string()))
 }
 
-/// Key manager for CRYSTALS-Dilithium (post-quantum signature scheme).
-///
-/// Security levels: 2, 3, or 5.
-pub struct DilithiumKeyManager {
+/// Key manager for ML-DSA-65 (FIPS 204), the signature of every record.
+pub struct MlDsaKeyManager {
     pub keys_dir: PathBuf,
-    pub security_level: u8,
 }
 
-impl DilithiumKeyManager {
-    /// Create a manager for `security_level` ∈ {2, 3, 5}.
+impl MlDsaKeyManager {
     /// The `keys_dir` directory is created if it does not exist.
-    pub fn new(keys_dir: impl Into<PathBuf>, security_level: u8) -> Self {
+    pub fn new(keys_dir: impl Into<PathBuf>) -> Self {
         let keys_dir = keys_dir.into();
         fs::create_dir_all(&keys_dir).ok();
-        Self {
-            keys_dir,
-            security_level,
-        }
+        Self { keys_dir }
     }
 
-    /// Sign `message` with `private_key`.
-    /// The security level is inferred automatically from the key length.
+    /// Sign `message` with the ML-DSA-65 `private_key`.
     pub fn sign(&self, private_key: &[u8], message: &[u8]) -> Result<Vec<u8>, KeyManagerError> {
-        Ok(DilithiumSigner.sign(private_key, message)?)
+        Ok(MlDsa65Signer.sign(private_key, message)?)
     }
 
-    /// Verify `signature` over `message` against `public_key`.
+    /// Verify `signature` over `message` against the ML-DSA-65 `public_key`.
     pub fn verify_signature(
         &self,
         public_key: &[u8],
         message: &[u8],
         signature: &[u8],
     ) -> Result<bool, KeyManagerError> {
-        Ok(DilithiumSignatureVerifier.verify(public_key, signature, message)?)
+        Ok(MlDsa65SignatureVerifier.verify(public_key, signature, message)?)
     }
 }
 
-impl KeyManager for DilithiumKeyManager {
+impl KeyManager for MlDsaKeyManager {
     fn generate_keypair(&self) -> Result<(Vec<u8>, Vec<u8>), KeyManagerError> {
-        match self.security_level {
-            2 => {
-                let (pk, sk) = dilithium2::keypair();
-                Ok((pk.as_bytes().to_vec(), sk.as_bytes().to_vec()))
-            }
-            3 => {
-                let (pk, sk) = dilithium3::keypair();
-                Ok((pk.as_bytes().to_vec(), sk.as_bytes().to_vec()))
-            }
-            5 => {
-                let (pk, sk) = dilithium5::keypair();
-                Ok((pk.as_bytes().to_vec(), sk.as_bytes().to_vec()))
-            }
-            _ => Err(KeyManagerError::InvalidSecurityLevel(
-                self.security_level as u32,
-            )),
-        }
+        let key = MlDsa65KeyPair::generate()?;
+        Ok((key.public_key().to_vec(), key.private_key()?))
     }
 
     fn store_public_key(&self, key_name: &str, public_key: &[u8]) -> Result<(), KeyManagerError> {
@@ -170,12 +144,13 @@ impl KeyManager for DilithiumKeyManager {
         )
     }
 
-    /// JWK format: `{"kty": "MLWE", "alg": "CRYDI<level>", "x": <base64url>}`.
+    /// The public key as a JWK of RFC 9964:
+    /// `{"kty": "AKP", "alg": "ML-DSA-65", "pub": <base64url>}`.
     fn get_jose_format(&self, public_key: &[u8]) -> HashMap<String, String> {
         HashMap::from([
-            ("kty".into(), "MLWE".into()),
-            ("alg".into(), format!("CRYDI{}", self.security_level)),
-            ("x".into(), b64encode_key(public_key)),
+            ("kty".into(), "AKP".into()),
+            ("alg".into(), ML_DSA_65.into()),
+            ("pub".into(), b64encode_key(public_key)),
         ])
     }
 }
@@ -361,9 +336,14 @@ mod tests {
     }
 
     #[test]
-    fn dilithium2_generate_store_retrieve() {
-        let km = DilithiumKeyManager::new(tmp_dir(), 2);
+    fn ml_dsa_generate_store_retrieve() {
+        let km = MlDsaKeyManager::new(tmp_dir());
         let (pk, sk) = km.generate_keypair().unwrap();
+        assert_eq!(pk.len(), crate::crypto::mldsa::public_key_len());
+        assert_eq!(
+            MlDsa65KeyPair::from_private_key(&sk).unwrap().public_key(),
+            pk
+        );
         km.store_public_key("alice", &pk).unwrap();
         km.store_private_key("alice", &sk).unwrap();
         assert_eq!(km.get_public_key("alice").unwrap(), pk);
@@ -371,49 +351,28 @@ mod tests {
     }
 
     #[test]
-    fn dilithium2_sign_verify_roundtrip() {
-        let km = DilithiumKeyManager::new(tmp_dir(), 2);
+    fn ml_dsa_sign_verify_roundtrip() {
+        let km = MlDsaKeyManager::new(tmp_dir());
         let (pk, sk) = km.generate_keypair().unwrap();
-        let msg = b"hello dilithium2";
+        let msg = b"hello ml-dsa-65";
         let sig = km.sign(&sk, msg).unwrap();
         assert!(km.verify_signature(&pk, msg, &sig).unwrap());
+        assert!(!km.verify_signature(&pk, b"tampered", &sig).unwrap());
     }
 
     #[test]
-    fn dilithium3_sign_verify_roundtrip() {
-        let km = DilithiumKeyManager::new(tmp_dir(), 3);
-        let (pk, sk) = km.generate_keypair().unwrap();
-        let sig = km.sign(&sk, b"level 3").unwrap();
-        assert!(km.verify_signature(&pk, b"level 3", &sig).unwrap());
-    }
-
-    #[test]
-    fn dilithium5_sign_verify_roundtrip() {
-        let km = DilithiumKeyManager::new(tmp_dir(), 5);
-        let (pk, sk) = km.generate_keypair().unwrap();
-        let sig = km.sign(&sk, b"level 5").unwrap();
-        assert!(km.verify_signature(&pk, b"level 5", &sig).unwrap());
-    }
-
-    #[test]
-    fn dilithium_invalid_level_errors() {
-        let km = DilithiumKeyManager::new(tmp_dir(), 4);
-        assert!(km.generate_keypair().is_err());
-    }
-
-    #[test]
-    fn dilithium_jose_format() {
-        let km = DilithiumKeyManager::new(tmp_dir(), 2);
+    fn ml_dsa_jose_format_is_rfc_9964() {
+        let km = MlDsaKeyManager::new(tmp_dir());
         let (pk, _) = km.generate_keypair().unwrap();
         let jose = km.get_jose_format(&pk);
-        assert_eq!(jose["kty"], "MLWE");
-        assert_eq!(jose["alg"], "CRYDI2");
-        assert!(!jose["x"].is_empty());
+        assert_eq!(jose["kty"], "AKP");
+        assert_eq!(jose["alg"], "ML-DSA-65");
+        assert_eq!(b64decode_key(&jose["pub"]).unwrap(), pk);
     }
 
     #[test]
-    fn dilithium_key_not_found_error() {
-        let km = DilithiumKeyManager::new(tmp_dir(), 2);
+    fn ml_dsa_key_not_found_error() {
+        let km = MlDsaKeyManager::new(tmp_dir());
         assert!(matches!(
             km.get_public_key("nonexistent"),
             Err(KeyManagerError::NotFound(_))

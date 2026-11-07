@@ -7,8 +7,12 @@
 //! cache, then the signature on a blocking thread.
 //!
 //! ```text
-//! | algorithm (12 bytes, null-padded) | signature | DID Document (JSON) |
+//! | algorithm "ML-DSA-65" (12 bytes, null-padded) | signature | DID Document (JSON) |
 //! ```
+//!
+//! A record must be signed with ML-DSA-65, and its DID Document must hold the
+//! public key as an RFC 9964 JWK whose `alg` is the record's algorithm
+//! (ADR 0003).
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -18,6 +22,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::crypto::factory::SignatureVerifierFactory;
+use crate::crypto::mldsa::ML_DSA_65;
 use crate::crypto::signature_verifier::{resolve_alg_and_length, VerifierError};
 use crate::signature_cache::{SignatureCache, VerificationDomain};
 use crate::utils::{digest, ID_LEN, STATUS_LIST_KEY};
@@ -40,12 +45,17 @@ pub enum AuthHandlerError {
     InvalidFormat,
     #[error("invalid did:iiot identifier")]
     InvalidDid,
+    #[error("the key in the DID Document does not match the record: {0}")]
+    KeyMismatch(String),
 }
+
+/// The only algorithm a record may be signed with (ADR 0003).
+pub const RECORD_ALGORITHM: &str = ML_DSA_65;
 
 /// Abstract handler for signature operations performed by the DHT.
 ///
 /// Implementing this trait allows callers to plug in different verification
-/// strategies (e.g. Dilithium, Ed25519) without changing the protocol layer.
+/// strategies (e.g. ML-DSA, Ed25519) without changing the protocol layer.
 pub trait SignatureVerifierHandler: Send + Sync {
     /// Verify that the DID Document carried by the signed record identifies
     /// the requested DHT key.
@@ -92,6 +102,16 @@ fn get_alg_string(value: &[u8]) -> Result<String, AuthHandlerError> {
     Ok(std::str::from_utf8(&raw[..end])?.to_string())
 }
 
+/// The algorithm of a record, which must be `RECORD_ALGORITHM`. Records
+/// signed with any other algorithm, even one `crypto/` implements, are refused.
+fn record_algorithm(value: &[u8]) -> Result<String, AuthHandlerError> {
+    let alg = get_alg_string(value)?;
+    if alg != RECORD_ALGORITHM {
+        return Err(VerifierError::UnsupportedAlgorithm(alg).into());
+    }
+    Ok(alg)
+}
+
 /// Split a record into `(signature_bytes, data_bytes)`.
 ///
 /// The record layout is:
@@ -118,23 +138,34 @@ fn decode_b64url(key: &str) -> Result<Vec<u8>, AuthHandlerError> {
     Ok(URL_SAFE_NO_PAD.decode(stripped)?)
 }
 
-/// Extract the primary public key from a DID Document.
-///
-/// Expects `verificationMethod[0].publicKeyJwk.x` to be a base64url string.
-fn public_key_from_did_doc(data: &[u8]) -> Result<Vec<u8>, AuthHandlerError> {
+/// Extract the signing key from a DID Document: `verificationMethod[0]
+/// .publicKeyJwk`, an RFC 9964 key (`kty` "AKP") whose `alg` is `alg`, the
+/// algorithm of the record. Its `pub` is the raw public key, base64url.
+fn public_key_from_did_doc(data: &[u8], alg: &str) -> Result<Vec<u8>, AuthHandlerError> {
     let doc: Value = serde_json::from_slice(data)?;
-    let x = doc["verificationMethod"][0]["publicKeyJwk"]["x"]
-        .as_str()
-        .ok_or_else(|| {
-            AuthHandlerError::MissingField("verificationMethod[0].publicKeyJwk.x".into())
-        })?;
-    decode_b64url(x)
+    let jwk = &doc["verificationMethod"][0]["publicKeyJwk"];
+    if jwk["kty"].as_str() != Some("AKP") {
+        return Err(AuthHandlerError::KeyMismatch(format!(
+            "kty {} instead of AKP",
+            jwk["kty"]
+        )));
+    }
+    if jwk["alg"].as_str() != Some(alg) {
+        return Err(AuthHandlerError::KeyMismatch(format!(
+            "alg {} instead of {alg}",
+            jwk["alg"]
+        )));
+    }
+    let public = jwk["pub"].as_str().ok_or_else(|| {
+        AuthHandlerError::MissingField("verificationMethod[0].publicKeyJwk.pub".into())
+    })?;
+    decode_b64url(public)
 }
 
 /// Verify that `value` contains `id = "did:iiot:<uuid>"` and that the digest
 /// of the UUID is exactly the requested DHT key.
 fn did_document_matches_key(value: &[u8], key: &[u8; ID_LEN]) -> Result<bool, AuthHandlerError> {
-    let alg = get_alg_string(value)?;
+    let alg = record_algorithm(value)?;
     let (_, sig_len) = resolve_alg_and_length(&alg)?;
     let (_, data) = extract_sig_and_data(value, sig_len)?;
     let doc: Value = serde_json::from_slice(data)?;
@@ -148,7 +179,7 @@ fn did_document_matches_key(value: &[u8], key: &[u8; ID_LEN]) -> Result<bool, Au
     Ok(digest(uuid) == *key)
 }
 
-/// Concrete handler that verifies Dilithium-signed DID Document records.
+/// Concrete handler that verifies ML-DSA-65-signed DID Document records.
 pub struct DIDSignatureVerifierHandler {
     /// Path to the issuer node's raw public key file.
     issuer_pub_key_path: PathBuf,
@@ -158,7 +189,7 @@ impl DIDSignatureVerifierHandler {
     /// Create a new handler.
     ///
     /// `issuer_pub_key_path` points to a file containing the raw bytes of the
-    /// issuer node's Dilithium public key. The file is read lazily on each
+    /// issuer node's ML-DSA-65 public key. The file is read lazily on each
     /// issuer-verification call so that key rotation does not require a restart.
     pub fn new(issuer_pub_key_path: impl Into<PathBuf>) -> Self {
         Self {
@@ -173,10 +204,10 @@ impl DIDSignatureVerifierHandler {
     /// Verify that `value` is self-signed: the public key is extracted from
     /// the embedded DID Document and used to check the record's own signature.
     fn verify_self_signed(&self, value: &[u8]) -> Result<bool, AuthHandlerError> {
-        let alg = get_alg_string(value)?;
+        let alg = record_algorithm(value)?;
         let (_, sig_len) = resolve_alg_and_length(&alg)?;
         let (signature, data) = extract_sig_and_data(value, sig_len)?;
-        let pub_key = public_key_from_did_doc(data)?;
+        let pub_key = public_key_from_did_doc(data, &alg)?;
         let verifier = SignatureVerifierFactory::get_verifier(&alg)?;
         Ok(verifier.verify(&pub_key, signature, data)?)
     }
@@ -192,10 +223,10 @@ impl DIDSignatureVerifierHandler {
         old_value: &[u8],
         auth_signature: &[u8],
     ) -> Result<bool, AuthHandlerError> {
-        let old_alg = get_alg_string(old_value)?;
+        let old_alg = record_algorithm(old_value)?;
         let (_, old_sig_len) = resolve_alg_and_length(&old_alg)?;
         let (_, old_data) = extract_sig_and_data(old_value, old_sig_len)?;
-        let old_pub_key = public_key_from_did_doc(old_data)?;
+        let old_pub_key = public_key_from_did_doc(old_data, &old_alg)?;
 
         let verifier = SignatureVerifierFactory::get_verifier(&old_alg)?;
         if !verifier.verify(&old_pub_key, auth_signature, new_value)? {
@@ -232,7 +263,7 @@ impl SignatureVerifierHandler for DIDSignatureVerifierHandler {
         &self,
         value: &[u8],
     ) -> Result<bool, AuthHandlerError> {
-        let alg = get_alg_string(value)?;
+        let alg = record_algorithm(value)?;
         let (_, sig_len) = resolve_alg_and_length(&alg)?;
         let (signature, data) = extract_sig_and_data(value, sig_len)?;
         let issuer_pub_key = self.load_issuer_pub_key()?;
@@ -263,7 +294,7 @@ pub(crate) fn is_bound_to_key(
 /// cache. The result of the signature check is cached (`cache`, when enabled)
 /// under the SHA-256 of the record, in separate domains for self-signed and
 /// issuer-signed records. The signature runs on a blocking thread, so
-/// Dilithium does not stall the async workers.
+/// ML-DSA does not stall the async workers.
 pub(crate) async fn verify_record(
     handler: &Arc<dyn SignatureVerifierHandler>,
     cache: Option<&SignatureCache>,
@@ -354,7 +385,58 @@ pub(crate) async fn verify_issuer_signed(
 
 #[cfg(test)]
 mod tests {
+    use crate::crypto::mldsa::MlDsa65KeyPair;
+    use serde_json::json;
+
     use super::*;
+
+    /// `(key, record)`: a DID Document holding one ML-DSA-65 key (RFC 9964),
+    /// self-signed, under the DHT key of its DID.
+    fn ml_dsa_65_record() -> ([u8; ID_LEN], Vec<u8>) {
+        let key = MlDsa65KeyPair::generate().unwrap();
+        let uuid = Uuid::new_v4().to_string();
+        let did = format!("did:iiot:{uuid}");
+        let doc = json!({
+            "id": did,
+            "verificationMethod": [{
+                "id": format!("{did}#k0"),
+                "type": "JsonWebKey2020",
+                "controller": did,
+                "publicKeyJwk": {
+                    "kty": "AKP",
+                    "alg": "ML-DSA-65",
+                    "pub": URL_SAFE_NO_PAD.encode(key.public_key()),
+                },
+            }],
+        });
+        let data = serde_json::to_vec(&doc).unwrap();
+        let mut record = [0u8; 12].to_vec();
+        record[..RECORD_ALGORITHM.len()].copy_from_slice(RECORD_ALGORITHM.as_bytes());
+        record.extend_from_slice(&key.sign(&data).unwrap());
+        record.extend_from_slice(&data);
+        (digest(&uuid), record)
+    }
+
+    /// A complete ML-DSA-65 record passes the check a node runs before storing
+    /// or returning it, with and without the signature cache; a tampered copy
+    /// does not.
+    #[tokio::test]
+    async fn verify_record_accepts_an_ml_dsa_65_record() {
+        let handler: Arc<dyn SignatureVerifierHandler> =
+            Arc::new(DIDSignatureVerifierHandler::new("unused"));
+        let cache = SignatureCache::new(16);
+        let (key, record) = ml_dsa_65_record();
+        assert!(verify_record(&handler, None, &key, &record).await);
+        assert!(verify_record(&handler, Some(&cache), &key, &record).await);
+        assert!(verify_record(&handler, Some(&cache), &key, &record).await);
+
+        // A bit of the signature: the document still parses and binds.
+        let mut tampered = record.clone();
+        tampered[20] ^= 1;
+        assert!(is_bound_to_key(handler.as_ref(), &key, &tampered));
+        assert!(!verify_record(&handler, None, &key, &tampered).await);
+        assert!(!verify_record(&handler, None, &[0; ID_LEN], &record).await);
+    }
 
     #[test]
     fn algorithm_header_requires_null_only_right_padding() {

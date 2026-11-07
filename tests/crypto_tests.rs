@@ -1,13 +1,12 @@
 //! Integration tests for the cryptographic layer.
 //!
-//! Context: AuthKademlia supports three signature families — Dilithium (all
-//! three security levels), Ed25519, and RSA.  Each record stored in the DHT
-//! carries an algorithm tag, a raw signature, and a DID Document.  The
-//! `SignatureVerifierFactory` / `SignerFactory` dispatch to the correct
-//! implementation at runtime.
+//! Context: every record stored in the DHT carries an algorithm tag, a raw
+//! signature, and a DID Document. A node accepts only ML-DSA-65 records (ADR
+//! 0003); the Ed25519 and RSA implementations stay in `crypto/`, reachable
+//! through `SignatureVerifierFactory` / `SignerFactory` but by no record.
 //!
 //! These tests cover:
-//!   1. Sign-then-verify round-trips for Dilithium-2/3/5 and Ed25519.
+//!   1. Sign-then-verify round-trips for ML-DSA-65 and Ed25519.
 //!   2. Rejection of tampered messages and wrong keys.
 //!   3. Factory dispatch correctness and unknown-algorithm errors.
 //!   4. Algorithm-string to signature-length resolution.
@@ -16,21 +15,16 @@
 
 use std::path::PathBuf;
 
+use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ed25519_dalek::SigningKey;
-use pqcrypto_dilithium::{dilithium2, dilithium3, dilithium5};
-use pqcrypto_kyber::kyber512;
-use pqcrypto_traits::kem::PublicKey as KemPublicKey;
-use pqcrypto_traits::sign::{DetachedSignature, PublicKey, SecretKey};
 use rand::rngs::OsRng;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use auth_kademlia_rs::auth_handler::{DIDSignatureVerifierHandler, SignatureVerifierHandler};
 use auth_kademlia_rs::crypto::factory::{SignatureVerifierFactory, SignerFactory};
-use auth_kademlia_rs::crypto::signature_verifier::{
-    dilithium_level_from_pubkey_len, resolve_alg_and_length,
-};
+use auth_kademlia_rs::crypto::signature_verifier::resolve_alg_and_length;
 use auth_kademlia_rs::utils::digest;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -61,9 +55,8 @@ fn canonical_json(v: &Value) -> Vec<u8> {
     serde_json::to_vec(&sort_json_keys(v)).unwrap()
 }
 
-/// Build a minimal DID Document with a Dilithium-2 verification key.
-fn build_did_doc_d2(did: &str, pk: &dilithium2::PublicKey) -> Value {
-    let (kyber_pk, _) = kyber512::keypair();
+/// A DID Document whose only key is ML-DSA-65, in the form of RFC 9964.
+fn build_did_doc_mldsa65(did: &str, jwk: Value) -> Value {
     json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
         "id": did,
@@ -71,31 +64,36 @@ fn build_did_doc_d2(did: &str, pk: &dilithium2::PublicKey) -> Value {
             "id": format!("{}#k0", did),
             "type": "JsonWebKey2020",
             "controller": did,
-            "publicKeyJwk": { "kty": "OKP", "crv": "Dilithium2", "x": base64url(pk.as_bytes()) }
-        },{
-            "id": format!("{}#k1", did),
-            "type": "JsonWebKey2020",
-            "controller": did,
-            "publicKeyJwk": { "kty": "OKP", "crv": "Kyber512", "x": base64url(kyber_pk.as_bytes()) }
+            "publicKeyJwk": jwk
         }],
         "authentication": [ format!("{}#k0", did) ],
-        "keyAgreement":   [ format!("{}#k1", did) ],
         "service": [{"id": format!("{}#d", did), "type": "DeviceAgent",
                      "serviceEndpoint": "http://example.com"}]
     })
 }
 
-/// Build a signed DHT record: `alg_field(12) | signature | DID Doc JSON`.
-fn build_record_d2(doc: &Value, sk: &dilithium2::SecretKey) -> Vec<u8> {
-    let doc_bytes = canonical_json(doc);
+fn mldsa65_jwk(pk: &[u8]) -> Value {
+    json!({ "kty": "AKP", "alg": "ML-DSA-65", "pub": base64url(pk) })
+}
+
+/// `algorithm (12 B) | signature | document`, the algorithm field null-padded.
+fn build_record(algorithm: &str, signature: &[u8], doc: &Value) -> Vec<u8> {
     let mut alg = [0u8; 12];
-    alg[..11].copy_from_slice(b"Dilithium-2");
-    let sig = dilithium2::detached_sign(&doc_bytes, sk);
-    let mut rec = Vec::with_capacity(12 + sig.as_bytes().len() + doc_bytes.len());
-    rec.extend_from_slice(&alg);
-    rec.extend_from_slice(sig.as_bytes());
-    rec.extend_from_slice(&doc_bytes);
-    rec
+    alg[..algorithm.len()].copy_from_slice(algorithm.as_bytes());
+    let mut record = alg.to_vec();
+    record.extend_from_slice(signature);
+    record.extend_from_slice(&canonical_json(doc));
+    record
+}
+
+fn build_record_mldsa65(doc: &Value, sk: &MlDsa65KeyPair) -> Vec<u8> {
+    let sig = sk.sign(&canonical_json(doc)).unwrap();
+    build_record("ML-DSA-65", sig.as_slice(), doc)
+}
+
+/// A DID Document whose only key is the ML-DSA-65 key `pk`.
+fn build_did_doc(did: &str, pk: &[u8]) -> Value {
+    build_did_doc_mldsa65(did, mldsa65_jwk(pk))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -170,33 +168,10 @@ fn test_resolve_ed25519_length() {
 }
 
 #[test]
-fn test_resolve_dilithium_levels() {
-    assert_eq!(
-        resolve_alg_and_length("Dilithium-2").unwrap(),
-        ("Dilithium".into(), 2420)
-    );
-    assert_eq!(
-        resolve_alg_and_length("Dilithium-3").unwrap(),
-        ("Dilithium".into(), 3293)
-    );
-    assert_eq!(
-        resolve_alg_and_length("Dilithium-5").unwrap(),
-        ("Dilithium".into(), 4595)
-    );
-}
-
-#[test]
 fn test_resolve_unknown_algorithm_fails() {
-    assert!(resolve_alg_and_length("ECDSA").is_err());
-    assert!(resolve_alg_and_length("Dilithium").is_err()); // missing level
-}
-
-#[test]
-fn test_dilithium_level_from_pubkey_length() {
-    assert_eq!(dilithium_level_from_pubkey_len(1312), Some(2));
-    assert_eq!(dilithium_level_from_pubkey_len(1952), Some(3));
-    assert_eq!(dilithium_level_from_pubkey_len(2592), Some(5));
-    assert_eq!(dilithium_level_from_pubkey_len(1234), None);
+    for alg in ["ECDSA", "ML-DSA", "Dilithium", "Dilithium-2", "ML-DSA-44"] {
+        assert!(resolve_alg_and_length(alg).is_err(), "{alg}");
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -212,13 +187,7 @@ fn test_factory_unknown_algorithm_returns_error() {
 
 #[test]
 fn test_factory_known_algorithms_return_ok() {
-    for alg in &[
-        "Dilithium-2",
-        "Dilithium-3",
-        "Dilithium-5",
-        "Ed25519",
-        "RSA",
-    ] {
+    for alg in &["ML-DSA-65", "Ed25519", "RSA"] {
         assert!(
             SignatureVerifierFactory::get_verifier(alg).is_ok(),
             "get_verifier({}) should succeed",
@@ -233,104 +202,56 @@ fn test_factory_known_algorithms_return_ok() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Dilithium-2 sign / verify
+// ML-DSA-65 sign / verify
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn test_dilithium2_sign_and_verify() {
-    let (pk, sk) = dilithium2::keypair();
-    let msg = b"dilithium-2 test message";
+fn test_ml_dsa_65_sign_and_verify() {
+    let sk = MlDsa65KeyPair::generate().unwrap();
+    let pk = sk.public_key().to_vec();
+    let msg = b"ml-dsa-65 test message";
 
-    let signer = SignerFactory::get_signer("Dilithium-2").unwrap();
-    let sig = signer.sign(sk.as_bytes(), msg).unwrap();
+    let signer = SignerFactory::get_signer("ML-DSA-65").unwrap();
+    let sig = signer.sign(&sk.private_key().unwrap(), msg).unwrap();
 
-    let verifier = SignatureVerifierFactory::get_verifier("Dilithium-2").unwrap();
+    let verifier = SignatureVerifierFactory::get_verifier("ML-DSA-65").unwrap();
     assert!(
-        verifier.verify(pk.as_bytes(), &sig, msg).unwrap(),
-        "valid Dilithium-2 signature must verify"
+        verifier.verify(&pk, &sig, msg).unwrap(),
+        "valid ML-DSA-65 signature must verify"
     );
 }
 
 #[test]
-fn test_dilithium2_tampered_message_rejected() {
-    let (pk, sk) = dilithium2::keypair();
+fn test_ml_dsa_65_tampered_message_rejected() {
+    let sk = MlDsa65KeyPair::generate().unwrap();
+    let pk = sk.public_key().to_vec();
     let msg = b"original message";
 
-    let signer = SignerFactory::get_signer("Dilithium-2").unwrap();
-    let sig = signer.sign(sk.as_bytes(), msg).unwrap();
+    let signer = SignerFactory::get_signer("ML-DSA-65").unwrap();
+    let sig = signer.sign(&sk.private_key().unwrap(), msg).unwrap();
 
-    let verifier = SignatureVerifierFactory::get_verifier("Dilithium-2").unwrap();
+    let verifier = SignatureVerifierFactory::get_verifier("ML-DSA-65").unwrap();
     let tampered = b"tampered message!";
     assert!(
-        !verifier.verify(pk.as_bytes(), &sig, tampered).unwrap(),
+        !verifier.verify(&pk, &sig, tampered).unwrap(),
         "signature over different message must not verify"
     );
 }
 
 #[test]
-fn test_dilithium2_wrong_key_rejected() {
-    let (_, sk) = dilithium2::keypair();
-    let (wrong_pk, _) = dilithium2::keypair(); // different keypair
+fn test_ml_dsa_65_wrong_key_rejected() {
+    let sk = MlDsa65KeyPair::generate().unwrap();
+    let wrong_pk = MlDsa65KeyPair::generate().unwrap().public_key().to_vec(); // different keypair
     let msg = b"message signed with sk";
 
-    let signer = SignerFactory::get_signer("Dilithium-2").unwrap();
-    let sig = signer.sign(sk.as_bytes(), msg).unwrap();
+    let signer = SignerFactory::get_signer("ML-DSA-65").unwrap();
+    let sig = signer.sign(&sk.private_key().unwrap(), msg).unwrap();
 
-    let verifier = SignatureVerifierFactory::get_verifier("Dilithium-2").unwrap();
+    let verifier = SignatureVerifierFactory::get_verifier("ML-DSA-65").unwrap();
     assert!(
-        !verifier.verify(wrong_pk.as_bytes(), &sig, msg).unwrap(),
+        !verifier.verify(&wrong_pk, &sig, msg).unwrap(),
         "signature must not verify under a different public key"
     );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Dilithium-3 sign / verify
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_dilithium3_sign_and_verify() {
-    let (pk, sk) = dilithium3::keypair();
-    let msg = b"dilithium-3 test";
-
-    let signer = SignerFactory::get_signer("Dilithium-3").unwrap();
-    let sig = signer.sign(sk.as_bytes(), msg).unwrap();
-
-    let verifier = SignatureVerifierFactory::get_verifier("Dilithium-3").unwrap();
-    assert!(verifier.verify(pk.as_bytes(), &sig, msg).unwrap());
-}
-
-#[test]
-fn test_dilithium3_tampered_message_rejected() {
-    let (pk, sk) = dilithium3::keypair();
-    let signer = SignerFactory::get_signer("Dilithium-3").unwrap();
-    let sig = signer.sign(sk.as_bytes(), b"original").unwrap();
-    let verifier = SignatureVerifierFactory::get_verifier("Dilithium-3").unwrap();
-    assert!(!verifier.verify(pk.as_bytes(), &sig, b"tampered").unwrap());
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Dilithium-5 sign / verify
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_dilithium5_sign_and_verify() {
-    let (pk, sk) = dilithium5::keypair();
-    let msg = b"dilithium-5 highest security level";
-
-    let signer = SignerFactory::get_signer("Dilithium-5").unwrap();
-    let sig = signer.sign(sk.as_bytes(), msg).unwrap();
-
-    let verifier = SignatureVerifierFactory::get_verifier("Dilithium-5").unwrap();
-    assert!(verifier.verify(pk.as_bytes(), &sig, msg).unwrap());
-}
-
-#[test]
-fn test_dilithium5_tampered_message_rejected() {
-    let (pk, sk) = dilithium5::keypair();
-    let signer = SignerFactory::get_signer("Dilithium-5").unwrap();
-    let sig = signer.sign(sk.as_bytes(), b"original").unwrap();
-    let verifier = SignatureVerifierFactory::get_verifier("Dilithium-5").unwrap();
-    assert!(!verifier.verify(pk.as_bytes(), &sig, b"tampered").unwrap());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -392,10 +313,11 @@ fn test_ed25519_wrong_key_rejected() {
 /// public-key extraction from the DID Document → verification.
 #[test]
 fn test_did_handler_accepts_valid_self_signed_record() {
-    let (pk, sk) = dilithium2::keypair();
+    let sk = MlDsa65KeyPair::generate().unwrap();
+    let pk = sk.public_key().to_vec();
     let did = format!("did:iiot:{}", Uuid::new_v4());
-    let doc = build_did_doc_d2(&did, &pk);
-    let record = build_record_d2(&doc, &sk);
+    let doc = build_did_doc(&did, &pk);
+    let record = build_record_mldsa65(&doc, &sk);
 
     // issuer_pub_key.bin path is irrelevant for self-signed verification.
     let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
@@ -407,10 +329,11 @@ fn test_did_handler_accepts_valid_self_signed_record() {
 
 #[test]
 fn test_did_handler_accepts_record_bound_to_requested_key() {
-    let (pk, sk) = dilithium2::keypair();
+    let sk = MlDsa65KeyPair::generate().unwrap();
+    let pk = sk.public_key().to_vec();
     let uuid = Uuid::new_v4().to_string();
-    let doc = build_did_doc_d2(&format!("did:iiot:{uuid}"), &pk);
-    let record = build_record_d2(&doc, &sk);
+    let doc = build_did_doc(&format!("did:iiot:{uuid}"), &pk);
+    let record = build_record_mldsa65(&doc, &sk);
     let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
 
     assert!(
@@ -423,11 +346,12 @@ fn test_did_handler_accepts_record_bound_to_requested_key() {
 
 #[test]
 fn test_did_handler_rejects_record_bound_to_another_key() {
-    let (pk, sk) = dilithium2::keypair();
+    let sk = MlDsa65KeyPair::generate().unwrap();
+    let pk = sk.public_key().to_vec();
     let record_uuid = Uuid::new_v4().to_string();
     let requested_uuid = Uuid::new_v4().to_string();
-    let doc = build_did_doc_d2(&format!("did:iiot:{record_uuid}"), &pk);
-    let record = build_record_d2(&doc, &sk);
+    let doc = build_did_doc(&format!("did:iiot:{record_uuid}"), &pk);
+    let record = build_record_mldsa65(&doc, &sk);
     let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
 
     assert!(
@@ -440,9 +364,10 @@ fn test_did_handler_rejects_record_bound_to_another_key() {
 
 #[test]
 fn test_did_handler_rejects_non_uuid_did_identifier() {
-    let (pk, sk) = dilithium2::keypair();
-    let doc = build_did_doc_d2("did:iiot:not-a-uuid", &pk);
-    let record = build_record_d2(&doc, &sk);
+    let sk = MlDsa65KeyPair::generate().unwrap();
+    let pk = sk.public_key().to_vec();
+    let doc = build_did_doc("did:iiot:not-a-uuid", &pk);
+    let record = build_record_mldsa65(&doc, &sk);
     let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
 
     assert!(
@@ -457,11 +382,11 @@ fn test_did_handler_rejects_non_uuid_did_identifier() {
 /// embedded in the DID Document must be rejected.
 #[test]
 fn test_did_handler_rejects_mismatched_key_in_record() {
-    let (pk, _) = dilithium2::keypair();
-    let (_, wrong_sk) = dilithium2::keypair(); // key mismatch
+    let pk = MlDsa65KeyPair::generate().unwrap().public_key().to_vec();
+    let wrong_sk = MlDsa65KeyPair::generate().unwrap(); // key mismatch
     let did = format!("did:iiot:{}", Uuid::new_v4());
-    let doc = build_did_doc_d2(&did, &pk); // public key from keypair A
-    let record = build_record_d2(&doc, &wrong_sk); // signed with keypair B's secret key
+    let doc = build_did_doc(&did, &pk); // public key from keypair A
+    let record = build_record_mldsa65(&doc, &wrong_sk); // signed with keypair B's secret key
 
     let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
     let result = handler.handle_signature_verification(&record).unwrap();
@@ -472,10 +397,11 @@ fn test_did_handler_rejects_mismatched_key_in_record() {
 /// must be rejected.
 #[test]
 fn test_did_handler_rejects_tampered_did_document() {
-    let (pk, sk) = dilithium2::keypair();
+    let sk = MlDsa65KeyPair::generate().unwrap();
+    let pk = sk.public_key().to_vec();
     let did = format!("did:iiot:{}", Uuid::new_v4());
-    let doc = build_did_doc_d2(&did, &pk);
-    let mut record = build_record_d2(&doc, &sk);
+    let doc = build_did_doc(&did, &pk);
+    let mut record = build_record_mldsa65(&doc, &sk);
 
     // Flip the last byte of the DID Document section.
     if let Some(last) = record.last_mut() {
@@ -513,19 +439,21 @@ fn test_did_handler_rejects_malformed_record() {
 /// - auth_signature = Sign(new_record, old_secret_key) proves the rotation
 #[test]
 fn test_did_handler_accepts_valid_key_rotation() {
-    let (old_pk, old_sk) = dilithium2::keypair();
-    let (new_pk, new_sk) = dilithium2::keypair();
+    let old_sk = MlDsa65KeyPair::generate().unwrap();
+    let old_pk = old_sk.public_key().to_vec();
+    let new_sk = MlDsa65KeyPair::generate().unwrap();
+    let new_pk = new_sk.public_key().to_vec();
     let did = format!("did:iiot:{}", Uuid::new_v4());
 
-    let old_doc = build_did_doc_d2(&did, &old_pk);
-    let old_record = build_record_d2(&old_doc, &old_sk);
+    let old_doc = build_did_doc(&did, &old_pk);
+    let old_record = build_record_mldsa65(&old_doc, &old_sk);
 
-    let new_doc = build_did_doc_d2(&did, &new_pk);
-    let new_record = build_record_d2(&new_doc, &new_sk);
+    let new_doc = build_did_doc(&did, &new_pk);
+    let new_record = build_record_mldsa65(&new_doc, &new_sk);
 
     // auth_signature = Sign(new_record_bytes, old_secret_key)
-    let auth_sig_detached = dilithium2::detached_sign(&new_record, &old_sk);
-    let auth_sig = auth_sig_detached.as_bytes().to_vec();
+    let auth_sig_detached = old_sk.sign(&new_record).unwrap();
+    let auth_sig = auth_sig_detached.clone();
 
     let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
     assert!(
@@ -541,22 +469,21 @@ fn test_did_handler_accepts_valid_key_rotation() {
 /// rejected at step 3 of verify_key_rotation.
 #[test]
 fn test_did_handler_rejects_update_with_invalid_new_record_self_sig() {
-    let (old_pk, old_sk) = dilithium2::keypair();
-    let (new_pk, _) = dilithium2::keypair();
-    let (_, wrong_new_sk) = dilithium2::keypair(); // key mismatch for self-sig
+    let old_sk = MlDsa65KeyPair::generate().unwrap();
+    let old_pk = old_sk.public_key().to_vec();
+    let new_pk = MlDsa65KeyPair::generate().unwrap().public_key().to_vec();
+    let wrong_new_sk = MlDsa65KeyPair::generate().unwrap(); // key mismatch for self-sig
     let did = format!("did:iiot:{}", Uuid::new_v4());
 
-    let old_doc = build_did_doc_d2(&did, &old_pk);
-    let old_record = build_record_d2(&old_doc, &old_sk);
+    let old_doc = build_did_doc(&did, &old_pk);
+    let old_record = build_record_mldsa65(&old_doc, &old_sk);
 
     // new_record: doc embeds new_pk but is signed with wrong_new_sk → invalid self-sig
-    let new_doc = build_did_doc_d2(&did, &new_pk);
-    let new_record = build_record_d2(&new_doc, &wrong_new_sk);
+    let new_doc = build_did_doc(&did, &new_pk);
+    let new_record = build_record_mldsa65(&new_doc, &wrong_new_sk);
 
     // auth_sig is produced correctly with old_sk
-    let auth_sig = dilithium2::detached_sign(&new_record, &old_sk)
-        .as_bytes()
-        .to_vec();
+    let auth_sig = old_sk.sign(&new_record).unwrap();
 
     let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
     assert!(
@@ -570,20 +497,22 @@ fn test_did_handler_rejects_update_with_invalid_new_record_self_sig() {
 /// Key rotation with a wrong auth signature (not produced with the old key) fails.
 #[test]
 fn test_did_handler_rejects_invalid_auth_signature_on_update() {
-    let (old_pk, old_sk) = dilithium2::keypair();
-    let (new_pk, new_sk) = dilithium2::keypair();
-    let (_, unrelated_sk) = dilithium2::keypair(); // wrong key for auth_sig
+    let old_sk = MlDsa65KeyPair::generate().unwrap();
+    let old_pk = old_sk.public_key().to_vec();
+    let new_sk = MlDsa65KeyPair::generate().unwrap();
+    let new_pk = new_sk.public_key().to_vec();
+    let unrelated_sk = MlDsa65KeyPair::generate().unwrap(); // wrong key for auth_sig
     let did = format!("did:iiot:{}", Uuid::new_v4());
 
-    let old_doc = build_did_doc_d2(&did, &old_pk);
-    let old_record = build_record_d2(&old_doc, &old_sk);
+    let old_doc = build_did_doc(&did, &old_pk);
+    let old_record = build_record_mldsa65(&old_doc, &old_sk);
 
-    let new_doc = build_did_doc_d2(&did, &new_pk);
-    let new_record = build_record_d2(&new_doc, &new_sk);
+    let new_doc = build_did_doc(&did, &new_pk);
+    let new_record = build_record_mldsa65(&new_doc, &new_sk);
 
     // Sign with WRONG key — should fail step 2 of key-rotation verification.
-    let bad_sig = dilithium2::detached_sign(&new_record, &unrelated_sk);
-    let bad_sig_bytes = bad_sig.as_bytes().to_vec();
+    let bad_sig = unrelated_sk.sign(&new_record).unwrap();
+    let bad_sig_bytes = bad_sig.clone();
 
     let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
     assert!(
@@ -592,4 +521,86 @@ fn test_did_handler_rejects_invalid_auth_signature_on_update() {
             .unwrap(),
         "update with wrong auth signature must be rejected"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ML-DSA-65 records (ADR 0003)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The signature length of a record comes from the crate, not from a literal,
+/// and a signature has that length.
+#[test]
+fn ml_dsa_65_signature_length_is_the_crates() {
+    let crate_len = aws_lc_rs::signature::ML_DSA_65_SIGNING.signature_len();
+    assert_eq!(resolve_alg_and_length("ML-DSA-65").unwrap().1, crate_len);
+    let key = MlDsa65KeyPair::generate().unwrap();
+    assert_eq!(key.sign(b"message").unwrap().len(), crate_len);
+}
+
+/// A complete ML-DSA-65 record verifies and is bound to the key of its DID.
+#[test]
+fn an_ml_dsa_65_record_verifies_and_binds_to_its_key() {
+    let handler = DIDSignatureVerifierHandler::new(PathBuf::from("unused"));
+    let sk = MlDsa65KeyPair::generate().unwrap();
+    let pk = sk.public_key().to_vec();
+    let uuid = Uuid::new_v4().to_string();
+    let did = format!("did:iiot:{uuid}");
+    let record = build_record_mldsa65(&build_did_doc_mldsa65(&did, mldsa65_jwk(&pk)), &sk);
+
+    assert!(handler.handle_signature_verification(&record).unwrap());
+    assert!(handler
+        .handle_key_binding_verification(&digest(&uuid), &record)
+        .unwrap());
+}
+
+/// The record's header and its key must name the same algorithm, in the key
+/// type of RFC 9964.
+#[test]
+fn an_ml_dsa_65_record_whose_key_says_otherwise_is_refused() {
+    let handler = DIDSignatureVerifierHandler::new(PathBuf::from("unused"));
+    let sk = MlDsa65KeyPair::generate().unwrap();
+    let pk = sk.public_key().to_vec();
+    let did = format!("did:iiot:{}", Uuid::new_v4());
+    let pub_b64 = base64url(&pk);
+    for jwk in [
+        json!({ "kty": "AKP", "alg": "ML-DSA-44", "pub": pub_b64 }),
+        json!({ "kty": "OKP", "alg": "ML-DSA-65", "pub": pub_b64 }),
+        json!({ "kty": "AKP", "pub": pub_b64 }),
+        json!({ "kty": "OKP", "crv": "Dilithium2", "x": pub_b64 }),
+    ] {
+        let record = build_record_mldsa65(&build_did_doc_mldsa65(&did, jwk.clone()), &sk);
+        assert!(
+            !matches!(handler.handle_signature_verification(&record), Ok(true)),
+            "accepted a record whose key is {jwk}"
+        );
+    }
+}
+
+/// A node accepts only ML-DSA-65 records: an Ed25519 record that is correctly
+/// self-signed is refused, and so are the other algorithm fields.
+#[test]
+fn records_with_another_algorithm_are_refused() {
+    let handler = DIDSignatureVerifierHandler::new(PathBuf::from("unused"));
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let did = format!("did:iiot:{}", Uuid::new_v4());
+    let jwk = json!({ "kty": "OKP", "crv": "Ed25519",
+                      "x": base64url(signing_key.verifying_key().as_bytes()) });
+    let doc = build_did_doc_mldsa65(&did, jwk);
+    let ed25519_sig = SignerFactory::get_signer("Ed25519")
+        .unwrap()
+        .sign(&signing_key.to_bytes(), &canonical_json(&doc))
+        .unwrap();
+    let ed25519_record = build_record("Ed25519", &ed25519_sig, &doc);
+    assert!(!matches!(
+        handler.handle_signature_verification(&ed25519_record),
+        Ok(true)
+    ));
+
+    for algorithm in ["Dilithium-2", "Dilithium-3", "Dilithium-5", "RSA"] {
+        let record = build_record(algorithm, &[0u8; 4627], &doc);
+        assert!(
+            !matches!(handler.handle_signature_verification(&record), Ok(true)),
+            "accepted a record with algorithm {algorithm}"
+        );
+    }
 }

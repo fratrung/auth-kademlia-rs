@@ -10,6 +10,9 @@ here.
 Each experiment states the question it answers, how it is run, what is
 measured, the results and how to read them.
 
+**The results predate ADR 0003**: they were measured with Dilithium-2 records.
+E1 and E2 must be measured again with ML-DSA-65 records (section 1).
+
 ## Contents
 
 1. [Environment](#1-environment)
@@ -29,6 +32,12 @@ once) with the counters of `src/counters.rs`, which only count. Testbed image
 `auth-kademlia-testbed:o2-counters`, release build, Rust 1.98.1. For the
 before/after comparisons, commit `e383d17`, the same code without `fc79016`.
 All runs on 2026-11-04.
+
+**Records since ADR 0003.** These runs used Dilithium-2 records, about 6 KB in
+5 fragments. Records are now signed with ML-DSA-65 and carry no KEM key: about
+6.5 KB, still 5 fragments, with a slower verification. E1 (latency) and E2
+(traffic) must be measured again; A1 and A2 are not expected to change. Until
+then the numbers below describe the Dilithium-2 code.
 
 **Host.** AMD Ryzen 7 4800H (8 cores, 16 threads), 15 GB RAM, Linux 7.0,
 Docker 29.9.2. All containers share the host's CPU and kernel; no CPU limit

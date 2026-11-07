@@ -147,7 +147,7 @@ default; Y.1541 bounds delay variation at 50 ms for classes 0 and 1.
 | `status` | Live contacts, contacts and records of every node |
 | `ctl NODE info` | Name, address, node id, DID, current signing key |
 | `ctl NODE publish` | Create the node's DID on first use and publish it; again, it republishes the same record |
-| `ctl NODE update` | Rotate Dilithium and Kyber keys together; the old key authorizes the new record |
+| `ctl NODE update` | Rotate the ML-DSA-65 key; the old key authorizes the new record |
 | `ctl NODE discard` | Drop a rotation that was not confirmed |
 | `ctl NODE get DID` | Read a DID; `get TARGET --from NODE` also takes a node name |
 | `ctl NODE storage` | Records this node holds, with their signing key |
@@ -410,7 +410,7 @@ publications and about 80 remote reads per run, medians:
 
 ## Limits
 
-- All containers share the host CPU, and Dilithium verification competes
+- All containers share the host CPU, and ML-DSA verification competes
   between them. `--cpus` gets closer to an ARM board but stays an
   approximation.
 - A desktop with 16 cores and 15 GB ran 127 nodes (about 5 GB used), once

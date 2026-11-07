@@ -29,8 +29,8 @@ not drawn, as in the GitHub mobile app.
 
 AuthKademlia is the Verifiable Data Registry (VDR) of the `did:iiot` method
 [Trungadi 2025]. It stores two kinds of records: DID Documents, which hold a
-device's post-quantum public keys (Dilithium, Kyber), and the Status List of
-revoked credentials, signed by an issuer.
+device's post-quantum public key (ML-DSA-65 [FIPS 204]), and the Status List
+of revoked credentials, signed by an issuer.
 
 The DHT is Kademlia [Maymounkov 2002] with one change that shapes everything
 else: **a node stores a value only if it is an authenticated record**, a DID
@@ -73,14 +73,18 @@ forgery impossible but would change identity at every key rotation.
 | DHT key of the Status List | `SHA-1("status-list")` |
 | Record | `algorithm (12 B) | signature | DID Document (canonical JSON)` |
 
-The algorithm field selects the verifier: Dilithium-2, 3 or 5, Ed25519 or RSA.
-A record is accepted for a key only if:
+The algorithm field must be `ML-DSA-65` (ADR 0003): a record with any other
+is refused, so no DID is published with a key a quantum computer breaks. The
+signature is pure ML-DSA with an empty context, 3309 bytes. The document has
+one key, a JWK of the type RFC 9964 defines [RFC 9964]: `{"kty": "AKP",
+"alg": "ML-DSA-65", "pub": <base64url>}`. A record is accepted for a key only if:
 
 1. **DID binding:** the document's `id` is `did:iiot:<uuid>`, the UUID parses,
    and `SHA-1(uuid)` is the key. Without this check a valid record could be
    stored under any key.
-2. **Signature:** the signature verifies over the canonical JSON with the
-   public key the document itself declares.
+2. **Signature:** the document's key has `kty` `AKP` and the `alg` of the
+   record's algorithm field, and the signature verifies over the canonical
+   JSON with that key, the one the document itself declares.
 
 A verification result can be cached under the SHA-256 of the record (one hour,
 4096 entries). A cache miss is a full verification, never a bypass.
@@ -92,7 +96,7 @@ Nodes talk over UDP. A message is a `bincode` envelope
 message id and by the peer's address, and an answer of the wrong type is
 discarded.
 
-Post-quantum records are about 6 KB, more than one datagram, so every message
+Post-quantum records are about 6.5 KB, more than one datagram, so every message
 is split into fragments of at most 1400 bytes with a 12-byte header (`KADF`,
 fragment id, index, total). Reassembly is bounded: at most 256 KB per message,
 64 partial messages in all, 8 per peer, kept 10 s. These limits protect memory.
@@ -222,8 +226,8 @@ before storing:
    and sends no answer, so the sender counts it as unavailable.
 
 **Why hashes, not records.** A node holding the record answers with its
-SHA-256, 32 bytes in one datagram, instead of about 6 KB in five fragments.
-With records, every check cost about `k` times 6 KB, and a burst of forged
+SHA-256, 32 bytes in one datagram, instead of a whole record, about 6.5 KB in
+five fragments. With records, every check cost about `k` records, and a burst of forged
 STOREs made the replica receive more fragmented answers from the same holder
 than its reassembly limit allows, so it dropped them. A hash cannot be
 verified, so a node can block a STORE by answering with a wrong hash. It can
@@ -293,7 +297,9 @@ public key with the hash in the Verifiable Credential.**
 
 *Source: [`docs/design/update.mmd`](docs/design/update.mmd).*
 
-A rotation replaces the Dilithium and Kyber keys together and needs new VCs.
+A rotation replaces the ML-DSA-65 key, the only key of the document, and
+needs new VCs. Key agreement between devices happens outside the DHT, with
+ephemeral keys (ADR 0003), so no KEM key is published or rotated.
 The new record `v2` carries an authorization: `auth = sign(v2, secret key of
 v1)`. The chain of authorizations, each new version signed by the previous
 key, is the same idea as root key rotation in TUF [Samuel 2010].
@@ -319,8 +325,9 @@ key could be replayed.
 
 ## 10. Status List
 
-The Status List lists revoked credentials and is signed by the issuer, whose
-public key every node reads from `issuer.bin`. Because it changes more often
+The Status List lists revoked credentials and is signed by the issuer with
+ML-DSA-65, whose raw public key (1952 bytes) every node reads from
+`issuer.bin`. Because it changes more often
 than DID Documents, reads use a quorum: with `alpha = 3`, two byte-identical
 copies out of at most three, the local copy counting as one. A split with no
 majority returns nothing. The issuer updates it with `UpdateStatusList`. It is
@@ -395,6 +402,8 @@ that validate the current code and their results.
   Calls", *ACM Transactions on Computer Systems* 2(1), 1984.
 - [Cassandra LWT] DataStax, "Lightweight transactions", Apache Cassandra 2.1
   documentation. https://docs.datastax.com/en/cassandra-oss/2.1/cassandra/dml/dml_ltwt_transaction_c.html
+- [FIPS 204] NIST, "Module-Lattice-Based Digital Signature Standard", FIPS
+  204, August 2024.
 - [Hohpe 2003] G. Hohpe and B. Woolf, *Enterprise Integration Patterns*,
   Addison-Wesley, 2003, "Idempotent Receiver".
 - [Karn 1987] P. Karn and C. Partridge, "Improving Round-Trip Time Estimates in
@@ -411,6 +420,7 @@ that validate the current code and their results.
   Extension", RFC 7633, 2015.
 - [RFC 9110] R. Fielding, M. Nottingham and J. Reschke, "HTTP Semantics",
   RFC 9110, 2022, §9.2.2 "Idempotent Methods".
+- [RFC 9964] "ML-DSA for JOSE and COSE", RFC 9964, May 2026.
 - [Saltzer 1975] J. H. Saltzer and M. D. Schroeder, "The Protection of
   Information in Computer Systems", *Proceedings of the IEEE* 63(9), 1975.
 - [Samuel 2010] J. Samuel, N. Mathewson, J. Cappos and R. Dingledine,

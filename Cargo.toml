@@ -61,8 +61,9 @@ base64             = "0.22"
 hex                = "0.4"
 rand               = "0.8"
 
-# Post-quantum (Dilithium and Kyber)
-pqcrypto-dilithium = "0.5"
+# Post-quantum: ML-DSA-65 for records (ADR 0003), from AWS-LC
+aws-lc-rs          = { version = "1.19", default-features = false, features = ["aws-lc-sys", "alloc"] }
+# Kyber until the ML-KEM key manager (ADR 0003, step 3)
 pqcrypto-kyber     = "0.8"
 pqcrypto-traits    = "0.3"
 # Ed25519
@@ -96,8 +97,6 @@ libc = { version = "0.2", optional = true }
 tokio              = { version = "1", features = ["full", "test-util"] }
 futures            = "0.3"
 env_logger         = "0.11"
-pqcrypto-dilithium = "0.5"
-pqcrypto-traits    = "0.3"
 
 [[test]]
 name = "scenario_replication"

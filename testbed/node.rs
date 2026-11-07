@@ -32,8 +32,6 @@ use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::{Server, SetOutcome};
 use auth_kademlia_rs::storage::IStorage;
 use auth_kademlia_rs::utils::digest;
-use pqcrypto_dilithium::dilithium2;
-use pqcrypto_traits::sign::DetachedSignature;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -204,8 +202,8 @@ async fn publish(node: &Node) -> Value {
     })
 }
 
-/// Rotate the keys: new Dilithium and Kyber keys, the new record signed by
-/// the new key and authorized by the old one. A rotation that was not
+/// Rotate the key: a new ML-DSA-65 key, the new record signed by the new key
+/// and authorized by the old one. A rotation that was not
 /// confirmed is retried as it is, until it is confirmed or discarded.
 async fn update(node: &Node) -> Value {
     let mut identity = node.identity.lock().await;
@@ -215,9 +213,11 @@ async fn update(node: &Node) -> Value {
     let retry = id.pending.is_some();
     let rotation = id.pending.get_or_insert_with(|| {
         let next = Version::generate(&id.did);
-        let auth_signature = dilithium2::detached_sign(&next.record, &id.current.secret_key)
-            .as_bytes()
-            .to_vec();
+        let auth_signature = id
+            .current
+            .secret_key
+            .sign(&next.record)
+            .expect("ML-DSA-65 signing");
         Rotation {
             next,
             auth_signature,
@@ -558,7 +558,7 @@ fn main() {
         env_logger::Env::default().default_filter_or("warn,testbed_node=info"),
     )
     .init();
-    // Cap the blocking pool, used for Dilithium verification, to the cores.
+    // Cap the blocking pool, used for ML-DSA verification, to the cores.
     let parallelism = std::thread::available_parallelism()
         .map(|cores| cores.get())
         .unwrap_or(4);

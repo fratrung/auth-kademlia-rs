@@ -169,7 +169,7 @@ def plot(results: list, confidence: float, out_path: Path):
     fig, axes = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
     fig.suptitle(
         f"Resilience degradation vs attacker concurrency\n"
-        f"(victim: 2 CPU, Dilithium-2 — error bars: {int(confidence*100)}% t-CI)",
+        f"(victim: 2 CPU, ML-DSA-65 — error bars: {int(confidence*100)}% t-CI)",
         fontsize=12,
     )
 

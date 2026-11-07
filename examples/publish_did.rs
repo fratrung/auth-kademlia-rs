@@ -4,7 +4,7 @@ use std::path::PathBuf;
 /// Rust equivalent of the Python AuthKademlia example:
 ///
 ///   1. Start a DHT node with signature verification
-///   2. Generate Dilithium + Kyber key pairs
+///   2. Generate an ML-DSA-65 key pair
 ///   3. Build a did:iiot DID Document
 ///   4. Sign it and pack it into the record format:
 ///      | algorithm (12 bytes, null-padded) | signature | DID Document (JSON) |
@@ -21,15 +21,8 @@ use std::time::Duration;
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::Server;
 
-// These come from the `pqcrypto` family of crates.
-// Add to Cargo.toml:
-//   pqcrypto-dilithium = "0.5"
-//   pqcrypto-kyber     = "0.8"
-//   pqcrypto-traits    = "0.3"
-use pqcrypto_dilithium::dilithium2;
-use pqcrypto_kyber::kyber512;
-use pqcrypto_traits::kem::PublicKey as KemPublicKey;
-use pqcrypto_traits::sign::{DetachedSignature, PublicKey};
+// ML-DSA-65 keys and signatures, from aws-lc-rs (ADR 0003).
+use auth_kademlia_rs::crypto::mldsa::{self as mldsa, MlDsa65KeyPair};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
@@ -69,13 +62,9 @@ fn sort_json_keys(v: &Value) -> Value {
 /// Build the signed record:
 ///
 /// ```text
-/// | algorithm (12 bytes, null-padded) | Dilithium signature | DID Document (JSON) |
+/// | algorithm (12 bytes, null-padded) | ML-DSA-65 signature | DID Document (JSON) |
 /// ```
-fn build_signed_record(
-    doc: &Value,
-    secret_key: &dilithium2::SecretKey,
-    algorithm: &str,
-) -> Vec<u8> {
+fn build_signed_record(doc: &Value, secret_key: &MlDsa65KeyPair, algorithm: &str) -> Vec<u8> {
     let doc_bytes = encode_did_document(doc);
 
     // Pack algorithm into exactly 12 bytes (UTF-8, null-padded on the right).
@@ -85,8 +74,8 @@ fn build_signed_record(
     alg_field[..copy_len].copy_from_slice(&alg_bytes[..copy_len]);
 
     // Sign using the detached API — returns only the signature bytes.
-    let detached_sig = dilithium2::detached_sign(&doc_bytes, secret_key);
-    let signature = detached_sig.as_bytes();
+    let detached_sig = secret_key.sign(&doc_bytes).expect("ML-DSA-65 signing");
+    let signature = detached_sig.as_slice();
 
     // Concatenate: alg_field || signature || doc_bytes
     let mut record = Vec::with_capacity(12 + signature.len() + doc_bytes.len());
@@ -101,14 +90,10 @@ fn generate_did_iiot() -> String {
     format!("did:iiot:{}", Uuid::new_v4())
 }
 
-/// Build a minimal `did:iiot` DID Document with one Dilithium and one Kyber key.
-fn build_did_document(
-    did: &str,
-    dilithium_pk: &dilithium2::PublicKey,
-    kyber_pk: &kyber512::PublicKey,
-) -> Value {
-    let dilithium_x = base64url_encode(dilithium_pk.as_bytes());
-    let kyber_x = base64url_encode(kyber_pk.as_bytes());
+/// Build a minimal `did:iiot` DID Document with its ML-DSA-65 key (RFC 9964)
+/// and no key agreement key (ADR 0003).
+fn build_did_document(did: &str, signing_pk: &[u8]) -> Value {
+    let signing_x = base64url_encode(signing_pk);
 
     json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
@@ -119,24 +104,12 @@ fn build_did_document(
                 "type": "JsonWebKey2020",
                 "controller": did,
                 "publicKeyJwk": {
-                    "kty": "OKP",
-                    "crv": "Dilithium2",
-                    "x": dilithium_x
-                }
-            },
-            {
-                "id": format!("{}#k1", did),
-                "type": "JsonWebKey2020",
-                "controller": did,
-                "publicKeyJwk": {
-                    "kty": "OKP",
-                    "crv": "Kyber512",
-                    "x": kyber_x
+                    "kty": "AKP", "alg": "ML-DSA-65",
+                    "pub": signing_x
                 }
             }
         ],
         "authentication": [ format!("{}#k0", did) ],
-        "keyAgreement":   [ format!("{}#k1", did) ],
         "service": [
             {
                 "id": format!("{}#device", did),
@@ -206,19 +179,19 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     sleep(Duration::from_secs(1)).await;
 
-    // Generate PQC keypairs (Dilithium for signatures, Kyber for encryption)
-    let (dilithium_pk, dilithium_sk) = dilithium2::keypair();
-    let (kyber_pk, _) = kyber512::keypair();
+    // Generate the ML-DSA-65 signing key pair (ADR 0003)
+    let signing_sk = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
+    let signing_pk = signing_sk.public_key().to_vec();
 
     // Create a unique Decentralized Identifier (DID)
     let did = generate_did_iiot();
-    let did_doc = build_did_document(&did, &dilithium_pk, &kyber_pk);
+    let did_doc = build_did_document(&did, &signing_pk);
 
     // Extract the hash-part of the DID to use as the DHT key
     let dht_key = did.split(':').next_back().unwrap().to_string();
 
-    // Sign the DID Document using Dilithium-2
-    let signed_record = build_signed_record(&did_doc, &dilithium_sk, "Dilithium-2");
+    // Sign the DID Document with ML-DSA-65
+    let signed_record = build_signed_record(&did_doc, &signing_sk, "ML-DSA-65");
 
     // Retry loop to publish the record (waiting for network stabilization)
     let mut is_ready = false;
@@ -251,7 +224,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             // Parse the binary record: [Algorithm Name (12 bytes)] [Signature] [DID Document JSON]
             let alg_cow = String::from_utf8_lossy(&record[0..12]);
             let alg = alg_cow.trim_matches(char::from(0)); // Remove null padding
-            let doc_start = 12 + dilithium2::signature_bytes();
+            let doc_start = 12 + mldsa::signature_len();
             let doc_bytes = &record[doc_start..];
 
             if let Ok(doc) = serde_json::from_slice::<Value>(doc_bytes) {

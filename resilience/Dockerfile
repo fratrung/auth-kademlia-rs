@@ -10,7 +10,7 @@
 # Usage: docker compose -f resilience/docker-compose.yaml up --build
 
 # ── Stage 1: compile ──────────────────────────────────────────────────────────
-FROM rustlang/rust:nightly-slim AS builder
+FROM rustlang/rust:nightly-bookworm-slim AS builder
 
 WORKDIR /app
 COPY . .

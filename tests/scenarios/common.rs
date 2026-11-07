@@ -5,11 +5,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use pqcrypto_dilithium::dilithium2;
-use pqcrypto_kyber::kyber512;
-use pqcrypto_traits::kem::PublicKey as KemPublicKey;
-use pqcrypto_traits::sign::{DetachedSignature, PublicKey as SignPublicKey};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -96,28 +93,18 @@ pub fn generate_did_iiot() -> String {
     format!("did:iiot:{}", Uuid::new_v4())
 }
 
-pub fn build_did_document(
-    did: &str,
-    dilithium_pk: &dilithium2::PublicKey,
-    kyber_pk: &kyber512::PublicKey,
-) -> Value {
-    let dx = URL_SAFE_NO_PAD.encode(dilithium_pk.as_bytes());
-    let kx = URL_SAFE_NO_PAD.encode(kyber_pk.as_bytes());
+pub fn build_did_document(did: &str, signing_pk: &[u8]) -> Value {
+    let signing_x = URL_SAFE_NO_PAD.encode(signing_pk);
     json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
         "id": did,
         "verificationMethod": [
             {
                 "id": format!("{}#k0", did), "type": "JsonWebKey2020", "controller": did,
-                "publicKeyJwk": { "kty": "OKP", "crv": "Dilithium2", "x": dx }
-            },
-            {
-                "id": format!("{}#k1", did), "type": "JsonWebKey2020", "controller": did,
-                "publicKeyJwk": { "kty": "OKP", "crv": "Kyber512", "x": kx }
+                "publicKeyJwk": { "kty": "AKP", "alg": "ML-DSA-65", "pub": signing_x }
             }
         ],
         "authentication": [ format!("{}#k0", did) ],
-        "keyAgreement":   [ format!("{}#k1", did) ],
         "service": [{
             "id": format!("{}#device", did),
             "type": "DeviceAgent",
@@ -126,18 +113,14 @@ pub fn build_did_document(
     })
 }
 
-pub fn build_signed_record(
-    doc: &Value,
-    secret_key: &dilithium2::SecretKey,
-    algorithm: &str,
-) -> Vec<u8> {
+pub fn build_signed_record(doc: &Value, secret_key: &MlDsa65KeyPair, algorithm: &str) -> Vec<u8> {
     let doc_bytes =
         serde_json::to_vec(&sort_json_keys(doc)).expect("DID Document serialisation failed");
     let mut alg_field = [0u8; 12];
     let copy_len = algorithm.len().min(12);
     alg_field[..copy_len].copy_from_slice(&algorithm.as_bytes()[..copy_len]);
-    let sig = dilithium2::detached_sign(&doc_bytes, secret_key);
-    let sig_bytes = sig.as_bytes();
+    let sig = secret_key.sign(&doc_bytes).unwrap();
+    let sig_bytes = sig.as_slice();
     let mut record = Vec::with_capacity(12 + sig_bytes.len() + doc_bytes.len());
     record.extend_from_slice(&alg_field);
     record.extend_from_slice(sig_bytes);
@@ -147,11 +130,11 @@ pub fn build_signed_record(
 
 /// Generate a random valid DID record. Returns `(dht_key, signed_record_bytes)`.
 pub fn make_record() -> (String, Vec<u8>) {
-    let (dpk, dsk) = dilithium2::keypair();
-    let (kpk, _) = kyber512::keypair();
+    let dsk = MlDsa65KeyPair::generate().unwrap();
+    let dpk = dsk.public_key().to_vec();
     let did = generate_did_iiot();
     let key = did.split(':').next_back().unwrap().to_string();
-    let doc = build_did_document(&did, &dpk, &kpk);
-    let record = build_signed_record(&doc, &dsk, "Dilithium-2");
+    let doc = build_did_document(&did, &dpk);
+    let record = build_signed_record(&doc, &dsk, "ML-DSA-65");
     (key, record)
 }

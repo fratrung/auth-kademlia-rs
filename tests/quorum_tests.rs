@@ -1,6 +1,6 @@
 //! End-to-end consistency tests for DID Documents and the issuer Status List.
 //!
-//! Every test uses real UDP nodes and valid Dilithium records. Records are
+//! Every test uses real UDP nodes and valid ML-DSA-65 records. Records are
 //! injected only after bootstrap so the tests control the exact replica state.
 //! Ports: 15866-15894, 15904-15905, 15913-15923, 15928-15953.
 
@@ -11,15 +11,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
+use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
 use auth_kademlia_rs::fragmentation::MAX_REASSEMBLY_ENTRIES_PER_PEER;
 use auth_kademlia_rs::network::Server;
 use auth_kademlia_rs::node::Node;
 use auth_kademlia_rs::protocol::StoreStatus;
 use auth_kademlia_rs::storage::IStorage;
 use auth_kademlia_rs::utils::{digest, ID_LEN, STATUS_LIST_KEY};
-use pqcrypto_dilithium::dilithium2;
-use pqcrypto_kyber::kyber512;
-use pqcrypto_traits::sign::{DetachedSignature, PublicKey};
 
 use common::{build_did_document, build_signed_record, generate_did_iiot};
 
@@ -76,22 +74,22 @@ fn id_at_distance(key: [u8; ID_LEN], distance: u8) -> [u8; ID_LEN] {
     id
 }
 
-fn did_record(did: &str) -> (Vec<u8>, dilithium2::SecretKey) {
-    let (signing_key, secret_key) = dilithium2::keypair();
-    let (agreement_key, _) = kyber512::keypair();
-    let document = build_did_document(did, &signing_key, &agreement_key);
-    let record = build_signed_record(&document, &secret_key, "Dilithium-2");
+fn did_record(did: &str) -> (Vec<u8>, MlDsa65KeyPair) {
+    let secret_key = MlDsa65KeyPair::generate().unwrap();
+    let signing_key = secret_key.public_key().to_vec();
+    let document = build_did_document(did, &signing_key);
+    let record = build_signed_record(&document, &secret_key, "ML-DSA-65");
     (record, secret_key)
 }
 
-fn issuer_record(payload: &[u8], secret_key: &dilithium2::SecretKey) -> Vec<u8> {
+fn issuer_record(payload: &[u8], secret_key: &MlDsa65KeyPair) -> Vec<u8> {
     let mut algorithm = [0_u8; 12];
-    algorithm[..11].copy_from_slice(b"Dilithium-2");
-    let signature = dilithium2::detached_sign(payload, secret_key);
+    algorithm[..9].copy_from_slice(b"ML-DSA-65");
+    let signature = secret_key.sign(payload).unwrap();
 
-    let mut record = Vec::with_capacity(12 + signature.as_bytes().len() + payload.len());
+    let mut record = Vec::with_capacity(12 + signature.as_slice().len() + payload.len());
     record.extend_from_slice(&algorithm);
-    record.extend_from_slice(signature.as_bytes());
+    record.extend_from_slice(signature.as_slice());
     record.extend_from_slice(payload);
     record
 }
@@ -289,8 +287,9 @@ fn local_did_get_keeps_the_fast_path() {
 #[test]
 fn status_list_uses_local_copy_as_one_vote() {
     runtime().block_on(async {
-        let (issuer_public_key, issuer_secret_key) = dilithium2::keypair();
-        let issuer_file = TemporaryIssuerKey::create(15875, issuer_public_key.as_bytes());
+        let issuer_secret_key = MlDsa65KeyPair::generate().unwrap();
+        let issuer_public_key = issuer_secret_key.public_key().to_vec();
+        let issuer_file = TemporaryIssuerKey::create(15875, &issuer_public_key);
         let requester = start_node(15875, &issuer_file.0, node_id(30)).await;
         let peer_a = start_node(15876, &issuer_file.0, node_id(31)).await;
         let peer_b = start_node(15877, &issuer_file.0, node_id(32)).await;
@@ -317,8 +316,9 @@ fn status_list_uses_local_copy_as_one_vote() {
 fn issuer_publishes_and_updates_the_status_list_under_its_python_key() {
     runtime().block_on(async {
         const ISSUER_KEY: &str = "status-list";
-        let (issuer_public_key, issuer_secret_key) = dilithium2::keypair();
-        let issuer_file = TemporaryIssuerKey::create(15904, issuer_public_key.as_bytes());
+        let issuer_secret_key = MlDsa65KeyPair::generate().unwrap();
+        let issuer_public_key = issuer_secret_key.public_key().to_vec();
+        let issuer_file = TemporaryIssuerKey::create(15904, &issuer_public_key);
         let issuer = start_node(15904, &issuer_file.0, node_id(60)).await;
         let proxy = start_node(15905, &issuer_file.0, node_id(61)).await;
         bootstrap_to(&issuer, &[15905]).await;
@@ -353,9 +353,7 @@ fn update_without_quorum_preserves_the_local_record() {
         let (old_record, old_secret_key) = did_record(&did);
         let (new_record, _) = did_record(&did);
         let (other_record, _) = did_record(&did);
-        let authorization = dilithium2::detached_sign(&new_record, &old_secret_key)
-            .as_bytes()
-            .to_vec();
+        let authorization = old_secret_key.sign(&new_record).unwrap();
         requester.storage.set(dkey.to_vec(), old_record.clone());
         // The replicas hold another record for this DID: they refuse the
         // update, and the STORE that follows it gets a conflict.
@@ -396,9 +394,7 @@ fn update_commits_locally_after_quorum() {
 
         let (old_record, old_secret_key) = did_record(&did);
         let (new_record, _) = did_record(&did);
-        let authorization = dilithium2::detached_sign(&new_record, &old_secret_key)
-            .as_bytes()
-            .to_vec();
+        let authorization = old_secret_key.sign(&new_record).unwrap();
         requester.storage.set(dkey.to_vec(), old_record.clone());
         peer_a.storage.set(dkey.to_vec(), old_record.clone());
         peer_b.storage.set(dkey.to_vec(), old_record);
@@ -435,9 +431,7 @@ fn retrying_an_applied_update_succeeds_and_completes_the_replicas() {
 
         let (old_record, old_secret_key) = did_record(&did);
         let (new_record, _) = did_record(&did);
-        let authorization = dilithium2::detached_sign(&new_record, &old_secret_key)
-            .as_bytes()
-            .to_vec();
+        let authorization = old_secret_key.sign(&new_record).unwrap();
 
         // (requester, peer_a, peer_b) before the retry; true = new record.
         for state in [(true, true, false), (false, true, true), (true, true, true)] {
@@ -492,7 +486,7 @@ fn replica_acknowledges_an_update_it_already_holds() {
         let (_v1, sk1) = did_record(&did);
         let (v2, _) = did_record(&did);
         let (v3, _) = did_record(&did);
-        let auth_v2 = dilithium2::detached_sign(&v2, &sk1).as_bytes().to_vec();
+        let auth_v2 = sk1.sign(&v2).unwrap();
 
         replica.storage.set(dkey.to_vec(), v2.clone());
         assert!(
@@ -545,9 +539,7 @@ fn update_cannot_fill_empty_replicas_while_the_old_record_is_in_the_network() {
 
         let (old_record, old_secret_key) = did_record(&did);
         let (new_record, _) = did_record(&did);
-        let authorization = dilithium2::detached_sign(&new_record, &old_secret_key)
-            .as_bytes()
-            .to_vec();
+        let authorization = old_secret_key.sign(&new_record).unwrap();
         requester.storage.set(dkey.to_vec(), old_record.clone());
 
         assert_eq!(
@@ -585,9 +577,7 @@ fn replica_without_the_record_refuses_an_update_but_takes_a_store() {
 
         let (_old_record, old_secret_key) = did_record(&did);
         let (new_record, _) = did_record(&did);
-        let authorization = dilithium2::detached_sign(&new_record, &old_secret_key)
-            .as_bytes()
-            .to_vec();
+        let authorization = old_secret_key.sign(&new_record).unwrap();
 
         assert!(
             !protocol

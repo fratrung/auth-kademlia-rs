@@ -17,12 +17,9 @@ use auth_kademlia_rs::network::Server;
 use auth_kademlia_rs::storage::IStorage;
 use auth_kademlia_rs::utils::digest;
 
+use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use pqcrypto_dilithium::dilithium2;
-use pqcrypto_kyber::kyber512;
-use pqcrypto_traits::kem::PublicKey as KemPublicKey;
-use pqcrypto_traits::sign::{DetachedSignature, PublicKey};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -45,10 +42,10 @@ fn sort_json(v: &Value) -> Value {
     }
 }
 
-/// Builds a valid self-signed Dilithium-2 DID record (wire format: alg ‖ sig ‖ doc).
+/// Builds a valid self-signed ML-DSA-65 DID record (wire format: alg ‖ sig ‖ doc).
 fn make_record() -> (String, Vec<u8>) {
-    let (dpk, dsk) = dilithium2::keypair();
-    let (kpk, _) = kyber512::keypair();
+    let dsk = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
+    let dpk = dsk.public_key().to_vec();
     let did = format!("did:iiot:{}", Uuid::new_v4());
     let key = did.split(':').next_back().unwrap().to_string();
 
@@ -59,18 +56,11 @@ fn make_record() -> (String, Vec<u8>) {
             {
                 "id": format!("{}#k0", did), "type": "JsonWebKey2020",
                 "controller": did,
-                "publicKeyJwk": { "kty": "OKP", "crv": "Dilithium2",
-                                  "x": b64url(dpk.as_bytes()) }
-            },
-            {
-                "id": format!("{}#k1", did), "type": "JsonWebKey2020",
-                "controller": did,
-                "publicKeyJwk": { "kty": "OKP", "crv": "Kyber512",
-                                  "x": b64url(kpk.as_bytes()) }
+                "publicKeyJwk": { "kty": "AKP", "alg": "ML-DSA-65",
+                                  "pub": b64url(&dpk) }
             }
         ],
         "authentication": [format!("{}#k0", did)],
-        "keyAgreement":   [format!("{}#k1", did)],
         "service": [{
             "id": format!("{}#device", did),
             "type": "DeviceAgent",
@@ -79,14 +69,14 @@ fn make_record() -> (String, Vec<u8>) {
     });
 
     let doc_bytes = serde_json::to_vec(&sort_json(&doc)).unwrap();
-    let sig = dilithium2::detached_sign(&doc_bytes, &dsk);
+    let sig = dsk.sign(&doc_bytes).expect("ML-DSA-65 signing");
 
     let mut alg = [0u8; 12];
-    alg[..11].copy_from_slice(b"Dilithium-2");
+    alg[..9].copy_from_slice(b"ML-DSA-65");
 
-    let mut record = Vec::with_capacity(12 + sig.as_bytes().len() + doc_bytes.len());
+    let mut record = Vec::with_capacity(12 + sig.as_slice().len() + doc_bytes.len());
     record.extend_from_slice(&alg);
-    record.extend_from_slice(sig.as_bytes());
+    record.extend_from_slice(sig.as_slice());
     record.extend_from_slice(&doc_bytes);
     (key, record)
 }
@@ -146,7 +136,7 @@ async fn run() {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    // Dilithium keypair generation is CPU-intensive; offloaded to avoid blocking the runtime.
+    // ML-DSA keypair generation is CPU-intensive; offloaded to avoid blocking the runtime.
     let records: Vec<(String, Vec<u8>)> =
         tokio::task::spawn_blocking(move || (0..seed_count).map(|_| make_record()).collect())
             .await

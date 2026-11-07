@@ -11,14 +11,14 @@ directly degrade the victim's scheduler, which is not a realistic model.
 
 | Container | Role | Constraints |
 |-----------|------|-------------|
-| `node_a` (victim) | Accepts RPCs, verifies Dilithium-2 signatures, stores DID records | **2 CPU cores, 256 MB RAM** — simulates a constrained embedded/edge node |
+| `node_a` (victim) | Accepts RPCs, verifies ML-DSA-65 signatures, stores DID records | **2 CPU cores, 256 MB RAM** — simulates a constrained embedded/edge node |
 | `node_b` (attacker) | Generates and floods records at configurable concurrency | Unconstrained — can fully saturate node_a's CPU budget |
 
 **Network**: isolated Docker bridge `172.21.0.0/24`.  
 Node A is also exposed on host port `15900/udp` for external tooling.
 
 **Victim signature cache** is disabled (`sig_cache = false`) so every incoming
-record is verified from scratch via `spawn_blocking(Dilithium-2)` — worst-case
+record is verified from scratch via `spawn_blocking(ML-DSA-65)` — worst-case
 CPU load, no caching shortcuts.
 
 ---
@@ -30,7 +30,7 @@ CPU load, no caching shortcuts.
 A malicious node attempts to:
 1. **Flood valid records** — overwhelm the victim's CPU and storage with
    authenticated DID documents signed by legitimate (but attacker-generated) keys.
-2. **Inject invalid records** — send records with a tampered Dilithium-2 signature
+2. **Inject invalid records** — send records with a tampered ML-DSA-65 signature
    (one byte flipped at offset 500) to try to slip past verification under load.
 3. **Verify retrieval consistency** — after the flood, check that all accepted
    records are still retrievable (no corruption, no silent data loss).
@@ -56,7 +56,9 @@ semaphore so the host is never overwhelmed regardless of pool size.
 
 ### Expected degradation under load
 
-With 50 concurrent Dilithium-2 verifications (~5 ms each) on a 2-core victim, the
+Observed with Dilithium-2 records, before ADR 0003 (ML-DSA-65 records are
+about 6.5 KB and slower to verify, so the figures may change):
+with 50 concurrent Dilithium-2 verifications (~5 ms each) on a 2-core victim, the
 OS UDP receive buffer (~208 KB ≈ 150 × 1 412 B fragments) can briefly overflow
 during the initial burst of 50 × 3 = 150 fragments. This causes ~1–2 % of valid
 records to be silently dropped at the kernel level — the victim never sees those

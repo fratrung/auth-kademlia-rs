@@ -35,9 +35,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use pqcrypto_dilithium::dilithium2;
-use pqcrypto_kyber::kyber512;
-use pqcrypto_traits::sign::DetachedSignature;
+use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
 use tokio::net::UdpSocket;
 use tokio::time::{sleep, timeout, Duration};
 
@@ -89,12 +87,12 @@ async fn test_set_on_node_a_and_get_from_node_b() {
     sleep(Duration::from_millis(200)).await;
 
     // Build a valid signed DID record.
-    let (dpk, dsk) = dilithium2::keypair();
-    let (kpk, _) = kyber512::keypair();
+    let dsk = MlDsa65KeyPair::generate().unwrap();
+    let dpk = dsk.public_key().to_vec();
     let did = generate_did_iiot();
-    let doc = build_did_document(&did, &dpk, &kpk);
+    let doc = build_did_document(&did, &dpk);
     let key = did.split(':').next_back().unwrap().to_string();
-    let record = build_signed_record(&doc, &dsk, "Dilithium-2");
+    let record = build_signed_record(&doc, &dsk, "ML-DSA-65");
 
     // Node A publishes the record.
     let store_result = node_a.set(&key, record.clone()).await;
@@ -126,12 +124,12 @@ async fn test_set_is_idempotent_but_rejects_conflicting_value() {
         .await;
     sleep(Duration::from_millis(200)).await;
 
-    let (dpk, dsk) = dilithium2::keypair();
-    let (kpk, _) = kyber512::keypair();
+    let dsk = MlDsa65KeyPair::generate().unwrap();
+    let dpk = dsk.public_key().to_vec();
     let did = generate_did_iiot();
-    let doc = build_did_document(&did, &dpk, &kpk);
+    let doc = build_did_document(&did, &dpk);
     let key = did.split(':').next_back().unwrap().to_string();
-    let record = build_signed_record(&doc, &dsk, "Dilithium-2");
+    let record = build_signed_record(&doc, &dsk, "ML-DSA-65");
 
     // First set must succeed.
     let first = node.set(&key, record.clone()).await;
@@ -142,10 +140,10 @@ async fn test_set_is_idempotent_but_rejects_conflicting_value() {
     assert_eq!(second, Some(true), "an identical retry must be idempotent");
 
     // A different valid record for the same DHT key remains a conflict.
-    let (other_dpk, other_dsk) = dilithium2::keypair();
-    let (other_kpk, _) = kyber512::keypair();
-    let other_doc = build_did_document(&did, &other_dpk, &other_kpk);
-    let conflicting_record = build_signed_record(&other_doc, &other_dsk, "Dilithium-2");
+    let other_dsk = MlDsa65KeyPair::generate().unwrap();
+    let other_dpk = other_dsk.public_key().to_vec();
+    let other_doc = build_did_document(&did, &other_dpk);
+    let conflicting_record = build_signed_record(&other_doc, &other_dsk, "ML-DSA-65");
     assert!(
         node.set(&key, conflicting_record).await.is_none(),
         "immutable records must reject different bytes for an occupied key"
@@ -174,26 +172,26 @@ async fn test_update_did_record_key_rotation() {
     sleep(Duration::from_millis(300)).await;
 
     // ── Step 1: generate old keypair and publish original record ──────────────
-    let (old_pk, old_sk) = dilithium2::keypair();
-    let (kpk, _) = kyber512::keypair();
+    let old_sk = MlDsa65KeyPair::generate().unwrap();
+    let old_pk = old_sk.public_key().to_vec();
     let did = generate_did_iiot();
     let key = did.split(':').next_back().unwrap().to_string();
-    let old_doc = build_did_document(&did, &old_pk, &kpk);
-    let old_record = build_signed_record(&old_doc, &old_sk, "Dilithium-2");
+    let old_doc = build_did_document(&did, &old_pk);
+    let old_record = build_signed_record(&old_doc, &old_sk, "ML-DSA-65");
 
     let stored = node2.set(&key, old_record.clone()).await;
     assert!(stored.unwrap_or(false), "initial store must succeed");
 
     // ── Step 2: generate new keypair and build new record ─────────────────────
-    let (new_pk, new_sk) = dilithium2::keypair();
-    let (new_kpk, _) = kyber512::keypair();
-    let new_doc = build_did_document(&did, &new_pk, &new_kpk);
-    let new_record = build_signed_record(&new_doc, &new_sk, "Dilithium-2");
+    let new_sk = MlDsa65KeyPair::generate().unwrap();
+    let new_pk = new_sk.public_key().to_vec();
+    let new_doc = build_did_document(&did, &new_pk);
+    let new_record = build_signed_record(&new_doc, &new_sk, "ML-DSA-65");
 
     // ── Step 3: auth_sig proves old owner authorises this rotation ────────────
     // The protocol verifies: old_pub_key.verify(new_record, auth_sig)
-    let auth_sig_ds = dilithium2::detached_sign(&new_record, &old_sk);
-    let auth_sig = auth_sig_ds.as_bytes().to_vec();
+    let auth_sig_ds = old_sk.sign(&new_record).unwrap();
+    let auth_sig = auth_sig_ds.as_slice().to_vec();
 
     // ── Step 4: update via node3 ──────────────────────────────────────────────
     let updated = node3.update(&key, new_record.clone(), Some(auth_sig)).await;
@@ -238,16 +236,16 @@ async fn test_update_did_record_key_rotation() {
 async fn test_invalid_signature_record_rejected_on_set() {
     let mut node = start_node(15750).await;
 
-    let (pk, _correct_sk) = dilithium2::keypair();
-    let (_, wrong_sk) = dilithium2::keypair(); // different secret key — mismatch!
-    let (kpk, _) = kyber512::keypair();
+    let _correct_sk = MlDsa65KeyPair::generate().unwrap();
+    let pk = _correct_sk.public_key().to_vec();
+    let wrong_sk = MlDsa65KeyPair::generate().unwrap(); // different secret key — mismatch!
     let did = generate_did_iiot();
     let key = did.split(':').next_back().unwrap().to_string();
 
     // Build a record: DID Doc embeds `pk` (key A's public key) but the
     // signature is produced with `wrong_sk` (key B's secret key).
-    let doc = build_did_document(&did, &pk, &kpk);
-    let invalid_record = build_signed_record(&doc, &wrong_sk, "Dilithium-2");
+    let doc = build_did_document(&did, &pk);
+    let invalid_record = build_signed_record(&doc, &wrong_sk, "ML-DSA-65");
 
     let result = node.set(&key, invalid_record).await;
     assert!(
@@ -263,13 +261,13 @@ async fn test_invalid_signature_record_rejected_on_set() {
 #[tokio::test]
 async fn test_valid_record_rejected_under_another_did_key() {
     let mut node = start_node(15897).await;
-    let (pk, sk) = dilithium2::keypair();
-    let (kpk, _) = kyber512::keypair();
+    let sk = MlDsa65KeyPair::generate().unwrap();
+    let pk = sk.public_key().to_vec();
     let record_did = generate_did_iiot();
     let requested_did = generate_did_iiot();
     let requested_key = requested_did.split(':').next_back().unwrap().to_string();
-    let doc = build_did_document(&record_did, &pk, &kpk);
-    let record = build_signed_record(&doc, &sk, "Dilithium-2");
+    let doc = build_did_document(&record_did, &pk);
+    let record = build_signed_record(&doc, &sk, "ML-DSA-65");
 
     assert!(
         node.set(&requested_key, record.clone()).await.is_none(),
@@ -317,29 +315,26 @@ async fn test_update_rejected_when_new_record_self_sig_invalid() {
     sleep(Duration::from_millis(200)).await;
 
     // Store a valid original record on node1.
-    let (old_pk, old_sk) = dilithium2::keypair();
-    let (kpk, _) = kyber512::keypair();
+    let old_sk = MlDsa65KeyPair::generate().unwrap();
+    let old_pk = old_sk.public_key().to_vec();
     let did = generate_did_iiot();
     let key = did.split(':').next_back().unwrap().to_string();
-    let old_doc = build_did_document(&did, &old_pk, &kpk);
-    let old_record = build_signed_record(&old_doc, &old_sk, "Dilithium-2");
+    let old_doc = build_did_document(&did, &old_pk);
+    let old_record = build_signed_record(&old_doc, &old_sk, "ML-DSA-65");
 
     let stored = node1.set(&key, old_record.clone()).await;
     assert!(stored.unwrap_or(false), "initial store must succeed");
 
     // Build a new record where the DID Document embeds new_pk but the
     // record is signed with wrong_new_sk — self-signature is invalid.
-    let (new_pk, _) = dilithium2::keypair();
-    let (_, wrong_new_sk) = dilithium2::keypair();
-    let (new_kpk, _) = kyber512::keypair();
-    let new_doc = build_did_document(&did, &new_pk, &new_kpk);
-    let invalid_new_record = build_signed_record(&new_doc, &wrong_new_sk, "Dilithium-2");
+    let new_pk = MlDsa65KeyPair::generate().unwrap().public_key().to_vec();
+    let wrong_new_sk = MlDsa65KeyPair::generate().unwrap();
+    let new_doc = build_did_document(&did, &new_pk);
+    let invalid_new_record = build_signed_record(&new_doc, &wrong_new_sk, "ML-DSA-65");
 
     // auth_sig is correctly signed with the old key — ownership proof is valid,
     // but the new record's self-signature is invalid.
-    let auth_sig = dilithium2::detached_sign(&invalid_new_record, &old_sk)
-        .as_bytes()
-        .to_vec();
+    let auth_sig = old_sk.sign(&invalid_new_record).unwrap();
 
     let result = node2.update(&key, invalid_new_record, Some(auth_sig)).await;
     assert!(
@@ -383,27 +378,25 @@ async fn test_update_rejected_when_auth_signature_uses_wrong_key() {
     sleep(Duration::from_millis(300)).await;
 
     // Store valid original record.
-    let (old_pk, old_sk) = dilithium2::keypair();
-    let (kpk, _) = kyber512::keypair();
+    let old_sk = MlDsa65KeyPair::generate().unwrap();
+    let old_pk = old_sk.public_key().to_vec();
     let did = generate_did_iiot();
     let key = did.split(':').next_back().unwrap().to_string();
-    let old_doc = build_did_document(&did, &old_pk, &kpk);
-    let old_record = build_signed_record(&old_doc, &old_sk, "Dilithium-2");
+    let old_doc = build_did_document(&did, &old_pk);
+    let old_record = build_signed_record(&old_doc, &old_sk, "ML-DSA-65");
 
     let stored = node2.set(&key, old_record.clone()).await;
     assert!(stored.unwrap_or(false), "initial store must succeed");
 
     // Build a new record with a valid self-signature.
-    let (new_pk, new_sk) = dilithium2::keypair();
-    let (new_kpk, _) = kyber512::keypair();
-    let new_doc = build_did_document(&did, &new_pk, &new_kpk);
-    let new_record = build_signed_record(&new_doc, &new_sk, "Dilithium-2");
+    let new_sk = MlDsa65KeyPair::generate().unwrap();
+    let new_pk = new_sk.public_key().to_vec();
+    let new_doc = build_did_document(&did, &new_pk);
+    let new_record = build_signed_record(&new_doc, &new_sk, "ML-DSA-65");
 
     // auth_sig produced with an UNRELATED key — attacker does not own the old key.
-    let (_, unrelated_sk) = dilithium2::keypair();
-    let bad_auth_sig = dilithium2::detached_sign(&new_record, &unrelated_sk)
-        .as_bytes()
-        .to_vec();
+    let unrelated_sk = MlDsa65KeyPair::generate().unwrap();
+    let bad_auth_sig = unrelated_sk.sign(&new_record).unwrap();
 
     // Update via node3 must be rejected.
     let result = node3.update(&key, new_record, Some(bad_auth_sig)).await;
@@ -438,11 +431,11 @@ async fn test_set_detailed_reports_capacity_degraded_replication() {
         .await;
     sleep(Duration::from_millis(200)).await;
 
-    let (dpk, dsk) = dilithium2::keypair();
-    let (kpk, _) = kyber512::keypair();
+    let dsk = MlDsa65KeyPair::generate().unwrap();
+    let dpk = dsk.public_key().to_vec();
     let did = generate_did_iiot();
     let key = did.split(':').next_back().unwrap().to_string();
-    let record = build_signed_record(&build_did_document(&did, &dpk, &kpk), &dsk, "Dilithium-2");
+    let record = build_signed_record(&build_did_document(&did, &dpk), &dsk, "ML-DSA-65");
 
     let outcome = limited.set_detailed(&key, record.clone()).await;
     let report = match outcome {
@@ -548,9 +541,9 @@ fn new_record() -> (String, String, Vec<u8>) {
 }
 
 fn record_for_did(did: &str) -> Vec<u8> {
-    let (dpk, dsk) = dilithium2::keypair();
-    let (kpk, _) = kyber512::keypair();
-    build_signed_record(&build_did_document(did, &dpk, &kpk), &dsk, "Dilithium-2")
+    let dsk = MlDsa65KeyPair::generate().unwrap();
+    let dpk = dsk.public_key().to_vec();
+    build_signed_record(&build_did_document(did, &dpk), &dsk, "ML-DSA-65")
 }
 
 /// Forward datagrams between two nodes until the returned flag is raised, which

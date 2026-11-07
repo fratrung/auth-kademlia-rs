@@ -2,14 +2,14 @@
 
 ## What this is
 Kademlia DHT in Rust with **authenticated records**: every stored value is a
-self-signed DID Document (post-quantum: Dilithium-2 signature + Kyber-512 key
-agreement). Nodes accept a record only if the embedded signature is valid;
+self-signed DID Document (post-quantum: an ML-DSA-65 signature, FIPS 204;
+ADR 0003). Nodes accept a record only if the embedded signature is valid;
 updates require a second auth-signature produced with the owner's private key.
 Records have no explicit delete operation and are removed only by TTL expiry.
 
 **Target platform**: edge/embedded nodes (ARM multi-core, low per-core frequency)
 for the `did:iiot` method. The Rust core is the performance-critical layer:
-Dilithium-2 verification is CPU-bound (~5 ms on x86) and Python's GIL would
+ML-DSA-65 verification is CPU-bound and Python's GIL would
 serialise it to a single core. The PyO3 binding releases the GIL before
 entering Rust so all available cores can verify signatures in parallel.
 Application-layer logic (provisioning, REST APIs, orchestration) remains in Python.
@@ -18,11 +18,13 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 251 tests
-cargo test --features counters       # 254: also the counters' own tests
+cargo test                           # all 246 tests
+cargo test --features counters       # 249: also the counters' own tests
 cargo test <name>                    # single test, e.g. test_update_did_record_key_rotation
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
+ML-DSA and ML-KEM come from `aws-lc-rs` (ADR 0003): its C code is built by
+the `cc` crate, so a C compiler is needed (no cmake on Linux x86-64/AArch64).
 
 Python extension (maturin, optional — do not use in Rust-only deployments):
 ```
@@ -44,14 +46,14 @@ maturin develop --features python
 - `Server.set_detailed()` returns the publication status/reason and replica
   counters as a Python `dict`; `Server.stats()` exposes routing, storage-budget,
   and signature-cache counters.
-- `Server(sig_cache=True/False)` controls the Dilithium signature cache (default
+- `Server(sig_cache=True/False)` controls the ML-DSA signature cache (default
   `False`). Pass `sig_cache=True` to enable it in production for repeated-record
   workloads.
 
 ## Tokio runtime — caller responsibility
 
 `auth_kademlia_rs` does **not** create a Tokio runtime. The caller must build one and
-pass execution into it. To cap the blocking thread pool (used for Dilithium
+pass execution into it. To cap the blocking thread pool (used for ML-DSA
 `spawn_blocking` calls) to the number of physical cores — critical on embedded nodes:
 
 ```rust
@@ -92,14 +94,14 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/crawling.rs` | Iterative lookup — `NodeSpiderCrawl` (find nodes) + `ValueSpiderCrawl` (find value; `search` with a deadline tells `NotFound` from `Incomplete`) |
 | `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `find_neighbors` returns the exact local top-k across known primary contacts, skipping failing ones (see Concurrency model); `touch_last_updated()` is called only for the bucket containing the lookup target — bucket staleness reflects lookup activity, not node additions |
 | `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day TTL and configurable byte budget (default 512 MiB), with lazy expiry on read |
-| `src/signature_cache.rs` | `SignatureCache` — moka bounded cache (SHA-256 key, TTL 1 h, 4096 entries) for Dilithium verification results |
+| `src/signature_cache.rs` | `SignatureCache` — moka bounded cache (SHA-256 key, TTL 1 h, 4096 entries) for ML-DSA-65 verification results |
 | `src/fragmentation.rs` | KADF fragmentation + reassembly (`encode_fragments`, `parse_fragment`, `accept_fragment`, `ReassemblyMap`) |
 | `src/retransmit.rs` | When to send a request again: per-peer round-trip estimate (`RoundTrips`, RFC 6298), `MAX_RESENDS`, bounds of the wait |
 | `src/counters.rs` | Datagrams, bytes, resends and STORE checks counted for measurements (feature `counters`, off by default; empty without it) |
 | `src/auth_handler.rs` | `SignatureVerifierHandler` trait + `DIDSignatureVerifierHandler` (DID record verification); `verify_record`, `verify_rotation`, `verify_issuer_signed`: how a node runs it (binding first, signature cache, blocking thread), shared by protocol and network |
 | `src/crypto/signature_verifier.rs` | `SignatureVerifier` trait, `resolve_alg_and_length()`, algorithm registry |
 | `src/crypto/factory.rs` | `SignatureVerifierFactory` + `SignerFactory` — dispatch by algorithm string |
-| `src/crypto/dilithium.rs` | Dilithium-2/3/5 verifier + signer |
+| `src/crypto/mldsa.rs` | ML-DSA-65 from `aws-lc-rs`: `MlDsa65KeyPair` (generate, sign, raw public key, expanded private key), verifier + signer (pure ML-DSA, empty context), `signature_len()`/`public_key_len()`, `ML_DSA_65` name |
 | `src/crypto/ed25519.rs` | Ed25519 verifier + signer |
 | `src/crypto/rsa.rs` | RSA verifier + signer |
 | `src/crypto/key_manager.rs` | `KeyManager` — keypair generation, storage, sign/verify helpers |
@@ -117,12 +119,22 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 ## Wire record format
 ```
 | algorithm  (12 B, null-padded UTF-8) |
-| signature  (2420 B for Dilithium-2)  |
+| signature  (3309 B for ML-DSA-65)    |
 | DID Document (JSON, canonical/sorted keys) |
 ```
-The algorithm field drives `resolve_alg_and_length()` in
-`src/crypto/signature_verifier.rs` to pick the right verifier and signature
-length. Supported: `Dilithium-2/3/5` (2420/3293/4595 B), `Ed25519` (64 B), `RSA` (256 B).
+A node accepts only `ML-DSA-65` records (ADR 0003): `record_algorithm()` in
+`src/auth_handler.rs` refuses any other algorithm field, for DID Documents,
+key rotations and the Status List. `resolve_alg_and_length()` in
+`src/crypto/signature_verifier.rs` gives the signature length, from
+`aws-lc-rs` (`mldsa::signature_len()`), never from a literal; it also knows `Ed25519`
+(64 B) and `RSA` (256 B), which no record may use. The DID Document holds one
+key, an RFC 9964 JWK in `verificationMethod[0]`:
+`{"kty": "AKP", "alg": "ML-DSA-65", "pub": <base64url>}`, the raw key: the
+verifier refuses a key of another length, such as the DER `SubjectPublicKeyInfo`
+that `aws-lc-rs` would also take. A `kty` other than
+`AKP` or an `alg` other than the record's algorithm field is `KeyMismatch`
+(`InvalidRecord`). There is no `keyAgreement` key: key agreement is ephemeral
+ML-KEM, outside the DHT.
 
 ## Application-level fragmentation (`src/fragmentation.rs`)
 Large PQ records (~6 KB) are split into 1400-byte chunks before sending.
@@ -162,7 +174,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 - **Futurelock** (Oxide RFD 609): the router is a fair `tokio::sync::RwLock`, so a waiting writer blocks later readers. Never keep futures that may wait for the router in a set the task stops polling while it awaits something else that takes the router (a `FuturesUnordered` pulled with `next()` and an await in the loop body, a `&mut future` in `select!`). `ValueSpiderCrawl::search` reads the router between answers (`failing_among`) and writes it at its deadline (`note_no_answer`), while its requests may wait to write it (`schedule_welcome_if_new` adds a node met in an answer): it therefore spawns them in a `JoinSet`. With a `FuturesUnordered` a node of the 127-node testbed stopped answering two seconds after the first publication, and `a_lookup_keeps_polling_a_request_that_waits_for_the_routing_table` hung. `join_all` (`find_round`) keeps polling every future and is safe.
 - **Nodes met through a message** (`schedule_welcome_if_new`): the sender enters the routing table inline, before the handler answers (Kademlia §2.2); only sending it its records is deferred. That replication scans the whole storage, so it runs one node at a time (`WELCOME_CONCURRENCY`), at most `MAX_WELCOME_QUEUE` (256) nodes wait for it, deduplicated by id, and a node beyond that gets its records from the hourly republication. The scan takes the routing table's read lock per `WELCOME_SCAN_CHUNK` (256) records, because the inline insert needs the write lock. A full bucket's oldest contact is pinged at most once at a time (`oldest_pings_in_flight`). Do not put the insert back behind the replication bound: with one permit and new nodes dropped on contention, 30 nodes after one bootstrap pass knew a median of 20-22 of the 29 others (26-27 now), and quorum GET tests failed about 1 run in 16 because a reader never learned the node holding the valid copy.
 - UDP receive loop dispatches via round-robin to `available_parallelism()` fixed workers, each with a dedicated `mpsc::channel(256)`. `try_send` is attempted on each worker in order; if all channels are full the receive loop awaits the base worker (backpressure without drops). Zero allocations per datagram beyond the payload copy.
-- Blocking thread pool (`spawn_blocking`) is bounded at the runtime level via `max_blocking_threads(available_parallelism())` in `scripts/dht_node.rs`. This caps concurrent Dilithium verifications to the number of physical cores, covering all call sites uniformly (`verify_for_key`, `verify_value`, `update`). `KademliaProtocol` carries no application-level semaphore.
+- Blocking thread pool (`spawn_blocking`) is bounded at the runtime level via `max_blocking_threads(available_parallelism())` in `scripts/dht_node.rs`. This caps concurrent ML-DSA verifications to the number of physical cores, covering all call sites uniformly (`verify_for_key`, `verify_value`, `update`). `KademliaProtocol` carries no application-level semaphore.
 - `SignatureCache` is keyed on `SHA-256(record_bytes)`. TTL 1 h, capacity 4096 (moka TinyLFU). Eviction = cache miss = full re-verification (never a security bypass). On a cache miss the SHA-256 key is computed once via `compute_key()` and reused for both `get_by_key` and `insert_by_key` — never twice.
 - The replication to a new node (`replicate_to`) uses two conditions (Kademlia §2.5, matches Python AuthKademlia): `new_node_close` (new node is XOR-closer than the farthest k-neighbor) AND `this_closest` (this node is closer than the nearest k-neighbor). Both must be true to replicate. The new node is already in the routing table when the scan runs, so `find_neighbors` excludes it from the comparisons.
 - `schedule_stats_log()` emits a `[stats]` log line every 60 s: routing table size and live contacts, storage record count, used/max storage bytes, and (when enabled) signature cache entries.
@@ -259,7 +271,9 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
   and collides ids.
 - `STATUS_LIST_KEY = digest("status-list")` uses issuer-node
   verification instead of DID-owner verification.
-- `issuer.bin` is read lazily, on each issuer verification; if absent, only
+- `issuer.bin` holds the issuer's raw ML-DSA-65 public key (1952 B); an old
+  Dilithium-2 key (1312 B) is refused by its length. It is read lazily, on
+  each issuer verification; if absent, only
   `STATUS_LIST_KEY` operations fail (normal DID records are not affected).
   `scripts/dht_node.rs` logs a warning at startup when the file is missing.
 
@@ -267,7 +281,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | File | Count | Notes |
 |---|---|---|
 | `tests/network_tests.rs` | 17 | Full multi-node integration tests (real UDP) |
-| `tests/crypto_tests.rs` | 28 | Crypto layer unit + DID handler unit tests |
+| `tests/crypto_tests.rs` | 26 | Crypto layer unit + DID handler unit tests |
 | `tests/routing_tests.rs` | 22 | Routing table unit tests |
 | `tests/storage_tests.rs` | 15 | `ForgetfulStorage` unit tests (includes `insert_if_absent` cases) |
 | `tests/dht_integration.rs` | 1 | Legacy 3-node end-to-end scenario |
@@ -277,7 +291,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/scenarios/worker_pool.rs` | 1 | 40-client burst, all responses delivered |
 | `tests/scenarios/crypto.rs` | 4 | End-to-end crypto invariants (tamper, injection, downgrade, revocation) |
 | `tests/quorum_tests.rs` | 19 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum, delayed UPDATE commit, retry of an applied UPDATE, UPDATE to replicas without the record, and the network check of a STORE to an empty replica |
-| `src/**` (inline) | 140 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
+| `src/**` (inline) | 137 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 
@@ -324,7 +338,7 @@ When adding a new integration test use ports **15954+** and document them here (
 ### `examples/cache_bench.rs`
 Signature-cache benchmark in two isolated phases:
 - **Phase 1** — DHT SET throughput (cached vs uncached clusters, no CPU contention).
-- **Phase 2** — Dilithium-2 verification micro-benchmark (records injected directly into local storage, sequential `get()` calls, zero network variance).
+- **Phase 2** — ML-DSA-65 verification micro-benchmark (records injected directly into local storage, sequential `get()` calls, zero network variance).
 
 ```bash
 cargo run --release --example cache_bench
@@ -375,6 +389,10 @@ docker compose logs -f dht_peer_2   # follow a single container
 `DEMO_DID_UUID` in `.env` is the shared key for the publisher→retriever demo.
 Environment variables per container: `NODE_PORT`, `IS_SEED`, `BOOTSTRAP_ADDR`,
 `ROLE` (`publisher`|`retriever`), `FIXED_DID_UUID`, `RETRIEVE_KEY`, `RUST_LOG`.
+
+Every Dockerfile builds on the Debian release it runs on (`bookworm`): the C
+code of AWS-LC links against the builder's glibc, and a binary built on a newer
+one (`__isoc23_strtol`, glibc 2.38) does not start on `debian:bookworm-slim`.
 
 ### Testbed (`testbed/`)
 N nodes in Docker with configurable `k`, `alpha`, seeds and `tc netem` profiles
@@ -442,11 +460,14 @@ On Ubuntu 23.10+ headless Chrome needs `-p` with a puppeteer config holding
 so do not use it inside a note or a message.
 
 ## Adding a new crypto algorithm
+Records accept one algorithm, ML-DSA-65 (ADR 0003); accepting another one in
+records is a new ADR.
 1. Implement `SignatureVerifier` (and optionally `Signer`) in `src/crypto/<alg>.rs`.
 2. Register in `src/crypto/factory.rs` → `SignatureVerifierFactory::get_verifier()` and `SignerFactory::get_signer()`.
 3. Add the algorithm string + signature length to `resolve_alg_and_length()` in
-   `src/crypto/signature_verifier.rs`.
-4. Add tests in `tests/crypto_tests.rs`.
+   `src/crypto/signature_verifier.rs`, the length taken from the crate, not a literal.
+4. To accept it in records, change `record_algorithm()` in `src/auth_handler.rs`.
+5. Add tests in `tests/crypto_tests.rs`.
 
 ## Session continuity — RESUME_BEFORE_COMPACT.md
 

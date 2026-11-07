@@ -9,10 +9,10 @@
 //!   Calls `DIDSignatureVerifierHandler::handle_signature_verification` directly
 //!   via `spawn_blocking`, mirroring the exact branching in `verify_for_key`:
 //!
-//!   - Cold: SHA-256 key computed, cache miss → full Dilithium-2 via spawn_blocking
+//!   - Cold: SHA-256 key computed, cache miss → full ML-DSA-65 via spawn_blocking
 //!           → result inserted into SignatureCache.
 //!   - Warm: SHA-256 key computed, cache hit → result returned directly, no spawn_blocking.
-//!   - Uncached: always pays full Dilithium-2, no cache involved.
+//!   - Uncached: always pays full ML-DSA-65, no cache involved.
 //!
 //!   This is faithful to the production code path and eliminates network variance.
 //!
@@ -29,11 +29,8 @@ use auth_kademlia_rs::network::Server;
 use auth_kademlia_rs::storage::IStorage;
 use auth_kademlia_rs::utils::digest;
 
+use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use pqcrypto_dilithium::dilithium2;
-use pqcrypto_kyber::kyber512;
-use pqcrypto_traits::kem::PublicKey as KemPublicKey;
-use pqcrypto_traits::sign::PublicKey as SignPublicKey;
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, Semaphore};
 use tokio::time::timeout;
@@ -123,8 +120,8 @@ fn sort_json_keys(v: &Value) -> Value {
 }
 
 fn new_record() -> (String, Vec<u8>) {
-    let (dpk, dsk) = dilithium2::keypair();
-    let (kpk, _) = kyber512::keypair();
+    let dsk = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
+    let dpk = dsk.public_key().to_vec();
     let did = format!("did:iiot:{}", Uuid::new_v4());
     let key = did.split(':').next_back().unwrap().to_string();
     let doc = json!({
@@ -133,24 +130,18 @@ fn new_record() -> (String, Vec<u8>) {
         "verificationMethod": [
             {
                 "id": format!("{}#k0", did), "type": "JsonWebKey2020", "controller": did,
-                "publicKeyJwk": { "kty": "OKP", "crv": "Dilithium2", "x": base64url(dpk.as_bytes()) }
-            },
-            {
-                "id": format!("{}#k1", did), "type": "JsonWebKey2020", "controller": did,
-                "publicKeyJwk": { "kty": "OKP", "crv": "Kyber512", "x": base64url(kpk.as_bytes()) }
+                "publicKeyJwk": { "kty": "AKP", "alg": "ML-DSA-65", "pub": base64url(&dpk) }
             }
         ],
         "authentication": [format!("{}#k0", did)],
-        "keyAgreement":   [format!("{}#k1", did)],
         "service": [{ "id": format!("{}#device", did), "type": "DeviceAgent",
                       "serviceEndpoint": "http://example.com/device" }]
     });
     let doc_bytes = serde_json::to_vec(&sort_json_keys(&doc)).expect("serialize");
     let mut alg = [0u8; 12];
-    alg[..11].copy_from_slice(b"Dilithium-2");
-    let sig = dilithium2::detached_sign(&doc_bytes, &dsk);
-    let sig_bytes =
-        <dilithium2::DetachedSignature as pqcrypto_traits::sign::DetachedSignature>::as_bytes(&sig);
+    alg[..9].copy_from_slice(b"ML-DSA-65");
+    let sig = dsk.sign(&doc_bytes).expect("ML-DSA-65 signing");
+    let sig_bytes = sig.as_slice();
     let mut record = Vec::with_capacity(12 + sig_bytes.len() + doc_bytes.len());
     record.extend_from_slice(&alg);
     record.extend_from_slice(sig_bytes);
@@ -267,7 +258,7 @@ async fn run_verify_micro(port: u16, use_cache: bool, n: usize) -> VerifyResults
         node.storage.set(dkey.to_vec(), record.clone());
     }
 
-    // Cold pass: cache is empty → full Dilithium-2 for both variants.
+    // Cold pass: cache is empty → full ML-DSA-65 for both variants.
     let mut cold_ns = Vec::with_capacity(n);
     for (key, _) in &records {
         let t = Instant::now();
@@ -275,7 +266,7 @@ async fn run_verify_micro(port: u16, use_cache: bool, n: usize) -> VerifyResults
         cold_ns.push(t.elapsed().as_nanos() as u64);
     }
 
-    // Warm pass: cached → SHA-256 lookup; uncached → full Dilithium again.
+    // Warm pass: cached → SHA-256 lookup; uncached → full ML-DSA again.
     let mut warm_ns = Vec::with_capacity(n);
     for (key, _) in &records {
         let t = Instant::now();
@@ -339,7 +330,7 @@ async fn run() {
     println!("╚═══════════════════════════════════════════════════════════╝");
     println!("  DHT SET : {DEFAULT_OPS} ops  c={DEFAULT_CONCURRENCY}");
     println!("  Verify  : {MICRO_OPS} ops  sequential  (local storage, no network)");
-    println!("  Record  : ~6 KB  (Dilithium-2 + Kyber-512 DID Document)\n");
+    println!("  Record  : ~6.5 KB  (ML-DSA-65 DID Document)\n");
 
     // ─────────────────────────────────────────────────────────────────────────
     // Phase 1: DHT SET throughput — clusters run sequentially to avoid
@@ -422,8 +413,8 @@ async fn run() {
     );
     println!("  └─────────────┴─────────────────┴─────────────────┴────────────┘");
     println!();
-    println!("  Cold GET: first read — full Dilithium-2 for both (cache miss).");
+    println!("  Cold GET: first read — full ML-DSA-65 for both (cache miss).");
     println!("  Warm GET: second read of same record.");
     println!("    Cached  → SHA-256 key lookup only  (~1 µs expected)");
-    println!("    Uncached → full Dilithium-2 re-verify  (~100 µs expected)");
+    println!("    Uncached → full ML-DSA-65 re-verify");
 }

@@ -44,7 +44,7 @@ use tokio::sync::RwLock;
 
 use crate::auth_handler::{DIDSignatureVerifierHandler, SignatureVerifierHandler};
 use crate::crypto::key_manager::{
-    DilithiumKeyManager, Ed25519KeyManager, KeyManager, KeyManagerError, KyberKeyManager,
+    Ed25519KeyManager, KeyManager, KeyManagerError, KyberKeyManager, MlDsaKeyManager,
 };
 use crate::network::{Server, ServerStats, SetOutcome, SetRejection, SetReport};
 use crate::storage::{ForgetfulStorage, DEFAULT_TTL};
@@ -143,7 +143,7 @@ impl PyServer {
     /// Args:
     ///     ksize (int):        Kademlia k parameter (bucket size). Default: 20.
     ///     alpha (int):        Concurrency factor for iterative lookups. Default: 3.
-    ///     issuer_path (str):  Path to the issuer node's raw Dilithium public key
+    ///     issuer_path (str):  Path to the issuer node's raw ML-DSA-65 public key
     ///                         file.  Required only for status-list key
     ///                         verification; pass ``None`` to skip issuer checks
     ///                         (self-signed DID records still work).
@@ -410,39 +410,31 @@ impl PyServer {
     }
 }
 
-/// CRYSTALS-Dilithium key manager exposed to Python.
+/// ML-DSA-65 key manager exposed to Python: the signature of every record
+/// (ADR 0003).
 ///
 /// Args:
 ///     keys_dir (str): Directory where ``.public`` / ``.private`` files are stored.
-///     security_level (int): 2, 3, or 5.
-#[pyclass(name = "DilithiumKeyManager")]
-pub struct PyDilithiumKeyManager {
-    inner: DilithiumKeyManager,
+#[pyclass(name = "MlDsaKeyManager")]
+pub struct PyMlDsaKeyManager {
+    inner: MlDsaKeyManager,
 }
 
 #[pymethods]
-impl PyDilithiumKeyManager {
+impl PyMlDsaKeyManager {
     #[new]
-    fn new(keys_dir: String, security_level: u8) -> Self {
+    fn new(keys_dir: String) -> Self {
         Self {
-            inner: DilithiumKeyManager::new(PathBuf::from(keys_dir), security_level),
+            inner: MlDsaKeyManager::new(PathBuf::from(keys_dir)),
         }
     }
 
-    /// Generate a fresh ``(public_key, private_key)`` pair.
-    ///
-    /// Args:
-    ///     security_level (int | None): Override the instance level (2, 3, or 5).
-    ///                                  If omitted, the level set at construction is used.
-    #[pyo3(signature = (security_level=None))]
+    /// Generate a fresh ML-DSA-65 ``(public_key, private_key)`` pair.
     fn generate_keypair<'py>(
         &self,
         py: Python<'py>,
-        security_level: Option<u8>,
     ) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
-        let level = security_level.unwrap_or(self.inner.security_level);
-        let keys_dir = self.inner.keys_dir.clone();
-        py.allow_threads(move || DilithiumKeyManager::new(keys_dir, level).generate_keypair())
+        py.allow_threads(|| self.inner.generate_keypair())
             .map(|(pk, sk)| (PyBytes::new_bound(py, &pk), PyBytes::new_bound(py, &sk)))
             .map_err(km_err)
     }
@@ -487,7 +479,8 @@ impl PyDilithiumKeyManager {
             .map_err(km_err)
     }
 
-    /// Return a JWK-style ``dict`` for ``public_key``.
+    /// Return ``public_key`` as an RFC 9964 JWK ``dict``:
+    /// ``{"kty": "AKP", "alg": "ML-DSA-65", "pub": <base64url>}``.
     fn get_jose_format(&self, public_key: Vec<u8>) -> HashMap<String, String> {
         self.inner.get_jose_format(&public_key)
     }
@@ -719,7 +712,7 @@ fn authkademlia_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     configure_runtime();
     m.add_function(wrap_pyfunction!(init_runtime, m)?)?;
     m.add_class::<PyServer>()?;
-    m.add_class::<PyDilithiumKeyManager>()?;
+    m.add_class::<PyMlDsaKeyManager>()?;
     m.add_class::<PyKyberKeyManager>()?;
     m.add_class::<PyEd25519KeyManager>()?;
     Ok(())

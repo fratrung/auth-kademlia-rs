@@ -6,7 +6,7 @@
 //!
 //! Covered invariants:
 //!   1. Tampered payload → rejected at set() (wrong sig over modified bytes)
-//!   2. Algorithm field injection → rejected (Ed25519 field, Dilithium sig)
+//!   2. Algorithm field injection → rejected (Ed25519 field, ML-DSA-65 sig)
 //!   3. Key rotation downgrade attack → rejected after v1→v2 rotation,
 //!      an attacker who holds sk1 cannot submit v1 as "new record" to
 //!      replace v2 (they would need sk2, which they do not possess)
@@ -18,12 +18,10 @@
 #[path = "common.rs"]
 mod common;
 
+use auth_kademlia_rs::crypto::mldsa::{self as mldsa, MlDsa65KeyPair};
 use common::{
     build_did_document, build_signed_record, generate_did_iiot, make_record, rt, start_node,
 };
-use pqcrypto_dilithium::dilithium2;
-use pqcrypto_kyber::kyber512;
-use pqcrypto_traits::sign::DetachedSignature;
 
 /// A record whose payload bytes have been tampered with must be rejected.
 /// The signature was produced over the original bytes — any modification
@@ -36,8 +34,8 @@ fn tampered_payload_rejected() {
         let node = start_node(15860).await;
         let (key, mut record) = make_record();
 
-        // Flip one byte in the DID Document section (after alg[12] + sig[2420]).
-        let tamper_pos = 12 + 2420 + 10;
+        // Flip one byte in the DID Document section (after alg[12] + signature).
+        let tamper_pos = 12 + mldsa::signature_len() + 10;
         record[tamper_pos] ^= 0xFF;
 
         let result = node.set(&key, record).await;
@@ -53,18 +51,20 @@ fn tampered_payload_rejected() {
 }
 
 /// A record whose algorithm field has been replaced with a different algorithm
-/// string must be rejected. The verifier selects the signature length from the
-/// algorithm field; a mismatch causes parsing to fail or verification to fail.
+/// string must be rejected. A node accepts only ML-DSA-65 records (ADR 0003),
+/// so the record is refused before any verifier is chosen; were Ed25519
+/// accepted, its 64-byte signature length would still cut the record in the
+/// wrong place.
 ///
 /// Port: 15861.
 #[test]
 fn algorithm_field_injection_rejected() {
     rt().block_on(async {
         let node = start_node(15861).await;
-        let (key, mut record) = make_record(); // genuine Dilithium-2 record
+        let (key, mut record) = make_record(); // genuine ML-DSA-65 record
 
-        // Replace the 12-byte algorithm field with "Ed25519" (64-byte sig expected).
-        // The actual signature is 2420 bytes (Dilithium-2) — length mismatch → reject.
+        // Replace the 12-byte algorithm field with "Ed25519", an algorithm no
+        // record may use.
         let mut alg = [0u8; 12];
         alg[..7].copy_from_slice(b"Ed25519");
         record[..12].copy_from_slice(&alg);
@@ -100,12 +100,12 @@ fn downgrade_attack_after_rotation_rejected() {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         // v1: owner publishes with keypair_1.
-        let (pk1, sk1) = dilithium2::keypair();
-        let (kpk, _) = kyber512::keypair();
+        let sk1 = MlDsa65KeyPair::generate().unwrap();
+        let pk1 = sk1.public_key().to_vec();
         let did = generate_did_iiot();
         let key = did.split(':').next_back().unwrap().to_string();
-        let doc_v1 = build_did_document(&did, &pk1, &kpk);
-        let record_v1 = build_signed_record(&doc_v1, &sk1, "Dilithium-2");
+        let doc_v1 = build_did_document(&did, &pk1);
+        let record_v1 = build_signed_record(&doc_v1, &sk1, "ML-DSA-65");
 
         assert_eq!(
             node_a.set(&key, record_v1.clone()).await,
@@ -114,13 +114,11 @@ fn downgrade_attack_after_rotation_rejected() {
         );
 
         // Legitimate v1→v2 rotation: auth_sig = sign(record_v2, sk1).
-        let (pk2, sk2) = dilithium2::keypair();
-        let (kpk2, _) = kyber512::keypair();
-        let doc_v2 = build_did_document(&did, &pk2, &kpk2);
-        let record_v2 = build_signed_record(&doc_v2, &sk2, "Dilithium-2");
-        let auth_v1_to_v2 = dilithium2::detached_sign(&record_v2, &sk1)
-            .as_bytes()
-            .to_vec();
+        let sk2 = MlDsa65KeyPair::generate().unwrap();
+        let pk2 = sk2.public_key().to_vec();
+        let doc_v2 = build_did_document(&did, &pk2);
+        let record_v2 = build_signed_record(&doc_v2, &sk2, "ML-DSA-65");
+        let auth_v1_to_v2 = sk1.sign(&record_v2).unwrap();
 
         assert_eq!(
             node_a
@@ -133,9 +131,7 @@ fn downgrade_attack_after_rotation_rejected() {
         // Downgrade attempt: attacker tries to submit v1 as "update" to v2.
         // They produce auth_sig = sign(record_v1, sk1) — using the key they still hold.
         // Protocol checks: verify(pk2, auth_sig, record_v1) → fails (sk1 ≠ sk2).
-        let fake_auth = dilithium2::detached_sign(&record_v1, &sk1)
-            .as_bytes()
-            .to_vec();
+        let fake_auth = sk1.sign(&record_v1).unwrap();
 
         let downgrade = node_b
             .update(&key, record_v1.clone(), Some(fake_auth))
@@ -176,12 +172,12 @@ fn revoked_key_cannot_authorise_further_rotation() {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         // v1 → v2 rotation (legitimate).
-        let (pk1, sk1) = dilithium2::keypair();
-        let (kpk, _) = kyber512::keypair();
+        let sk1 = MlDsa65KeyPair::generate().unwrap();
+        let pk1 = sk1.public_key().to_vec();
         let did = generate_did_iiot();
         let key = did.split(':').next_back().unwrap().to_string();
-        let doc_v1 = build_did_document(&did, &pk1, &kpk);
-        let record_v1 = build_signed_record(&doc_v1, &sk1, "Dilithium-2");
+        let doc_v1 = build_did_document(&did, &pk1);
+        let record_v1 = build_signed_record(&doc_v1, &sk1, "ML-DSA-65");
 
         assert_eq!(
             node_a.set(&key, record_v1.clone()).await,
@@ -189,13 +185,11 @@ fn revoked_key_cannot_authorise_further_rotation() {
             "v1 store must succeed"
         );
 
-        let (pk2, sk2) = dilithium2::keypair();
-        let (kpk2, _) = kyber512::keypair();
-        let doc_v2 = build_did_document(&did, &pk2, &kpk2);
-        let record_v2 = build_signed_record(&doc_v2, &sk2, "Dilithium-2");
-        let auth_v1_v2 = dilithium2::detached_sign(&record_v2, &sk1)
-            .as_bytes()
-            .to_vec();
+        let sk2 = MlDsa65KeyPair::generate().unwrap();
+        let pk2 = sk2.public_key().to_vec();
+        let doc_v2 = build_did_document(&did, &pk2);
+        let record_v2 = build_signed_record(&doc_v2, &sk2, "ML-DSA-65");
+        let auth_v1_v2 = sk1.sign(&record_v2).unwrap();
         assert_eq!(
             node_a
                 .update(&key, record_v2.clone(), Some(auth_v1_v2))
@@ -210,13 +204,11 @@ fn revoked_key_cannot_authorise_further_rotation() {
         // Build v3; try to authorise with the revoked sk1.
         // node_a is used as the caller: its update_digest sends UPDATE RPCs to
         // the replicas, which hold v2 and can verify the rotation correctly.
-        let (pk3, sk3) = dilithium2::keypair();
-        let (kpk3, _) = kyber512::keypair();
-        let doc_v3 = build_did_document(&did, &pk3, &kpk3);
-        let record_v3 = build_signed_record(&doc_v3, &sk3, "Dilithium-2");
-        let bad_auth = dilithium2::detached_sign(&record_v3, &sk1)
-            .as_bytes()
-            .to_vec();
+        let sk3 = MlDsa65KeyPair::generate().unwrap();
+        let pk3 = sk3.public_key().to_vec();
+        let doc_v3 = build_did_document(&did, &pk3);
+        let record_v3 = build_signed_record(&doc_v3, &sk3, "ML-DSA-65");
+        let bad_auth = sk1.sign(&record_v3).unwrap();
 
         let rejected = node_a.update(&key, record_v3.clone(), Some(bad_auth)).await;
         assert!(
@@ -225,9 +217,7 @@ fn revoked_key_cannot_authorise_further_rotation() {
         );
 
         // Positive case: sk2 (current owner) DOES authorise v2→v3.
-        let good_auth = dilithium2::detached_sign(&record_v3, &sk2)
-            .as_bytes()
-            .to_vec();
+        let good_auth = sk2.sign(&record_v3).unwrap();
         let accepted = node_a
             .update(&key, record_v3.clone(), Some(good_auth))
             .await;

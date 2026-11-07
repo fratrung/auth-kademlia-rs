@@ -9,11 +9,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use pqcrypto_dilithium::dilithium2;
-use pqcrypto_kyber::kyber512;
-use pqcrypto_traits::kem::PublicKey as KemPublicKey;
-use pqcrypto_traits::sign::{DetachedSignature, PublicKey};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -58,21 +55,17 @@ pub fn encode_did_document(doc: &Value) -> Vec<u8> {
 /// Build the AuthKademlia signed record:
 ///
 /// ```text
-/// | algorithm (12 bytes, null-padded) | Dilithium-2 signature | DID Document JSON |
+/// | algorithm (12 bytes, null-padded) | ML-DSA-65 signature | DID Document JSON |
 /// ```
-pub fn build_signed_record(
-    doc: &Value,
-    secret_key: &dilithium2::SecretKey,
-    algorithm: &str,
-) -> Vec<u8> {
+pub fn build_signed_record(doc: &Value, secret_key: &MlDsa65KeyPair, algorithm: &str) -> Vec<u8> {
     let doc_bytes = encode_did_document(doc);
 
     let mut alg_field = [0u8; 12];
     let copy_len = algorithm.len().min(12);
     alg_field[..copy_len].copy_from_slice(&algorithm.as_bytes()[..copy_len]);
 
-    let detached_sig = dilithium2::detached_sign(&doc_bytes, secret_key);
-    let signature = detached_sig.as_bytes();
+    let detached_sig = secret_key.sign(&doc_bytes).unwrap();
+    let signature = detached_sig.as_slice();
 
     let mut record = Vec::with_capacity(12 + signature.len() + doc_bytes.len());
     record.extend_from_slice(&alg_field);
@@ -86,14 +79,10 @@ pub fn generate_did_iiot() -> String {
     format!("did:iiot:{}", Uuid::new_v4())
 }
 
-/// Build a minimal `did:iiot` DID Document with one Dilithium-2 and one Kyber-512 key.
-pub fn build_did_document(
-    did: &str,
-    dilithium_pk: &dilithium2::PublicKey,
-    kyber_pk: &kyber512::PublicKey,
-) -> Value {
-    let dx = base64url_encode(dilithium_pk.as_bytes());
-    let kx = base64url_encode(kyber_pk.as_bytes());
+/// Build a minimal `did:iiot` DID Document with its ML-DSA-65 key (RFC 9964)
+/// and no key agreement key (ADR 0003).
+pub fn build_did_document(did: &str, signing_pk: &[u8]) -> Value {
+    let signing_x = base64url_encode(signing_pk);
     json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
         "id": did,
@@ -102,17 +91,10 @@ pub fn build_did_document(
                 "id": format!("{}#k0", did),
                 "type": "JsonWebKey2020",
                 "controller": did,
-                "publicKeyJwk": { "kty": "OKP", "crv": "Dilithium2", "x": dx }
-            },
-            {
-                "id": format!("{}#k1", did),
-                "type": "JsonWebKey2020",
-                "controller": did,
-                "publicKeyJwk": { "kty": "OKP", "crv": "Kyber512", "x": kx }
+                "publicKeyJwk": { "kty": "AKP", "alg": "ML-DSA-65", "pub": signing_x }
             }
         ],
         "authentication": [ format!("{}#k0", did) ],
-        "keyAgreement":   [ format!("{}#k1", did) ],
         "service": [{
             "id": format!("{}#device", did),
             "type": "DeviceAgent",
