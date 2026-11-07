@@ -11,3 +11,4 @@ Status is one of: Proposed, Accepted, Superseded by NNNN.
 |---|---|---|
 | [0001](0001-split-the-two-large-modules.md) | Split the two large modules, keep the others | Accepted |
 | [0002](0002-reserve-before-first-store.md) | Reserve the key before the first STORE | Proposed |
+| [0003](0003-ml-dsa-records-and-ephemeral-ml-kem.md) | ML-DSA-65 for records, ephemeral ML-KEM-768 outside the DHT | Accepted |
