@@ -18,8 +18,8 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 246 tests
-cargo test --features counters       # 249: also the counters' own tests
+cargo test                           # all 248 tests
+cargo test --features counters       # 251: also the counters' own tests
 cargo test <name>                    # single test, e.g. test_update_did_record_key_rotation
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -46,6 +46,12 @@ maturin develop --features python
 - `Server.set_detailed()` returns the publication status/reason and replica
   counters as a Python `dict`; `Server.stats()` exposes routing, storage-budget,
   and signature-cache counters.
+- `MlKemKeyManager(max_age_secs=30, max_outstanding=64)` gives one ML-KEM-768
+  key pair per handshake: `ephemeral_public_key()` returns `(key_id, bytes)`,
+  `decapsulate(key_id, ciphertext)` returns the shared secret and destroys the
+  pair, and the static `MlKemKeyManager.encapsulate(public_key)` returns
+  `(shared_secret, ciphertext)`. It has no method that returns, stores or reads
+  a private key; do not add one (ADR 0003).
 - `Server(sig_cache=True/False)` controls the ML-DSA signature cache (default
   `False`). Pass `sig_cache=True` to enable it in production for repeated-record
   workloads.
@@ -104,7 +110,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/crypto/mldsa.rs` | ML-DSA-65 from `aws-lc-rs`: `MlDsa65KeyPair` (generate, sign, raw public key, expanded private key), verifier + signer (pure ML-DSA, empty context), `signature_len()`/`public_key_len()`, `ML_DSA_65` name |
 | `src/crypto/ed25519.rs` | Ed25519 verifier + signer |
 | `src/crypto/rsa.rs` | RSA verifier + signer |
-| `src/crypto/key_manager.rs` | `KeyManager` — keypair generation, storage, sign/verify helpers |
+| `src/crypto/key_manager.rs` | `KeyManager` — keypair generation, storage, sign/verify helpers (`MlDsaKeyManager`, `Ed25519KeyManager`); `MlKemKeyManager` — ephemeral ML-KEM-768 pairs, one per handshake, in memory only, expiring after 30 s, at most 64 given out (ADR 0003) |
 | `src/node.rs` | `Node` struct, full **160-bit** XOR distance (`long_id: U256`, no folding), `from_id`; `NodeHeap` shortlist backed by a distance-sorted `Vec`; `Display` shows `ip:port` for real peers, `<key:hex8>` for key-space targets |
 | `src/utils.rs` | `digest()` (SHA-1 → `[u8; 20]`), `digest_bytes()`, `ID_LEN = 20`, `STATUS_LIST_KEY` |
 | `scripts/dht_node.rs` | Docker container entry point (`publisher` / `retriever` roles) |
@@ -291,7 +297,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/scenarios/worker_pool.rs` | 1 | 40-client burst, all responses delivered |
 | `tests/scenarios/crypto.rs` | 4 | End-to-end crypto invariants (tamper, injection, downgrade, revocation) |
 | `tests/quorum_tests.rs` | 19 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum, delayed UPDATE commit, retry of an applied UPDATE, UPDATE to replicas without the record, and the network check of a STORE to an empty replica |
-| `src/**` (inline) | 137 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
+| `src/**` (inline) | 139 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 

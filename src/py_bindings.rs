@@ -36,15 +36,17 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Once};
+use std::time::Duration;
 
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 use tokio::sync::RwLock;
 
 use crate::auth_handler::{DIDSignatureVerifierHandler, SignatureVerifierHandler};
 use crate::crypto::key_manager::{
-    Ed25519KeyManager, KeyManager, KeyManagerError, KyberKeyManager, MlDsaKeyManager,
+    Ed25519KeyManager, KeyManager, KeyManagerError, MlDsaKeyManager, MlKemKeyManager,
+    EPHEMERAL_KEY_MAX_AGE, MAX_EPHEMERAL_KEYS,
 };
 use crate::network::{Server, ServerStats, SetOutcome, SetRejection, SetReport};
 use crate::storage::{ForgetfulStorage, DEFAULT_TTL};
@@ -513,84 +515,69 @@ impl PyMlDsaKeyManager {
     }
 }
 
-/// CRYSTALS-Kyber key manager exposed to Python.
-///
-/// Kyber is a KEM (Key Encapsulation Mechanism), not a signature scheme.
+/// ML-KEM-768 with ephemeral keys, for the handshake between devices,
+/// outside the DHT (ADR 0003). One key pair per handshake, in memory only:
+/// no private key is ever returned, stored or read.
 ///
 /// Args:
-///     keys_dir (str): Directory for key files.
-///     security_level (int): 512, 768, or 1024.
-#[pyclass(name = "KyberKeyManager")]
-pub struct PyKyberKeyManager {
-    inner: KyberKeyManager,
+///     max_age_secs (float): How long a pair given out stays usable (30).
+///     max_outstanding (int): How many pairs may be given out at once (64).
+#[pyclass(name = "MlKemKeyManager")]
+pub struct PyMlKemKeyManager {
+    inner: MlKemKeyManager,
 }
 
 #[pymethods]
-impl PyKyberKeyManager {
+impl PyMlKemKeyManager {
     #[new]
-    fn new(keys_dir: String, security_level: u16) -> Self {
-        Self {
-            inner: KyberKeyManager::new(PathBuf::from(keys_dir), security_level),
-        }
+    #[pyo3(signature = (
+        max_age_secs = EPHEMERAL_KEY_MAX_AGE.as_secs_f64(),
+        max_outstanding = MAX_EPHEMERAL_KEYS
+    ))]
+    fn new(max_age_secs: f64, max_outstanding: usize) -> PyResult<Self> {
+        let max_age = Duration::try_from_secs_f64(max_age_secs)
+            .map_err(|_| PyValueError::new_err("max_age_secs must be a non-negative number"))?;
+        Ok(Self {
+            inner: MlKemKeyManager::with_limits(max_age, max_outstanding),
+        })
     }
 
-    /// Args:
-    ///     security_level (int | None): Override the instance level (512, 768, or 1024).
-    #[pyo3(signature = (security_level=None))]
-    fn generate_keypair<'py>(
-        &self,
-        py: Python<'py>,
-        security_level: Option<u16>,
-    ) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
-        let level = security_level.unwrap_or(self.inner.security_level);
-        let keys_dir = self.inner.keys_dir.clone();
-        py.allow_threads(move || KyberKeyManager::new(keys_dir, level).generate_keypair())
-            .map(|(pk, sk)| (PyBytes::new_bound(py, &pk), PyBytes::new_bound(py, &sk)))
+    /// ``(key_id, public_key)`` of a new key pair, for one handshake.
+    fn ephemeral_public_key<'py>(&self, py: Python<'py>) -> PyResult<(u64, Bound<'py, PyBytes>)> {
+        py.allow_threads(|| self.inner.ephemeral_public_key())
+            .map(|(id, pk)| (id, PyBytes::new_bound(py, &pk)))
             .map_err(km_err)
     }
 
-    fn store_public_key(
+    /// The shared secret of ``ciphertext`` under the pair ``key_id``, which is
+    /// then destroyed. A modified ciphertext gives another secret, not an
+    /// error: the handshake finds out when it confirms the key.
+    fn decapsulate<'py>(
         &self,
-        py: Python<'_>,
-        key_name: String,
+        py: Python<'py>,
+        key_id: u64,
+        ciphertext: Vec<u8>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        py.allow_threads(|| self.inner.decapsulate(key_id, &ciphertext))
+            .map(|secret| PyBytes::new_bound(py, secret.as_bytes()))
+            .map_err(km_err)
+    }
+
+    /// ``(shared_secret, ciphertext)`` for ``public_key``, the other side of
+    /// the handshake.
+    #[staticmethod]
+    fn encapsulate<'py>(
+        py: Python<'py>,
         public_key: Vec<u8>,
-    ) -> PyResult<()> {
-        py.allow_threads(|| self.inner.store_public_key(&key_name, &public_key))
+    ) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
+        py.allow_threads(|| MlKemKeyManager::encapsulate(&public_key))
+            .map(|(secret, ciphertext)| {
+                (
+                    PyBytes::new_bound(py, secret.as_bytes()),
+                    PyBytes::new_bound(py, &ciphertext),
+                )
+            })
             .map_err(km_err)
-    }
-
-    fn store_private_key(
-        &self,
-        py: Python<'_>,
-        key_name: String,
-        private_key: Vec<u8>,
-    ) -> PyResult<()> {
-        py.allow_threads(|| self.inner.store_private_key(&key_name, &private_key))
-            .map_err(km_err)
-    }
-
-    fn get_public_key<'py>(
-        &self,
-        py: Python<'py>,
-        key_name: String,
-    ) -> PyResult<Bound<'py, PyBytes>> {
-        py.allow_threads(|| self.inner.get_public_key(&key_name))
-            .map(|v| PyBytes::new_bound(py, &v))
-            .map_err(km_err)
-    }
-
-    fn get_private_key<'py>(
-        &self,
-        py: Python<'py>,
-        key_name: String,
-    ) -> PyResult<Bound<'py, PyBytes>> {
-        py.allow_threads(|| self.inner.get_private_key(&key_name))
-            .map(|v| PyBytes::new_bound(py, &v))
-            .map_err(km_err)
-    }
-
-    fn get_jose_format(&self, public_key: Vec<u8>) -> HashMap<String, String> {
-        self.inner.get_jose_format(&public_key)
     }
 }
 
@@ -713,7 +700,7 @@ fn authkademlia_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(init_runtime, m)?)?;
     m.add_class::<PyServer>()?;
     m.add_class::<PyMlDsaKeyManager>()?;
-    m.add_class::<PyKyberKeyManager>()?;
+    m.add_class::<PyMlKemKeyManager>()?;
     m.add_class::<PyEd25519KeyManager>()?;
     Ok(())
 }

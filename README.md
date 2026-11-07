@@ -790,6 +790,27 @@ publication, `False` for a degraded or unavailable publication, and `None` for
 an invalid or conflicting record. Prefer `set_detailed()` when replication and
 capacity outcomes affect application behaviour.
 
+`MlKemKeyManager` gives one ephemeral ML-KEM-768 key pair per handshake
+between devices (ADR 0003). Private keys never leave the extension: a pair
+is destroyed when it is used, and expires after 30 s if it is not.
+
+```python
+from authkademlia_py import MlKemKeyManager
+
+# Device A: a new pair, whose public key it sends signed with its ML-DSA-65 key
+kem = MlKemKeyManager()
+key_id, public_key = kem.ephemeral_public_key()
+
+# Device B, after verifying that signature
+secret_b, ciphertext = MlKemKeyManager.encapsulate(public_key)
+
+# Device A
+secret_a = kem.decapsulate(key_id, ciphertext)
+```
+
+A modified ciphertext gives a different secret, not an error (implicit
+rejection, FIPS 203): confirm the key before using it.
+
 > **Note:** The `python` feature builds a `cdylib` target via PyO3. Do **not** enable it in Rust-only deployments — the `cdylib` crate type changes linking behaviour and is unnecessary outside of Python extension builds. The Python bindings are experimental and not covered by the same stability guarantees as the Rust API.
 
 -----

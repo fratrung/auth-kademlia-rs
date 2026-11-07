@@ -53,7 +53,7 @@ The Python application moves to the standards at the same time.
   A record with any other algorithm field is `InvalidRecord`: Dilithium-2, 3
   and 5, Ed25519, RSA. The Ed25519 and RSA code stays in `crypto/`; no record
   reaches it.
-- Lengths come from the crate (`mldsa65::signature_bytes()`), never from
+- Lengths come from the crate (`mldsa::signature_len()`), never from
   literals.
 - The signature is pure ML-DSA (not HashML-DSA) over the document, with an
   empty context string, as every ML-DSA library signs by default. The
@@ -85,16 +85,21 @@ the application's, outside the DHT. The key manager (`MlKemKeyManager` in
 `src/crypto/key_manager.rs`) gives it one key pair per handshake:
 
 - `ephemeral_public_key()` returns `(id, public key)` of a pair that only that
-  handshake gets, and generates the next pair at once, so a handshake does not
-  wait for key generation.
+  handshake gets, and generates the next pair at once, in another thread, so a
+  handshake does not wait for key generation. The id is random, so an answer
+  meant for a pair given out before a restart does not reach a new one.
 - `decapsulate(id, ciphertext)` uses the pair once and destroys it, whatever
   the ciphertext. ML-KEM does not report a wrong ciphertext: it returns a
   pseudo-random secret instead (implicit rejection, FIPS 203), and the
   handshake finds out when it confirms the key. Any use consumes the pair.
 - A pair given out and never used expires after 30 s, and at most a bounded
-  number of pairs are given out at once. Both are parameters.
-- Private keys stay in memory, are zeroed when consumed or expired, and are
-  never written to a file.
+  number of pairs are given out at once, 64 by default. Both are parameters.
+  Beyond the bound a new handshake is refused until a pair is used or
+  expires; no pair given out is destroyed to make room.
+- Private keys stay inside AWS-LC, which zeroes them when it frees them, when
+  consumed or expired; they are never exported or written to a file. An
+  expired pair is freed at the next call to the manager, or when the manager
+  is dropped.
 - `encapsulate(public key)` returns `(shared secret, ciphertext)`, without
   state, for the other side of the handshake.
 - The ephemeral public key is not in the DID Document, so the handshake must
@@ -197,7 +202,10 @@ no way to store or read a private key.
     `InvalidRecord`;
   - the ML-KEM key manager: two calls give two different pairs; `encapsulate`
     and `decapsulate` agree; a second `decapsulate` with the same id fails; a
-    pair expires; nothing is written to the key directory.
+    pair expires; the number given out at once is bounded; `encapsulate`
+    refuses a key with a coefficient out of range (FIPS 203, section 7.2).
+    The manager has no key directory: in Python, `MlKemKeyManager` has no
+    method that returns, stores or reads a private key.
 - Before choosing the crate, outside the repository: `aws-lc-rs` signs and
   verifies with `fips204`, RustCrypto `ml-dsa` and `pqcrypto-mldsa`, in both
   directions and with each other's private keys; it encapsulates and
