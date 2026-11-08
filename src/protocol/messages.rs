@@ -277,16 +277,28 @@ mod tests {
     /// One message of each type, in the order of `RpcMessage`. bincode writes
     /// a message as the index of its variant followed by its fields, and zero
     /// bytes decode as the fields of any variant (zero ids, empty vectors,
-    /// `None`, the first `StoreStatus`). So this decodes every variant,
-    /// including one added later, and stops at the first index that is none.
+    /// `None`, the first `StoreStatus`), given enough of them. So this decodes
+    /// every variant, including one added later, up to the first index that
+    /// is none. It fails if it stops for another reason, such as a variant
+    /// whose fields need more zero bytes than given: stopping there would
+    /// leave that variant and the later ones out without a sign.
     fn one_message_of_each_type() -> Vec<RpcMessage> {
-        (0u32..)
-            .map_while(|index| {
-                let mut bytes = index.to_le_bytes().to_vec();
-                bytes.extend([0u8; 64]);
-                bincode::deserialize::<RpcMessage>(&bytes).ok()
-            })
-            .collect()
+        let mut messages = Vec::new();
+        for index in 0u32.. {
+            let mut bytes = index.to_le_bytes().to_vec();
+            bytes.extend([0u8; 4096]);
+            match bincode::deserialize::<RpcMessage>(&bytes) {
+                Ok(message) => messages.push(message),
+                Err(error) => {
+                    assert!(
+                        error.to_string().contains("variant index"),
+                        "variant {index} did not decode from zero bytes: {error}"
+                    );
+                    break;
+                }
+            }
+        }
+        messages
     }
 
     /// The counters count a datagram under `rpc_message_name`, and only the
