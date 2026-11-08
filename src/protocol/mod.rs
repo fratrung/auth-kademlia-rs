@@ -75,6 +75,9 @@ pub struct KademliaProtocol {
     requests_in_progress: Arc<DashMap<RequestKey, ()>>,
     /// What this node sent (feature `counters`; empty without it).
     counters: Counters,
+    /// Start from a random value, not 0, so that after `stop` and `listen`
+    /// an answer or a fragment meant for the old protocol does not match a
+    /// request or a message of the new one.
     next_msg_id: AtomicU32,
     next_frag_id: AtomicU32,
     reassembly: ReassemblyMap,
@@ -114,8 +117,8 @@ impl KademliaProtocol {
             round_trips: RoundTrips::default(),
             requests_in_progress: Arc::new(DashMap::new()),
             counters: Counters::default(),
-            next_msg_id: AtomicU32::new(0),
-            next_frag_id: AtomicU32::new(0),
+            next_msg_id: AtomicU32::new(rand::random()),
+            next_frag_id: AtomicU32::new(rand::random()),
             reassembly: Arc::new(Mutex::new(HashMap::new())),
             last_reassembly_gc: Mutex::new(Instant::now()),
             tasks: StdMutex::new(Some(JoinSet::new())),
@@ -175,5 +178,31 @@ impl KademliaProtocol {
     #[cfg(feature = "counters")]
     pub fn counters(&self) -> crate::counters::CounterSnapshot {
         self.counters.snapshot()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+
+    use super::test_support::{test_protocol, TestHandler};
+
+    /// A node that listens again does not start from the same message and
+    /// fragment ids, so an answer or a fragment sent to it before it stopped
+    /// does not match a request or a message of the new one.
+    #[tokio::test]
+    async fn a_new_protocol_does_not_start_from_the_same_ids() {
+        let handler = Arc::new(TestHandler::new(true, true));
+        let first = test_protocol(handler.clone(), false).await;
+        let second = test_protocol(handler, false).await;
+        assert_ne!(
+            first.next_msg_id.load(Ordering::Relaxed),
+            second.next_msg_id.load(Ordering::Relaxed)
+        );
+        assert_ne!(
+            first.next_frag_id.load(Ordering::Relaxed),
+            second.next_frag_id.load(Ordering::Relaxed)
+        );
     }
 }
