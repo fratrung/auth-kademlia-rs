@@ -2,8 +2,8 @@
 //!
 //! Context: the routing table is the core peer-discovery mechanism.  It
 //! partitions the 160-bit XOR keyspace into K-buckets and uses XOR distance to
-//! find the k nodes closest to any given target.  `NodeHeap` is the bounded
-//! priority queue used during iterative lookups (SpiderCrawl).
+//! find the k nodes closest to any given target.  `NodeHeap` is the
+//! distance-ordered shortlist used during iterative lookups (SpiderCrawl).
 //!
 //! These tests exercise routing in isolation (no UDP sockets) to verify
 //! bucket splitting, neighbour ordering, exclusion filters, and contact
@@ -322,10 +322,10 @@ fn test_node_address() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NodeHeap — bounded priority queue for iterative lookups
+// NodeHeap — distance-ordered shortlist for iterative lookups
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Inserting more nodes than maxsize keeps only the closest ones.
+/// With more nodes than maxsize, the reads see only the closest ones.
 #[test]
 fn test_nodeheap_maxsize_enforced() {
     let pivot = make_node("pivot");

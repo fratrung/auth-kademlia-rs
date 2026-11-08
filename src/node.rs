@@ -1,8 +1,8 @@
 /// Node and NodeHeap — core Kademlia data structures.
 ///
 /// `Node` represents a single peer identified by a 20-byte SHA-1 ID.
-/// `NodeHeap` is a bounded min-heap ordered by XOR distance from a pivot node,
-/// used during iterative lookups.
+/// `NodeHeap` holds the nodes met during an iterative lookup, ordered by XOR
+/// distance from a pivot node; reads see the closest `maxsize`.
 use std::collections::HashSet;
 use std::fmt;
 
@@ -88,24 +88,28 @@ struct HeapEntry {
     node: Node,
 }
 
-/// A bounded set of the `k` nodes closest to a pivot, ordered by XOR distance.
+/// The nodes met during a lookup, ordered by XOR distance from a pivot; reads
+/// see the `maxsize` closest.
 ///
-/// Kademlia lookups maintain the `k` closest known nodes. Backed by a `Vec`
-/// kept sorted by ascending distance: every consumer (`iter`, `popleft`,
-/// `to_vec`) needs the closest-first order, so maintaining the invariant on
-/// mutation is both simpler and cheaper than a `BinaryHeap` that gets
-/// drained and re-sorted on each access. With the full 160-bit metric the
-/// distance order is total (distinct ids never tie), so the ordering is
-/// unambiguous. Mirrors Python's `heapq` + `nsmallest` semantics.
+/// Every node pushed is kept, not only the closest `maxsize`: when a lookup
+/// removes a peer that did not answer, the next node takes its place, so the
+/// lookup still ends with `k` nodes if it met more (Python's `heapq` +
+/// `nsmallest`). `iter`, `to_vec`, `get_ids`, `get_uncontacted`,
+/// `have_contacted_all` and `len` see the closest `maxsize`; `contains`,
+/// `get_node`, `remove` and `popleft` see every node. Backed by a `Vec` kept
+/// sorted by ascending distance, which every read needs. With the full
+/// 160-bit metric the distance order is total (distinct ids never tie).
 #[derive(Debug, Clone)]
 pub struct NodeHeap {
     /// The pivot node — all distances are relative to this.
     pub node: Node,
-    /// The k closest known nodes, sorted by ascending XOR distance.
+    /// Every node pushed and not removed, sorted by ascending XOR distance.
     entries: Vec<HeapEntry>,
+    /// The ids in `entries`.
+    ids: HashSet<[u8; ID_LEN]>,
     /// IDs of nodes that have been marked as contacted.
     pub contacted: HashSet<[u8; ID_LEN]>,
-    /// Maximum number of nodes the heap may hold.
+    /// How many of the closest nodes the reads see.
     pub maxsize: usize,
 }
 
@@ -115,19 +119,17 @@ impl NodeHeap {
         Self {
             node,
             entries: Vec::new(),
+            ids: HashSet::new(),
             contacted: HashSet::new(),
             maxsize,
         }
     }
 
-    /// Insert a batch of nodes, ignoring duplicates.
-    ///
-    /// After insertion the set is re-sorted and trimmed to `maxsize`, keeping
-    /// the closest nodes.
+    /// Insert a batch of nodes, ignoring duplicates, and keep the order.
     pub fn push(&mut self, nodes: Vec<Node>) {
         let mut added = false;
         for node in nodes {
-            if !self.contains(&node) {
+            if self.ids.insert(node.id) {
                 let distance = self.node.distance_to(&node);
                 self.entries.push(HeapEntry { distance, node });
                 added = true;
@@ -135,7 +137,6 @@ impl NodeHeap {
         }
         if added {
             self.entries.sort_unstable_by_key(|e| e.distance);
-            self.entries.truncate(self.maxsize);
         }
     }
 
@@ -151,6 +152,7 @@ impl NodeHeap {
         }
         let peer_set: HashSet<[u8; ID_LEN]> = peers.iter().cloned().collect();
         self.entries.retain(|e| !peer_set.contains(&e.node.id));
+        self.ids.retain(|id| !peer_set.contains(id));
     }
 
     /// Pop and return the single closest node.
@@ -158,13 +160,16 @@ impl NodeHeap {
         if self.entries.is_empty() {
             None
         } else {
-            Some(self.entries.remove(0).node)
+            let node = self.entries.remove(0).node;
+            self.ids.remove(&node.id);
+            Some(node)
         }
     }
 
-    /// Return `true` if the node is already in the heap.
+    /// Return `true` if the node is in the heap, among the closest `maxsize`
+    /// or beyond.
     pub fn contains(&self, node: &Node) -> bool {
-        self.entries.iter().any(|e| e.node.id == node.id)
+        self.ids.contains(&node.id)
     }
 
     /// Look up a node by its raw ID.
@@ -180,12 +185,12 @@ impl NodeHeap {
         self.get_uncontacted().is_empty()
     }
 
-    /// Return the IDs of all nodes currently in the heap (closest first).
+    /// Return the IDs of the closest `maxsize` nodes (closest first).
     pub fn get_ids(&self) -> Vec<[u8; ID_LEN]> {
         self.iter().map(|n| n.id).collect()
     }
 
-    /// Number of nodes in the heap (capped at `maxsize`).
+    /// Number of nodes the reads see (at most `maxsize`).
     pub fn len(&self) -> usize {
         self.entries.len().min(self.maxsize)
     }
@@ -215,7 +220,7 @@ impl NodeHeap {
             .map(|e| e.node.clone())
     }
 
-    /// Collect all nodes into a `Vec` (closest first).
+    /// Collect the closest `maxsize` nodes into a `Vec` (closest first).
     pub fn to_vec(&self) -> Vec<Node> {
         self.iter().collect()
     }
@@ -244,7 +249,31 @@ mod tests {
         for i in 0..10 {
             heap.push_one(make_node(&i.to_string()));
         }
-        assert!(heap.entries.len() <= 3);
+        assert_eq!(heap.len(), 3);
+        assert_eq!(heap.to_vec().len(), 3);
+    }
+
+    /// The node at `distance` from the pivot `[0; ID_LEN]`.
+    fn node_at(distance: u8) -> Node {
+        let mut id = [0u8; ID_LEN];
+        id[ID_LEN - 1] = distance;
+        Node::from_id(id)
+    }
+
+    /// A node beyond `maxsize` is kept, and comes back when a closer one is
+    /// removed: a lookup that drops a peer that did not answer still has `k`
+    /// nodes if it met more than `k`.
+    #[test]
+    fn a_node_beyond_maxsize_comes_back_when_a_closer_one_is_removed() {
+        let mut heap = NodeHeap::new(node_at(0), 3);
+        heap.push((1..=4).map(node_at).collect());
+        let ids = |distances: &[u8]| -> Vec<[u8; ID_LEN]> {
+            distances.iter().map(|d| node_at(*d).id).collect()
+        };
+        assert_eq!(heap.get_ids(), ids(&[1, 2, 3]));
+        heap.remove(&[node_at(1).id]);
+        assert_eq!(heap.get_ids(), ids(&[2, 3, 4]));
+        assert!(heap.contains(&node_at(4)));
     }
 
     #[test]

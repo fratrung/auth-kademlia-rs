@@ -122,7 +122,8 @@ pub struct SpiderCrawl<P: SpiderProtocol> {
     pub alpha: usize,
     /// The target key we are searching for.
     pub node: Node,
-    /// The k closest known nodes to `node`, with contact tracking.
+    /// The nodes met, closest to `node` first, with contact tracking; the
+    /// lookup works on the closest `ksize`.
     pub nearest: NodeHeap,
     /// IDs seen in the previous round, used to detect convergence.
     pub last_ids_crawled: Vec<[u8; ID_LEN]>,
@@ -163,7 +164,13 @@ impl<P: SpiderProtocol> SpiderCrawl<P> {
     /// Add contacts reported by a peer, leaving out those that failed in this
     /// lookup or that this node knows are not responding (Kademlia §4.1). Other
     /// nodes may not have tried them yet, so they can keep reporting them.
-    async fn add_reported(&mut self, nodes: Vec<Node>) {
+    /// An answer counts for at most `ksize` nodes, those closest to the target,
+    /// as FIND_NODE returns: a longer list would only grow the lookup.
+    async fn add_reported(&mut self, mut nodes: Vec<Node>) {
+        if nodes.len() > self.ksize {
+            nodes.sort_unstable_by_key(|node| node.distance_to(&self.node));
+            nodes.truncate(self.ksize);
+        }
         let known_failing = self.protocol.failing_among(&nodes).await;
         let usable = nodes
             .into_iter()
@@ -867,6 +874,70 @@ mod tests {
 
             assert_eq!(*protocol.contacted.lock().unwrap(), vec![failing.id]);
             assert_eq!(lookup.nodes.len(), 1, "it responded, so it counts");
+        });
+    }
+
+    /// k = 3: A does not answer, B and C report D. D was met beyond k and
+    /// takes A's place, so the lookup still returns k nodes.
+    #[test]
+    fn a_node_met_beyond_k_replaces_a_peer_that_does_not_answer() {
+        test_runtime().block_on(async {
+            let (a, b, c, d) = (contact(1), contact(2), contact(3), contact(4));
+            let protocol = Arc::new(ScriptedProtocol {
+                reports: HashMap::from([(b.id, vec![d.clone()]), (c.id, vec![d.clone()])]),
+                dead: HashSet::from([a.id]),
+                ..ScriptedProtocol::default()
+            });
+            let lookup = NodeSpiderCrawl::new(
+                protocol.clone(),
+                Node::from_id([0; ID_LEN]),
+                vec![a.clone(), b.clone(), c.clone()],
+                3,
+                3,
+            )
+            .find_lookup_nodes()
+            .await;
+
+            let ids: Vec<_> = lookup.nodes.iter().map(|node| node.id).collect();
+            assert_eq!(ids, vec![b.id, c.id, d.id]);
+            assert_eq!(lookup.unresponsive, 1);
+        });
+    }
+
+    /// A peer's answer counts for at most k nodes, the k closest to the target:
+    /// a peer cannot fill the lookup with an unbounded list.
+    #[test]
+    fn an_answer_counts_for_at_most_k_nodes() {
+        test_runtime().block_on(async {
+            let reporter = contact(200);
+            // Farthest first: the k closest are taken whatever the order.
+            let reported: Vec<Node> = (1..=10).rev().map(contact).collect();
+            let protocol = Arc::new(ScriptedProtocol {
+                reports: HashMap::from([(reporter.id, reported)]),
+                dead: (1..=3).map(|marker| contact(marker).id).collect(),
+                ..ScriptedProtocol::default()
+            });
+            let lookup = NodeSpiderCrawl::new(
+                protocol.clone(),
+                Node::from_id([0; ID_LEN]),
+                vec![reporter.clone()],
+                3,
+                3,
+            )
+            .find_lookup_nodes()
+            .await;
+
+            let mut contacted = protocol.contacted.lock().unwrap().clone();
+            contacted.sort();
+            let mut expected: Vec<_> = [1, 2, 3, 200].map(|marker| contact(marker).id).to_vec();
+            expected.sort();
+            assert_eq!(
+                contacted, expected,
+                "nodes 4 to 10 were beyond k in the answer"
+            );
+            let ids: Vec<_> = lookup.nodes.iter().map(|node| node.id).collect();
+            assert_eq!(ids, vec![reporter.id]);
+            assert_eq!(lookup.unresponsive, 3);
         });
     }
 
