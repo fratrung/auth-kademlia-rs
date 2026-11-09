@@ -162,8 +162,13 @@ fn public_key_from_did_doc(data: &[u8], alg: &str) -> Result<Vec<u8>, AuthHandle
     decode_b64url(public)
 }
 
-/// Verify that `value` contains `id = "did:iiot:<uuid>"` and that the digest
-/// of the UUID is exactly the requested DHT key.
+/// Verify that `value` contains `id = "did:iiot:<uuid>"`, with the UUID in
+/// canonical form, and that its digest is exactly the requested DHT key.
+///
+/// The canonical form is the one RFC 9562 writes, lower case and hyphenated,
+/// as `Uuid::to_string` gives it. Any other text of the same UUID (upper
+/// case, no hyphens, braces, `urn:uuid:`) is refused, so one UUID is one DID
+/// and one key (ADR 0004).
 fn did_document_matches_key(value: &[u8], key: &[u8; ID_LEN]) -> Result<bool, AuthHandlerError> {
     let alg = record_algorithm(value)?;
     let (_, sig_len) = resolve_alg_and_length(&alg)?;
@@ -175,7 +180,10 @@ fn did_document_matches_key(value: &[u8], key: &[u8; ID_LEN]) -> Result<bool, Au
     let uuid = did
         .strip_prefix("did:iiot:")
         .ok_or(AuthHandlerError::InvalidDid)?;
-    Uuid::parse_str(uuid).map_err(|_| AuthHandlerError::InvalidDid)?;
+    let parsed = Uuid::parse_str(uuid).map_err(|_| AuthHandlerError::InvalidDid)?;
+    if parsed.hyphenated().to_string() != uuid {
+        return Err(AuthHandlerError::InvalidDid);
+    }
     Ok(digest(uuid) == *key)
 }
 

@@ -1,6 +1,6 @@
 /// Node and NodeHeap — core Kademlia data structures.
 ///
-/// `Node` represents a single peer identified by a 20-byte SHA-1 ID.
+/// `Node` represents a single peer identified by a 256-bit id (ADR 0004).
 /// `NodeHeap` holds the nodes met during an iterative lookup, ordered by XOR
 /// distance from a pivot node; reads see the closest `maxsize`.
 use std::collections::HashSet;
@@ -13,15 +13,13 @@ use crate::utils::ID_LEN;
 /// A Kademlia peer node.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Node {
-    /// Raw 20-byte node ID.
+    /// Raw 32-byte node id.
     pub id: [u8; ID_LEN],
     pub ip: Option<String>,
     pub port: Option<u16>,
-    /// The node ID interpreted as a full 160-bit unsigned integer for XOR
-    /// distance calculations. Stored in a `U256` (the smallest fixed-width
-    /// integer that holds 160 bits without loss), matching the Python
-    /// AuthKademlia `int(node_id.hex(), 16)`. All 20 bytes are preserved, so
-    /// the XOR metric and bucket ordering are canonical (no folding).
+    /// The node id as a 256-bit unsigned integer, for XOR distances, as the
+    /// Python AuthKademlia `int(node_id.hex(), 16)`. All 32 bytes are kept,
+    /// so the XOR metric and the bucket order are canonical (no folding).
     pub long_id: U256,
 }
 
@@ -42,9 +40,8 @@ impl Node {
         Self::new(id, None, None)
     }
 
-    /// Interpret a 20-byte ID as a big-endian 160-bit integer (held in a
-    /// `U256`). No bits are discarded — the top 12 bytes of the `U256` are
-    /// always zero, so the value lies in `[0, 2^160)`.
+    /// Interpret a 32-byte id as a big-endian 256-bit integer. No bit is
+    /// discarded: the value lies in `[0, 2^256)`.
     fn id_to_u256(id: &[u8; ID_LEN]) -> U256 {
         U256::from_big_endian(id)
     }
@@ -98,7 +95,7 @@ struct HeapEntry {
 /// `have_contacted_all` and `len` see the closest `maxsize`; `contains`,
 /// `get_node`, `remove` and `popleft` see every node. Backed by a `Vec` kept
 /// sorted by ascending distance, which every read needs. With the full
-/// 160-bit metric the distance order is total (distinct ids never tie).
+/// 256-bit metric the distance order is total (distinct ids never tie).
 #[derive(Debug, Clone)]
 pub struct NodeHeap {
     /// The pivot node — all distances are relative to this.
@@ -297,18 +294,18 @@ mod tests {
         assert!(heap.have_contacted_all());
     }
 
-    // --- Regression tests for the full 160-bit XOR metric (PORTING_REVIEW §1) ---
+    // --- Regression tests for the full XOR metric (PORTING_REVIEW §1) ---
     //
-    // The previous implementation folded the 20-byte (160-bit) id into a u128 by
-    // XOR-ing bytes [16..20] into the high 32 bits. That fold is lossy: it both
-    // inverts distance ordering and lets distinct ids collide. These two tests
-    // pin the canonical behaviour (matching the Python AuthKademlia 160-bit int).
+    // An earlier implementation folded the then 20-byte (160-bit) id into a
+    // u128 by XOR-ing bytes [16..20] into the high 32 bits. That fold is lossy:
+    // it both inverts distance ordering and lets distinct ids collide. These two
+    // tests pin the canonical behaviour (the Python AuthKademlia int).
 
     #[test]
-    fn xor_metric_respects_full_160bit_order() {
+    fn xor_metric_respects_the_full_order() {
         // `a` differs from the zero pivot only in a low-significance byte
-        // (true XOR distance 2^31); `b` only in the most-significant byte
-        // (true XOR distance 2^152). `a` must rank far closer than `b`.
+        // (true XOR distance 2^127); `b` only in the most-significant byte
+        // (true XOR distance 2^248). `a` must rank far closer than `b`.
         let pivot = Node::from_id([0u8; ID_LEN]);
         let mut a_id = [0u8; ID_LEN];
         a_id[16] = 0x80;
@@ -318,7 +315,7 @@ mod tests {
         let b = Node::from_id(b_id);
         assert!(
             pivot.distance_to(&a) < pivot.distance_to(&b),
-            "XOR metric must follow the full 160-bit order (u128 folding inverted it)"
+            "XOR metric must follow the full 256-bit order (u128 folding inverted it)"
         );
     }
 
@@ -334,7 +331,7 @@ mod tests {
         assert_ne!(
             Node::from_id(c1).long_id,
             Node::from_id(c2).long_id,
-            "distinct 160-bit ids must not collide in long_id"
+            "distinct ids must not collide in long_id"
         );
     }
 }

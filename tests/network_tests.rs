@@ -42,7 +42,7 @@ use tokio::time::{sleep, timeout, Duration};
 use auth_kademlia_rs::network::{SetOutcome, SetRejection};
 use auth_kademlia_rs::node::Node;
 use auth_kademlia_rs::storage::IStorage;
-use auth_kademlia_rs::utils::digest;
+use auth_kademlia_rs::utils::{digest, ID_LEN};
 
 use common::{
     build_did_document, build_signed_record, generate_did_iiot, start_node,
@@ -509,11 +509,11 @@ async fn test_dropping_server_releases_port() {
 async fn test_stop_cancels_in_flight_replication() {
     let mut node = start_node(15902).await;
     let _silent_peer = std::net::UdpSocket::bind(("127.0.0.1", 15903)).expect("bind");
-    node.storage.set(vec![7; 20], b"record".to_vec());
+    node.storage.set(vec![7; ID_LEN], b"record".to_vec());
     node.protocol
         .as_ref()
         .expect("node is listening")
-        .rpc_ping([9; 20], ("127.0.0.1".to_string(), 15903))
+        .rpc_ping([9; ID_LEN], ("127.0.0.1".to_string(), 15903))
         .await;
     sleep(Duration::from_millis(100)).await;
     assert_eq!(

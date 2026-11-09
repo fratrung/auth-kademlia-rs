@@ -9,7 +9,7 @@
 /// - `last_updated` is touched ONLY by `find_neighbors` on the bucket containing
 ///   the lookup target (only lookups reset the timer, not node additions).
 /// - `find_neighbors` evaluates every known primary contact before truncating to
-///   `k`, so the result is the exact local top-k under the full 160-bit XOR metric.
+///   `k`, so the result is the exact local top-k under the full 256-bit XOR metric.
 /// - Unlike Python, a contact that stops responding is not removed at the first
 ///   timeout. It follows Kademlia §4.1: stale after 5 failures in a row, removed
 ///   only if a replacement can take its place, and locked out with a backoff.
@@ -22,6 +22,7 @@ use primitive_types::U256;
 use rand::Rng;
 
 use crate::node::Node;
+use crate::utils::ID_LEN;
 
 /// Consecutive failures after which a contact is stale (Kademlia §4.1).
 pub const STALE_AFTER_FAILURES: u32 = 5;
@@ -58,12 +59,28 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-/// The full 160-bit key space `[0, 2^160 - 1]`, matching the Python
-/// `KBucket(0, 2**160)` (which uses an exclusive upper bound; we use the
-/// inclusive maximum representable 160-bit value, consistent with the rest
-/// of the table operating on concrete ids).
+/// The whole key space `[0, 2^256 - 1]`, the Python `KBucket(0, 2**256)`.
+/// Python's upper bound is exclusive; here it is inclusive, because 2^256
+/// is not a `U256` (ADR 0004).
 fn full_keyspace() -> RangeInclusive<U256> {
-    U256::zero()..=((U256::one() << 160) - U256::one())
+    U256::zero()..=U256::MAX
+}
+
+/// A uniform random id in `range`, for the refresh of a bucket (§2.3).
+pub(crate) fn random_id_in(range: &RangeInclusive<U256>) -> [u8; ID_LEN] {
+    use rand::RngCore;
+    let (lo, hi) = (*range.start(), *range.end());
+    let mut random = [0u8; ID_LEN];
+    rand::thread_rng().fill_bytes(&mut random);
+    let r = U256::from_big_endian(&random);
+    // The width of the whole space, 2^256, is not a `U256`: any id is in it.
+    let value = match (hi - lo).checked_add(U256::one()) {
+        Some(width) => lo + r % width,
+        None => r,
+    };
+    let mut id = [0u8; ID_LEN];
+    value.to_big_endian(&mut id);
+    id
 }
 
 /// A single K-bucket covering a contiguous range of the XOR keyspace.
@@ -235,13 +252,13 @@ impl KBucket {
     }
 }
 
-/// Maintains a list of K-buckets that together partition the entire 160-bit
+/// Maintains a list of K-buckets that together partition the entire 256-bit
 /// XOR keyspace.
 pub struct RoutingTable {
     pub node: Node,
     ksize: usize,
     buckets: Vec<KBucket>,
-    health: HashMap<[u8; 20], ContactHealth>,
+    health: HashMap<[u8; ID_LEN], ContactHealth>,
     min_lookup_contacts: usize,
 }
 
@@ -351,17 +368,17 @@ impl RoutingTable {
 
     /// Clear a contact's failures. Returns how long it had been failing, or
     /// `None` if it was healthy.
-    pub fn record_success(&mut self, id: &[u8; 20]) -> Option<Duration> {
+    pub fn record_success(&mut self, id: &[u8; ID_LEN]) -> Option<Duration> {
         self.health
             .remove(id)
             .map(|health| health.first_failure.elapsed())
     }
 
-    pub fn has_failures(&self, id: &[u8; 20]) -> bool {
+    pub fn has_failures(&self, id: &[u8; ID_LEN]) -> bool {
         self.health.contains_key(id)
     }
 
-    pub fn is_stale(&self, id: &[u8; 20]) -> bool {
+    pub fn is_stale(&self, id: &[u8; ID_LEN]) -> bool {
         self.health
             .get(id)
             .is_some_and(|health| health.failures >= STALE_AFTER_FAILURES)
@@ -406,7 +423,7 @@ impl RoutingTable {
     ///
     /// Control messages must use the endpoint already associated with an ID;
     /// callers must not trust a fresh endpoint claimed inside the message.
-    pub fn get_contact(&self, id: &[u8; 20]) -> Option<Node> {
+    pub fn get_contact(&self, id: &[u8; ID_LEN]) -> Option<Node> {
         self.buckets
             .iter()
             .flat_map(|bucket| bucket.nodes.iter().chain(bucket.replacement_nodes.iter()))
@@ -415,7 +432,7 @@ impl RoutingTable {
     }
 
     /// Return the exact `k` known primary contacts closest to `target`, optionally
-    /// excluding one node. Candidate selection uses the full 160-bit XOR distance
+    /// excluding one node. Candidate selection uses the full 256-bit XOR distance
     /// before truncation; otherwise bucket traversal order could omit a closer node.
     ///
     /// Failing contacts are skipped, so a lookup does not pay their timeout, unless
@@ -501,7 +518,7 @@ mod tests {
     }
 
     fn node_with_first_byte(first: u8) -> Node {
-        let mut id = [0u8; 20];
+        let mut id = [0u8; ID_LEN];
         id[0] = first;
         Node::from_id(id)
     }
@@ -509,7 +526,7 @@ mod tests {
     /// k=2 table whose far bucket holds two contacts, cannot split, and keeps a
     /// third node in its replacement list.
     fn table_with_replacement() -> (RoutingTable, Node, Node) {
-        let mut rt = RoutingTable::new(Node::from_id([0u8; 20]), 2);
+        let mut rt = RoutingTable::new(Node::from_id([0u8; ID_LEN]), 2);
         let (oldest, other) = (node_with_first_byte(0x80), node_with_first_byte(0x84));
         rt.add_contact(oldest.clone());
         rt.add_contact(other);
@@ -755,5 +772,63 @@ mod tests {
         let found = rt.find_neighbors(&target, None);
         assert!(!found.is_empty());
         assert!(found.len() <= ksize);
+    }
+
+    /// The first bucket covers the whole key space, up to 2^256 - 1, the
+    /// largest `U256` (ADR 0004); it splits into two halves that meet without
+    /// a gap.
+    #[test]
+    fn the_whole_key_space_splits_into_two_halves() {
+        let whole = full_keyspace();
+        assert_eq!((*whole.start(), *whole.end()), (U256::zero(), U256::MAX));
+        let (low, high) = KBucket::new(whole, 20).split();
+        assert_eq!(*low.range.start(), U256::zero());
+        assert_eq!(*low.range.end() + U256::one(), *high.range.start());
+        assert_eq!(*high.range.start(), U256::one() << 255);
+        assert_eq!(*high.range.end(), U256::MAX);
+    }
+
+    /// An id at the top of the space, all bytes 0xFF, lies in one bucket of
+    /// the table, and its distance from the id of all zeros is the largest.
+    #[test]
+    fn an_id_at_the_top_of_the_space_finds_its_bucket() {
+        let bottom = Node::from_id([0; ID_LEN]);
+        let top = Node::from_id([0xFF; ID_LEN]);
+        assert_eq!(top.long_id, U256::MAX);
+        assert_eq!(bottom.distance_to(&top), U256::MAX);
+
+        // k = 2: the third contact splits the first bucket.
+        let mut rt = RoutingTable::new(bottom, 2);
+        rt.add_contact(top.clone());
+        rt.add_contact(node_with_first_byte(0x80));
+        rt.add_contact(node_with_first_byte(0x40));
+        assert!(rt.buckets().len() > 1);
+        let covering: Vec<_> = rt
+            .buckets()
+            .iter()
+            .filter(|b| b.covers(top.long_id))
+            .collect();
+        assert_eq!(covering.len(), 1);
+        assert!(covering[0].contains(&top));
+        assert_eq!(*covering[0].range.end(), U256::MAX);
+    }
+
+    /// A refresh id lies in its bucket, also in the bucket that covers the
+    /// whole space, whose width, 2^256, is not a `U256`, and at the top.
+    #[test]
+    fn a_refresh_id_lies_in_its_bucket() {
+        let max = U256::MAX;
+        for range in [
+            U256::zero()..=max,
+            (U256::one() << 255)..=max,
+            (max - U256::one())..=max,
+            U256::from(7)..=U256::from(7),
+            U256::zero()..=U256::from(255),
+        ] {
+            for _ in 0..200 {
+                let id = Node::from_id(random_id_in(&range)).long_id;
+                assert!(range.contains(&id), "{id} outside {range:?}");
+            }
+        }
     }
 }

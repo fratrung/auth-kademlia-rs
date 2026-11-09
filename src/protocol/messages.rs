@@ -314,4 +314,19 @@ mod tests {
         counted.sort_unstable();
         assert_eq!(names, counted);
     }
+
+    /// Ids and keys are 32 bytes on the wire (ADR 0004). bincode writes the
+    /// 4-byte index of the variant, then each array without its length.
+    #[test]
+    fn ids_and_keys_are_32_bytes_on_the_wire() {
+        let ping = RpcMessage::Ping {
+            sender_id: [1; ID_LEN],
+        };
+        assert_eq!(bincode::serialize(&ping).unwrap().len(), 4 + 32);
+        let find_node = RpcMessage::FindNode {
+            sender_id: [1; ID_LEN],
+            key: [2; ID_LEN],
+        };
+        assert_eq!(bincode::serialize(&find_node).unwrap().len(), 4 + 32 + 32);
+    }
 }

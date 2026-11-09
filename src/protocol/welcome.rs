@@ -268,25 +268,33 @@ mod tests {
     /// time, not once each (Kademlia §2.2).
     #[tokio::test]
     async fn a_full_bucket_pings_its_oldest_contact_once_at_a_time() {
-        // k = 1: one contact fills the bucket away from this node's id.
+        // k = 2: two contacts fill the bucket away from this node's id. They
+        // share their first 5 bits, a multiple of 5, so it does not split (§4.2).
         let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
         let protocol = Arc::new(KademliaProtocol::new(
             Node::from_id([1; ID_LEN]),
             socket,
             Arc::new(ForgetfulStorage::new(-1)),
-            1,
+            2,
             3,
             Arc::new(TestHandler::new(true, true)),
             None,
         ));
         serve(&protocol);
-        let (oldest, contact) = raw_peer([0xF0; ID_LEN]).await;
+        let with_first_byte = |first: u8| {
+            let mut id = [0; ID_LEN];
+            id[0] = first;
+            id
+        };
+        let (oldest, contact) = raw_peer(with_first_byte(0x80)).await;
+        let (_other, other_contact) = raw_peer(with_first_byte(0x84)).await;
         protocol.router.write().await.add_contact(contact);
+        protocol.router.write().await.add_contact(other_contact);
 
         let (newcomers, _) = raw_peer([0; ID_LEN]).await;
         let to = protocol.socket.local_addr().unwrap();
         for i in 1..=10u8 {
-            let mut id = [0xF0; ID_LEN];
+            let mut id = with_first_byte(0x86);
             id[ID_LEN - 1] = i;
             send_raw(
                 &newcomers,

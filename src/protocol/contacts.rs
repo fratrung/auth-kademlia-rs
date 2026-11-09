@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crate::node::Node;
 use crate::protocol::transport::RPC_TIMEOUT;
+use crate::routing::random_id_in;
 use crate::utils::ID_LEN;
 
 use super::KademliaProtocol;
@@ -86,30 +87,14 @@ impl KademliaProtocol {
     }
 
     /// Return a random ID for each lonely bucket, constrained to that bucket's
-    /// keyspace range (§2.3). Matches Python: `random.randint(*bucket.range).to_bytes(20, 'big')`.
+    /// keyspace range (§2.3), as Python's `random.randint(*bucket.range)`.
     pub async fn get_refresh_ids(&self) -> Vec<[u8; ID_LEN]> {
-        use rand::RngCore;
         self.router
             .read()
             .await
             .lonely_buckets()
             .iter()
-            .map(|b| {
-                let lo = *b.range.start();
-                let hi = *b.range.end();
-                // Uniform id in [lo, hi] over the full 160-bit space.
-                let span = hi - lo + primitive_types::U256::one();
-                let mut rand_bytes = [0u8; ID_LEN];
-                rand::thread_rng().fill_bytes(&mut rand_bytes);
-                let r = primitive_types::U256::from_big_endian(&rand_bytes); // in [0, 2^160)
-                let val = lo + (r % span);
-                // `val <= hi < 2^160`, so the top 12 bytes are zero.
-                let mut buf = [0u8; 32];
-                val.to_big_endian(&mut buf);
-                let mut id = [0u8; ID_LEN];
-                id.copy_from_slice(&buf[12..32]);
-                id
-            })
+            .map(|b| random_id_in(&b.range))
             .collect()
     }
 }

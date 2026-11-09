@@ -68,9 +68,9 @@ forgery impossible but would change identity at every key rotation.
 
 | Item | Definition |
 |---|---|
-| Node id | 160 bits. Distance is the XOR of the full 160 bits, never folded |
-| DHT key of a DID | `SHA-1(uuid)`, where the DID is `did:iiot:<uuid>` |
-| DHT key of the Status List | `SHA-1("status-list")` |
+| Node id | 256 bits. Distance is the XOR of the full 256 bits, never folded |
+| DHT key of a DID | `SHA-256(uuid)`, where the DID is `did:iiot:<uuid>` and the UUID is in canonical form |
+| DHT key of the Status List | `SHA-256("status-list")` |
 | Record | `algorithm (12 B) | signature | DID Document (canonical JSON)` |
 
 The algorithm field must be `ML-DSA-65` (ADR 0003): a record with any other
@@ -79,9 +79,11 @@ signature is pure ML-DSA with an empty context, 3309 bytes. The document has
 one key, a JWK of the type RFC 9964 defines [RFC 9964]: `{"kty": "AKP",
 "alg": "ML-DSA-65", "pub": <base64url>}`. A record is accepted for a key only if:
 
-1. **DID binding:** the document's `id` is `did:iiot:<uuid>`, the UUID parses,
-   and `SHA-1(uuid)` is the key. Without this check a valid record could be
-   stored under any key.
+1. **DID binding:** the document's `id` is `did:iiot:<uuid>`, the UUID is in
+   the canonical form of RFC 9562 (lower case, hyphenated), and `SHA-256(uuid)`
+   is the key (ADR 0004). Without this check a valid record could be stored
+   under any key; without the canonical form one UUID would give many DIDs,
+   each under its own key.
 2. **Signature:** the document's key has `kty` `AKP` and the `alg` of the
    record's algorithm field, and the signature verifies over the canonical
    JSON with that key, the one the document itself declares.
@@ -145,7 +147,7 @@ cannot decode them, so all nodes of a network must run a version that does.
 
 ## 5. Routing
 
-The routing table is Kademlia's: k-buckets over the 160-bit space, split when
+The routing table is Kademlia's: k-buckets over the 256-bit space, split when
 they cover the node's own id or when the depth is not a multiple of 5. A
 lookup asks `alpha` nodes at a time and moves towards the key until the `k`
 closest nodes it knows have all answered. Defaults: `k = 20`, `alpha = 3`.

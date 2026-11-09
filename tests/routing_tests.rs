@@ -1,7 +1,7 @@
 //! Integration tests for the Kademlia routing table and node data structures.
 //!
 //! Context: the routing table is the core peer-discovery mechanism.  It
-//! partitions the 160-bit XOR keyspace into K-buckets and uses XOR distance to
+//! partitions the 256-bit XOR keyspace into K-buckets and uses XOR distance to
 //! find the k nodes closest to any given target.  `NodeHeap` is the
 //! distance-ordered shortlist used during iterative lookups (SpiderCrawl).
 //!
@@ -11,7 +11,7 @@
 
 use auth_kademlia_rs::node::{Node, NodeHeap};
 use auth_kademlia_rs::routing::RoutingTable;
-use auth_kademlia_rs::utils::digest;
+use auth_kademlia_rs::utils::{digest, ID_LEN};
 use primitive_types::U256;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -27,7 +27,7 @@ fn make_node_with_addr(label: &str, ip: &str, port: u16) -> Node {
 }
 
 fn make_node_with_prefix(prefix: u8) -> Node {
-    let mut id = [0u8; 20];
+    let mut id = [0u8; ID_LEN];
     id[0] = prefix;
     Node::from_id(id)
 }

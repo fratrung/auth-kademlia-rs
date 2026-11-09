@@ -77,7 +77,11 @@ that follows it can take one variant for another.
 - **Wire.** Every message carries 32-byte ids and keys instead of 20. Nodes
   before and after this change cannot decode each other's messages, and every
   key changes. No network runs these records yet (as in ADR 0002 and 0003).
-  A saved routing state holds 20-byte ids and is discarded.
+- **Saved state.** The file `save_state` writes holds the node's own id, 20
+  bytes, and the addresses of its neighbours, without their ids. Nothing in
+  the crate reads it back. An application that passes the old id to `Server`
+  gets an error (`node_id` must be 32 bytes), so it drops the id and the node
+  takes a new random one; the addresses still serve to bootstrap.
 - **Sizes**, derived from the message format, not measured:
   - 12 bytes more per id or key in every message;
   - an answer to FIND_NODE with `k` = 20 grows from about 0.9 to 1.1 KB, one

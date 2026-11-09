@@ -378,6 +378,40 @@ fn test_did_handler_rejects_non_uuid_did_identifier() {
     );
 }
 
+/// One UUID is one DID (ADR 0004): a DID whose UUID is not in the canonical
+/// form of RFC 9562 (lower case, hyphenated) binds to no key, neither the key
+/// of its own text nor the key of the canonical form.
+#[test]
+fn test_did_handler_rejects_a_uuid_not_in_canonical_form() {
+    let sk = MlDsa65KeyPair::generate().unwrap();
+    let pk = sk.public_key().to_vec();
+    let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
+    let binds = |uuid: &str, key: &str| {
+        let doc = build_did_doc(&format!("did:iiot:{uuid}"), &pk);
+        let record = build_record_mldsa65(&doc, &sk);
+        matches!(
+            handler.handle_key_binding_verification(&digest(key), &record),
+            Ok(true)
+        )
+    };
+    let canonical = "3f2b1c4e-8a6d-4e2b-9c1a-5d7e8f9a0b1c";
+    assert!(binds(canonical, canonical));
+    for other in [
+        "3F2B1C4E-8A6D-4E2B-9C1A-5D7E8F9A0B1C",
+        "3f2b1c4e-8A6D-4e2b-9c1a-5d7e8f9a0b1c",
+        "3f2b1c4e8a6d4e2b9c1a5d7e8f9a0b1c",
+        "{3f2b1c4e-8a6d-4e2b-9c1a-5d7e8f9a0b1c}",
+        "urn:uuid:3f2b1c4e-8a6d-4e2b-9c1a-5d7e8f9a0b1c",
+    ] {
+        assert_eq!(Uuid::parse_str(other).unwrap().to_string(), canonical);
+        assert!(!binds(other, other), "{other} binds to the key of its text");
+        assert!(
+            !binds(other, canonical),
+            "{other} binds to the key of the canonical form"
+        );
+    }
+}
+
 /// A record whose signature was produced with a DIFFERENT key than the one
 /// embedded in the DID Document must be rejected.
 #[test]

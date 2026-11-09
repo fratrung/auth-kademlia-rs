@@ -439,7 +439,7 @@ fn verify_global_replica_placement(
 
 /// Validate the bucket partition and optionally print the complete tree.
 ///
-/// Hard invariants: inclusive ranges cover the 160-bit keyspace without gaps
+/// Hard invariants: inclusive ranges cover the 256-bit keyspace without gaps
 /// or overlaps, every primary contact belongs to its bucket, no contact is
 /// duplicated, and no bucket exceeds k primary contacts.
 async fn inspect_bucket_structure(
@@ -449,10 +449,10 @@ async fn inspect_bucket_structure(
 ) -> BucketReport {
     println!("━━━ Bucket Partition and Convergence ━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     if verbose {
-        println!("  Ranges are inclusive 160-bit bounds: [lo..=hi].\n");
+        println!("  Ranges are inclusive 256-bit bounds: [lo..=hi].\n");
     }
 
-    let keyspace_max = (U256::one() << 160) - U256::one();
+    let keyspace_max = U256::MAX;
     let mut report = BucketReport::default();
 
     for (server, port) in nodes {
@@ -497,13 +497,13 @@ async fn inspect_bucket_structure(
             if lo != expected_start {
                 report.violations += 1;
                 println!(
-                    "  [FAIL] Node :{port} bucket {index} starts at {lo:040x}, expected {expected_start:040x}"
+                    "  [FAIL] Node :{port} bucket {index} starts at {lo:064x}, expected {expected_start:064x}"
                 );
             }
             if hi < lo {
                 report.violations += 1;
                 println!(
-                    "  [FAIL] Node :{port} bucket {index} has an inverted range [{lo:040x}..={hi:040x}]"
+                    "  [FAIL] Node :{port} bucket {index} has an inverted range [{lo:064x}..={hi:064x}]"
                 );
             }
             if bucket.len() > ksize {
@@ -542,7 +542,7 @@ async fn inspect_bucket_structure(
                     "fresh"
                 };
                 println!(
-                    "    [{index:>2}] primary={:>2} depth={:>3} {freshness:<6} range=[{lo:040x}..={hi:040x}]",
+                    "    [{index:>2}] primary={:>2} depth={:>3} {freshness:<6} range=[{lo:064x}..={hi:064x}]",
                     bucket.len(),
                     bucket.depth()
                 );
@@ -562,7 +562,7 @@ async fn inspect_bucket_structure(
 
         if *buckets.last().expect("non-empty bucket list").range.end() != keyspace_max {
             report.violations += 1;
-            println!("  [FAIL] Node :{port} bucket partition does not end at {keyspace_max:040x}");
+            println!("  [FAIL] Node :{port} bucket partition does not end at {keyspace_max:064x}");
         }
 
         if verbose {

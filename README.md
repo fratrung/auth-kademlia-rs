@@ -62,8 +62,8 @@ This structure allows any peer to:
 - Verify the **authenticity** of stored data using the public key embedded in the DID Document
 - Verify the **integrity** of the record against its signature
 - Verify that the top-level `did:iiot:<uuid>` identifier inside the signed JSON
-  payload maps to the requested DHT key (`SHA-1(uuid)`), preventing a valid
-  record from occupying another identity's key
+  payload maps to the requested DHT key (`SHA-256(uuid)`, the UUID in canonical
+  form), preventing a valid record from occupying another identity's key
 - Operate without trusting any single node or coordinator
 
 Signature validation is handled automatically by the integrated verifier at insertion and retrieval time.
@@ -233,7 +233,7 @@ replicas and classifies publication as `Complete`, `Degraded`, or
 `Rejected`; the existing `set()` API remains as a compatibility wrapper.
 
 The replica target set is formed from the crawl result plus the local node,
-ordered by the full 160-bit XOR distance and truncated to `k`. A node that is
+ordered by the full 256-bit XOR distance and truncated to `k`. A node that is
 full does not evict an active record and the publisher does not substitute a
 farther node, so routing and responsible-node selection remain unchanged.
 
@@ -450,12 +450,12 @@ The default output is a concise summary:
 | **Replica counts** | Below/exact/above-`k` copy distribution |
 | **Global XOR placement** | Physical holders compared with the globally closest nodes; independent of GET |
 | **Local FIND_NODE top-k** | Every node response compared with an exhaustive oracle over its known primary contacts |
-| **Bucket partition** | Full 160-bit coverage without gaps/overlaps, contact membership, uniqueness, and bucket capacity |
+| **Bucket partition** | Full 256-bit coverage without gaps/overlaps, contact membership, uniqueness, and bucket capacity |
 | **Convergence** | Average bucket and primary-peer counts as a heuristic |
 | **Final result** | Per-check `PASS`/`WARN`/`FAIL`; hard failures produce a non-zero exit status |
 
 Use `--verbose` to additionally print three complete DID Documents, per-key
-storage and replica placement, inclusive 160-bit bucket ranges and contents,
+storage and replica placement, inclusive 256-bit bucket ranges and contents,
 and flat routing tables.
 
 ```bash

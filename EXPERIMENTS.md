@@ -10,8 +10,9 @@ here.
 Each experiment states the question it answers, how it is run, what is
 measured, the results and how to read them.
 
-**The results predate ADR 0003**: they were measured with Dilithium-2 records.
-E1 and E2 must be measured again with ML-DSA-65 records (section 1).
+**The results predate ADR 0003 and ADR 0004**: they were measured with
+Dilithium-2 records and 160-bit ids. E1 and E2 must be measured again with
+ML-DSA-65 records and 256-bit ids (section 1).
 
 ## Contents
 
@@ -36,8 +37,9 @@ All runs on 2026-11-04.
 **Records since ADR 0003.** These runs used Dilithium-2 records, about 6 KB in
 5 fragments. Records are now signed with ML-DSA-65 and carry no KEM key: about
 6.5 KB, still 5 fragments, with a slower verification. E1 (latency) and E2
-(traffic) must be measured again; A1 and A2 are not expected to change. Until
-then the numbers below describe the Dilithium-2 code.
+(traffic) must be measured again; A1 and A2 are not expected to change. Since
+ADR 0004 ids and keys are 256 bits, 12 bytes more each in every message. Until
+then the numbers below describe the Dilithium-2 code with 160-bit ids.
 
 **Host.** AMD Ryzen 7 4800H (8 cores, 16 threads), 15 GB RAM, Linux 7.0,
 Docker 29.9.2. All containers share the host's CPU and kernel; no CPU limit

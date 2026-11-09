@@ -18,8 +18,8 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 252 tests
-cargo test --features counters       # 255: also the counters' own tests
+cargo test                           # all 257 tests
+cargo test --features counters       # 260: also the counters' own tests
 cargo test <name>                    # single test, e.g. test_update_did_record_key_rotation
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -111,8 +111,8 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/crypto/ed25519.rs` | Ed25519 verifier + signer |
 | `src/crypto/rsa.rs` | RSA verifier + signer |
 | `src/crypto/key_manager.rs` | `KeyManager` — keypair generation, storage, sign/verify helpers (`MlDsaKeyManager`, `Ed25519KeyManager`); `MlKemKeyManager` — ephemeral ML-KEM-768 pairs, one per handshake, in memory only, expiring after 30 s, at most 64 given out (ADR 0003) |
-| `src/node.rs` | `Node` struct, full **160-bit** XOR distance (`long_id: U256`, no folding), `from_id`; `NodeHeap` shortlist backed by a distance-sorted `Vec`, which keeps every node a lookup met so that one beyond `k` replaces a peer that did not answer (reads see the closest `k`), while `add_reported` takes at most `k` nodes per answer; `Display` shows `ip:port` for real peers, `<key:hex8>` for key-space targets |
-| `src/utils.rs` | `digest()` (SHA-1 → `[u8; 20]`), `digest_bytes()`, `ID_LEN = 20`, `STATUS_LIST_KEY` |
+| `src/node.rs` | `Node` struct, full **256-bit** XOR distance (`long_id: U256`, no folding), `from_id`; `NodeHeap` shortlist backed by a distance-sorted `Vec`, which keeps every node a lookup met so that one beyond `k` replaces a peer that did not answer (reads see the closest `k`), while `add_reported` takes at most `k` nodes per answer; `Display` shows `ip:port` for real peers, `<key:hex8>` for key-space targets |
+| `src/utils.rs` | `digest()` (SHA-256 → `[u8; 32]`), `digest_bytes()`, `ID_LEN = 32`, `STATUS_LIST_KEY` (ADR 0004) |
 | `scripts/dht_node.rs` | Docker container entry point (`publisher` / `retriever` roles) |
 | `tests/common/mod.rs` | Shared test helpers: `start_node`, `build_did_document`, `build_signed_record`, `generate_did_iiot` |
 | `testbed/node.rs` | Testbed node (`testbed_node` binary): one DHT node per container, driven through a control socket inside the container |
@@ -189,7 +189,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 - **Recovery** (`schedule_maintenance`): a 1 s tick pings failing contacts whose backoff has elapsed, so user lookups do not pay for them. While no contact is live it also retries the addresses given to `bootstrap` (`seeds`), with backoff up to 60 s, and runs a self-lookup once reconnected. It does no network work while the table is healthy. A contact silent for at least `RETURNED_AFTER` goes through `welcome` when it comes back, so it receives the records it missed.
 - **Lookups and dead contacts** (Kademlia §2.3, §4.1): a lookup with a deadline (the STORE check) stops waiting at the deadline and marks the peers silent for at least `SILENT_AFTER` (1 s) as failing (`note_no_answer`), since their requests never reached a timeout; the STORE check also leaves failing contacts out entirely. A crawl never re-admits a peer that failed during it, and does not query a reported contact this node knows is failing (`SpiderProtocol::failing_among`), because other nodes that have not tried it keep reporting it. Initial peers are exempt, so `find_neighbors` can still use failing contacts as a last resort. The result holds only peers that responded, so no STORE goes to a dead peer. `set_detailed` counts the others in `unavailable_nodes`, not in `expected_replicas`: `Complete` means every node that responded holds the record. The first lookup after a peer dies still waits `RPC_TIMEOUT` (2.5 s) per round that contains a dead peer, because rounds wait for all their RPCs.
 - **Publication while cut off**: if no remote replica is reachable but the node has known contacts or seeds, `set_detailed` counts one unavailable replica and reports `Degraded`. A node that never had contacts or seeds still reports `Complete 1/1`.
-- **Routing table internals** (`src/routing.rs`): `KBucket.add_node()` does **not** update `last_updated`; only lookups reset the timer. `find_neighbors` touches the bucket containing the lookup target, evaluates every known primary contact with the full 160-bit XOR metric, excludes `target.id` and the optional caller-supplied peer, then returns the exact local top-k. Split condition §4.2: `covers(local_node) OR depth % 5 != 0`.
+- **Routing table internals** (`src/routing.rs`): `KBucket.add_node()` does **not** update `last_updated`; only lookups reset the timer. `find_neighbors` touches the bucket containing the lookup target, evaluates every known primary contact with the full 256-bit XOR metric, excludes `target.id` and the optional caller-supplied peer, then returns the exact local top-k. Split condition §4.2: `covers(local_node) OR depth % 5 != 0`.
 
 ## Key invariants
 - Records are **immutable after creation**: byte-identical STORE retries return `AlreadyStored`; different bytes for the same key return `Conflict`.
@@ -261,20 +261,26 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
   fallback fails then.
 - There is no DELETE API or RPC. Active records are never removed explicitly;
   TTL expiry is the only record-removal mechanism.
-- DHT key = `digest(did_uuid_string)` where `digest` is SHA-1 → `[u8; 20]`.
-  For ordinary records, the DID Document JSON covered by the record's
-  self-signature must contain a top-level `id = "did:iiot:<uuid>"`. `<uuid>`
-  must parse as a UUID, and its exact string digest must equal the requested DHT
-  key. This check runs before signature-cache lookup and on SET, GET, and UPDATE
-  paths. `STATUS_LIST_KEY` is exempt.
+- DHT key = `digest(did_uuid_string)` where `digest` is SHA-256 → `[u8; 32]`
+  (ADR 0004). For ordinary records, the DID Document JSON covered by the
+  record's self-signature must contain a top-level `id = "did:iiot:<uuid>"`.
+  `<uuid>` must be a UUID in canonical form (RFC 9562: lower case, hyphenated,
+  as `Uuid::to_string` writes it), and its digest must equal the requested DHT
+  key. Another text of a UUID (upper case, no hyphens, braces, `urn:uuid:`)
+  binds to no key, so one UUID is one DID and one key. This check runs before
+  signature-cache lookup and on SET, GET, and UPDATE paths. `STATUS_LIST_KEY`
+  is exempt.
 - Invalid STORE requests return `InvalidRecord` and never add, replace, remove,
   or otherwise mutate routing contacts based on the unauthenticated `sender_id`.
-- XOR distance is computed over the **full 160-bit id** (`Node.long_id: U256`,
+- XOR distance is computed over the **full 256-bit id** (`Node.long_id: U256`,
   `primitive-types`) — **no folding**. Distinct ids never collide and the
   distance order is total/canonical, matching Python's arbitrary-precision
-  `int(node_id.hex(), 16)`. Bucket ranges (`routing.rs`) are `U256` over
-  `[0, 2^160)`. Never reintroduce a `u128` projection — it inverts ordering
-  and collides ids.
+  `int(node_id.hex(), 16)`. Bucket ranges (`routing.rs`) are inclusive `U256`
+  ranges over `[0, 2^256 - 1]`: the last value is `U256::MAX`, and 2^256, the
+  width of the whole space, is not a `U256`. Compute a midpoint as
+  `lo + (hi - lo) / 2`, and the width `hi - lo + 1` with `checked_add`: for the
+  whole space it overflows (`random_id_in`). Never reintroduce a `u128`
+  projection — it inverts ordering and collides ids.
 - `STATUS_LIST_KEY = digest("status-list")` uses issuer-node
   verification instead of DID-owner verification.
 - `issuer.bin` holds the issuer's raw ML-DSA-65 public key (1952 B); an old
@@ -287,7 +293,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | File | Count | Notes |
 |---|---|---|
 | `tests/network_tests.rs` | 17 | Full multi-node integration tests (real UDP) |
-| `tests/crypto_tests.rs` | 26 | Crypto layer unit + DID handler unit tests |
+| `tests/crypto_tests.rs` | 27 | Crypto layer unit + DID handler unit tests |
 | `tests/routing_tests.rs` | 22 | Routing table unit tests |
 | `tests/storage_tests.rs` | 15 | `ForgetfulStorage` unit tests (includes `insert_if_absent` cases) |
 | `tests/dht_integration.rs` | 1 | Legacy 3-node end-to-end scenario |
@@ -297,7 +303,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/scenarios/worker_pool.rs` | 1 | 40-client burst, all responses delivered |
 | `tests/scenarios/crypto.rs` | 4 | End-to-end crypto invariants (tamper, injection, downgrade, revocation) |
 | `tests/quorum_tests.rs` | 19 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum, delayed UPDATE commit, retry of an applied UPDATE, UPDATE to replicas without the record, and the network check of a STORE to an empty replica |
-| `src/**` (inline) | 143 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, 160-bit XOR-metric regression, and fragmentation tests) |
+| `src/**` (inline) | 147 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, and fragmentation tests) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 
@@ -358,7 +364,7 @@ retrieves them from offset readers, and prints a concise diagnostic by default:
 2. **Replication summary** — below/exact/above-`k` copy distribution.
 3. **Global XOR placement** — physical holders vs globally closest nodes, explicitly independent of GET.
 4. **Local FIND_NODE top-k** — exhaustive oracle comparison for every node and published target.
-5. **Bucket invariants** — full 160-bit contiguous coverage, membership, uniqueness, and capacity.
+5. **Bucket invariants** — full 256-bit contiguous coverage, membership, uniqueness, and capacity.
 6. **Routing convergence** — average buckets and primary peers per node.
 7. **Final verdict** — `PASS`/`WARN`/`FAIL` per check with a non-zero exit for hard failures.
 
@@ -495,7 +501,7 @@ Keep it concise (≤ 60 lines). The file is ephemeral: delete it once the first
 message of the new session confirms the context has been picked up.
 
 ## What NOT to do
-- Do not reduce `Node.long_id` below the full 160 bits (e.g. a `u128` fold):
+- Do not reduce `Node.long_id` below the full 256 bits (e.g. a `u128` fold):
   it silently inverts XOR distance ordering and collides distinct ids. Keep it
   `U256`.
 - Do not hold a `Mutex` lock across an `.await` — deadlock risk.

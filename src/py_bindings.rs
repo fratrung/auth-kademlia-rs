@@ -50,6 +50,7 @@ use crate::crypto::key_manager::{
 };
 use crate::network::{Server, ServerStats, SetOutcome, SetRejection, SetReport};
 use crate::storage::{ForgetfulStorage, DEFAULT_TTL};
+use crate::utils::ID_LEN;
 
 static PY_RUNTIME_INIT: Once = Once::new();
 
@@ -149,7 +150,7 @@ impl PyServer {
     ///                         file.  Required only for status-list key
     ///                         verification; pass ``None`` to skip issuer checks
     ///                         (self-signed DID records still work).
-    ///     node_id (bytes):    Fixed 20-byte node ID.  Pass ``None`` for a
+    ///     node_id (bytes):    Fixed 32-byte node ID.  Pass ``None`` for a
     ///                         random ID (recommended for most deployments).
     ///     max_storage_bytes (int): Per-node key/value budget. Default: 512 MiB.
     #[new]
@@ -181,15 +182,15 @@ impl PyServer {
         let handler: Arc<dyn SignatureVerifierHandler + Send + Sync> =
             Arc::new(DIDSignatureVerifierHandler::new(path));
 
-        let fixed_id: Option<[u8; 20]> = match node_id {
-            Some(ref v) if v.len() == 20 => {
-                let mut arr = [0u8; 20];
+        let fixed_id: Option<[u8; ID_LEN]> = match node_id {
+            Some(ref v) if v.len() == ID_LEN => {
+                let mut arr = [0u8; ID_LEN];
                 arr.copy_from_slice(v);
                 Some(arr)
             }
             Some(ref v) => {
                 return Err(PyRuntimeError::new_err(format!(
-                    "node_id must be exactly 20 bytes, got {}",
+                    "node_id must be exactly {ID_LEN} bytes, got {}",
                     v.len()
                 )))
             }
