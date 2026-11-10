@@ -29,3 +29,8 @@ testbed/.generated/
 
 # Session resume notes (AGENTS.md), deleted at the start of the next session
 RESUME_BEFORE_COMPACT.md
+
+# Notes of agent sessions and reviews, kept out of the repository
+/adr-*-review.md
+/adr-*-analysis.md
+/dht_sequence_freshness_spec.md
