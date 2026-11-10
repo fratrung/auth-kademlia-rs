@@ -1,6 +1,7 @@
 # 0004. SHA-256 keys, 256-bit ids, and the canonical UUID
 
-Status: Accepted, 2026-11-08.
+Status: Accepted, 2026-11-08. Amended by ADR 0005, 2026-11-11: the DID is no
+longer a canonical UUID.
 
 ## Context
 

@@ -1,7 +1,7 @@
 # 0002. Reserve the key before the first STORE
 
-Status: Proposed, 2026-11-05. The open points below are decided before the
-code is written.
+Status: Superseded by ADR 0005, 2026-11-11 (proposed 2026-11-05, never
+accepted).
 
 ## Context
 
