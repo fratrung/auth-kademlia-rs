@@ -9,6 +9,8 @@ Built on testbed.py: start a network with it first.
     testbed/attack.py race --rounds 20      # crash a replica, rotate, count who fills it
     testbed/attack.py start --mode burst    # many forged STOREs per UPDATE at once
     testbed/attack.py start --mode persist  # forged STOREs to every node, all the time
+    testbed/attack.py start --mode successor  # a forged version 1 after each version 0
+    testbed/attack.py start --mode spoof    # spoofed FindHash answers under guessed ids
     testbed/attack.py restart --rounds 20   # crash a replica, no update, see what it holds
     testbed/attack.py logs
     testbed/attack.py stop
@@ -54,6 +56,7 @@ def cmd_attacker(args):
             "-e", f"ATTACK_MODE={args.mode}",
             "-e", f"ATTACK_DELAY_MS={args.delay}",
             "-e", f"ATTACK_BURST={args.burst}",
+            "-e", f"ATTACK_SPOOF_IDS={args.spoof_ids}",
             "-e", f"ATTACK_PORTS={args.ports}",
             "-e", f"ATTACK_PERIOD_MS={args.period}",
             "-e", f"ATTACK_DID_TTL_S={args.did_ttl}",
@@ -117,10 +120,10 @@ def attacker_summary(started_at):
     sent = [float(m.group(1)) for line in lines if (m := re.search(r"sent ([0-9.]+) ms after", line))]
     if sent:
         sent.sort()
-        print(f"  attacker: {len(sent)} attacks, sent {sent[len(sent) // 2]:g} ms (median) after seeing the UPDATE")
+        print(f"  attacker: {len(sent)} attacks, sent {sent[len(sent) // 2]:g} ms (median) after seeing the request")
     answers = {}
     for line in lines:
-        if (m := re.search(r"answer (Some\(\w+\)|None)$", line)):
+        if (m := re.search(r"answer (Some\(.+\)|None)$", line)):
             answers[m.group(1)] = answers.get(m.group(1), 0) + 1
         elif (m := re.search(r"answers ((?:[\w ]+=\d+ ?)+)$", line)):
             for name, value in re.findall(r"([\w ]+?)=(\d+)", m.group(1)):
@@ -291,9 +294,13 @@ def main():
         a = sub.add_parser(action, help=help_text)
         a.set_defaults(func=cmd_attacker, action=action)
         if action == "start":
-            a.add_argument("--mode", choices=["race", "burst", "persist"], default="race")
-            a.add_argument("--delay", type=int, default=0, help="race, burst: extra delay in ms before forging")
-            a.add_argument("--burst", type=int, default=64, help="burst: forged STOREs per UPDATE")
+            a.add_argument("--mode", choices=["race", "burst", "successor", "spoof", "persist"], default="race")
+            a.add_argument("--delay", type=int, default=0,
+                           help="race, burst, successor: extra delay in ms before forging")
+            a.add_argument("--burst", type=int, default=64,
+                           help="burst: forged STOREs per UPDATE; spoof: spoofed answers per FindHash")
+            a.add_argument("--spoof-ids", choices=["guessed", "observed"], default="guessed",
+                           help="spoof: random ids, or the ids read on the wire (the control)")
             a.add_argument("--ports", type=int, default=16, help="burst: attacker ports")
             a.add_argument("--period", type=int, default=100, help="persist: ms between rounds of forged STOREs")
             a.add_argument("--did-ttl", type=int, default=20, help="persist: seconds a DID stays a target")

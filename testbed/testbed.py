@@ -297,7 +297,7 @@ def cmd_ctl(args):
 
 
 def cmd_get(args):
-    """Read a DID from another node. TARGET is a DID, a UUID or a node name."""
+    """Read a DID from another node. TARGET is a DID, its suffix or a node name."""
     config = load_config()
     check_node(args.from_node, config)
     target = args.target
@@ -403,7 +403,7 @@ def main():
     c.set_defaults(func=cmd_ctl)
 
     g = sub.add_parser("get", help="read a DID from a node")
-    g.add_argument("target", help="DID, UUID, or the name of the node that published it")
+    g.add_argument("target", help="DID, its suffix, or the name of the node that published it")
     g.add_argument("--from", dest="from_node", required=True)
     g.set_defaults(func=cmd_get)
 

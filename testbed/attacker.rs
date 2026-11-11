@@ -1,7 +1,11 @@
 //! Testbed attacker: watches the traffic between testbed nodes and sends
-//! forged records for the DIDs it sees, as STOREs. A forged record is
-//! self-signed with the attacker's own key for the owner's DID, so it passes a
-//! replica's signature check; only a replica with no record can take it.
+//! forged records for the DIDs it sees, as STOREs. A forged record is a
+//! version of the owner's DID, with the `prev` of the version it saw (or, for
+//! a version 0, a version 1 after it), self-signed with the attacker's own
+//! key (ADR 0005). It passes a replica's signature check, but no version
+//! committed to its key: a replica holding the version before refuses it,
+//! and an empty replica takes it only if its check of the network does not
+//! find that version.
 //!
 //! Modes (`ATTACK_MODE`):
 //! - `race` (default): for each UPDATE it sees, one forged STORE to the same
@@ -9,6 +13,17 @@
 //! - `burst`: for each UPDATE, `ATTACK_BURST` forged STOREs at once from
 //!   `ATTACK_PORTS` ports. Many lookups at the replica at once can make it
 //!   drop answers; the burst tests what the replica does then.
+//! - `successor`: for each STORE of a version 0 it sees, one forged version 1
+//!   after it to the same replica, at once: the key security case of ADR
+//!   0005, a forged version 1 right after the owner's version 0.
+//! - `spoof`: for each `FindHash` it sees, `ATTACK_BURST` answers claiming a
+//!   version far ahead, sent to the asking node from the address and port of
+//!   the node asked (a raw socket writes the IP header), under random message
+//!   ids instead of the one it read (ADR 0005, open point 25): a replica that
+//!   took one would refuse a STORE it should accept. With
+//!   `ATTACK_SPOOF_IDS=observed` they carry the id read on the wire, the
+//!   control showing that they reach the replica and that the id is what
+//!   stops them.
 //! - `persist`: it learns DIDs from the STOREs and UPDATEs it sees and, every
 //!   `ATTACK_PERIOD_MS`, sends a forged STORE for each DID learned in the last
 //!   `ATTACK_DID_TTL_S` seconds to every node it has seen. It covers every
@@ -23,10 +38,13 @@
 //! DHT_PORT          UDP port of the nodes (default 4000)
 //! ATTACK_PORT       first UDP port of the attacker's own nodes (default 4999,
 //!                   counting down)
-//! ATTACK_MODE       race, burst or persist (default race)
-//! ATTACK_DELAY_MS   extra delay before each forged STORE in race and burst
-//!                   (default 0)
-//! ATTACK_BURST      forged STOREs per UPDATE in burst mode (default 64)
+//! ATTACK_MODE       race, burst, successor or persist (default race)
+//! ATTACK_DELAY_MS   extra delay before each forged STORE in race, burst and
+//!                   successor (default 0)
+//! ATTACK_BURST      forged STOREs per UPDATE in burst mode, spoofed answers
+//!                   per FindHash in spoof mode (default 64)
+//! ATTACK_SPOOF_IDS  guessed (random ids) or observed (the id read on the
+//!                   wire, the control) in spoof mode (default guessed)
 //! ATTACK_PORTS      attacker ports in burst mode (default 16)
 //! ATTACK_PERIOD_MS  period of persist mode (default 100)
 //! ATTACK_DID_TTL_S  how long persist mode keeps attacking a DID (default 20)
@@ -38,7 +56,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use auth_kademlia_rs::auth_handler::did::MAX_INTEGER;
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
+use auth_kademlia_rs::fragmentation::encode_fragments;
 use auth_kademlia_rs::network::Server;
 use auth_kademlia_rs::node::Node;
 use auth_kademlia_rs::protocol::{KademliaProtocol, RpcMessage, StoreStatus};
@@ -46,7 +66,7 @@ use auth_kademlia_rs::utils::ID_LEN;
 use tokio::sync::mpsc;
 
 mod did;
-use did::{did_of, signing_key_of, Version};
+use did::{did_of, forge, seq_of, signing_key_of};
 
 const KADF_MAGIC: &[u8] = b"KADF";
 const KADF_HEADER: usize = 12;
@@ -68,6 +88,15 @@ enum Seen {
     Node(Ipv4Addr),
     /// A STORE or UPDATE request.
     Request(Observed),
+    /// A `FindHash` request, the network check of an empty replica.
+    HashAsked(Asked),
+}
+
+/// A `FindHash` request seen on the wire.
+struct Asked {
+    from: (Ipv4Addr, u16),
+    to: (Ipv4Addr, u16),
+    msg_id: u32,
 }
 
 /// A STORE or UPDATE request seen on the wire.
@@ -134,7 +163,8 @@ struct Partial {
 }
 
 /// Read frames forever, reassemble KADF messages between testbed nodes and
-/// report every STORE and UPDATE request. Runs on its own thread: `recv` blocks.
+/// report every STORE, UPDATE and `FindHash` request. Runs on its own thread:
+/// `recv` blocks.
 fn sniff(prefix: [u8; 2], dht_port: u16, updates: mpsc::UnboundedSender<Seen>) {
     let fd = match packet_socket() {
         Ok(fd) => fd,
@@ -200,6 +230,14 @@ fn sniff(prefix: [u8; 2], dht_port: u16, updates: mpsc::UnboundedSender<Seen>) {
                     Ok((_, true, RpcMessage::Store { key, value, .. })) => {
                         Some((false, key, value))
                     }
+                    Ok((msg_id, true, RpcMessage::FindHash { .. })) => {
+                        let _ = updates.send(Seen::HashAsked(Asked {
+                            from: (src, src_port),
+                            to: (dst, dst_port),
+                            msg_id,
+                        }));
+                        None
+                    }
                     _ => None,
                 };
                 if let Some((update, key, value)) = request {
@@ -220,6 +258,127 @@ fn sniff(prefix: [u8; 2], dht_port: u16, updates: mpsc::UnboundedSender<Seen>) {
             done.retain(|_, at| at.elapsed() < PARTIAL_TTL * 3);
             last_cleanup = Instant::now();
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spoofed answers
+// ---------------------------------------------------------------------------
+
+/// A raw IPv4 socket that sends datagrams with the IP header written here,
+/// so from any source address. Needs CAP_NET_RAW.
+fn raw_ipv4_socket() -> std::io::Result<i32> {
+    // SAFETY: plain socket(2) call; the result is checked below.
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_RAW) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(fd)
+}
+
+fn ipv4_checksum(header: &[u8]) -> u16 {
+    let mut sum: u32 = header
+        .chunks(2)
+        .map(|word| u32::from(u16::from_be_bytes([word[0], word[1]])))
+        .sum();
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+/// An IPv4 UDP datagram from `src` to `dst`. The UDP checksum is 0, none,
+/// which IPv4 allows (RFC 768).
+fn udp_datagram(src: (Ipv4Addr, u16), dst: (Ipv4Addr, u16), payload: &[u8]) -> Vec<u8> {
+    let udp_len = 8 + payload.len();
+    let total = 20 + udp_len;
+    let mut packet = Vec::with_capacity(total);
+    packet.extend_from_slice(&[0x45, 0]);
+    packet.extend_from_slice(&(total as u16).to_be_bytes());
+    packet.extend_from_slice(&rand::random::<u16>().to_be_bytes());
+    // No fragmentation, TTL 64, UDP, checksum filled below.
+    packet.extend_from_slice(&[0, 0, 64, 17, 0, 0]);
+    packet.extend_from_slice(&src.0.octets());
+    packet.extend_from_slice(&dst.0.octets());
+    let checksum = ipv4_checksum(&packet[..20]);
+    packet[10..12].copy_from_slice(&checksum.to_be_bytes());
+    packet.extend_from_slice(&src.1.to_be_bytes());
+    packet.extend_from_slice(&dst.1.to_be_bytes());
+    packet.extend_from_slice(&(udp_len as u16).to_be_bytes());
+    packet.extend_from_slice(&[0, 0]);
+    packet.extend_from_slice(payload);
+    packet
+}
+
+fn send_raw(fd: i32, packet: &[u8], dst: Ipv4Addr) -> bool {
+    let address = libc::sockaddr_in {
+        sin_family: libc::AF_INET as libc::sa_family_t,
+        sin_port: 0,
+        sin_addr: libc::in_addr {
+            s_addr: u32::from_ne_bytes(dst.octets()),
+        },
+        sin_zero: [0; 8],
+    };
+    // SAFETY: the packet and the address outlive the call, and their lengths
+    // are passed.
+    let sent = unsafe {
+        libc::sendto(
+            fd,
+            packet.as_ptr().cast(),
+            packet.len(),
+            0,
+            (&address as *const libc::sockaddr_in).cast(),
+            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+        )
+    };
+    sent == packet.len() as isize
+}
+
+/// `spoof`: answer each `FindHash` seen with `copies` answers claiming a
+/// version far ahead, from the address of the node asked, under random ids
+/// (or the id read on the wire when `observed_ids`).
+fn spoof(mut seen: mpsc::UnboundedReceiver<Seen>, copies: usize, observed_ids: bool) {
+    let fd = match raw_ipv4_socket() {
+        Ok(fd) => fd,
+        Err(error) => {
+            log::error!("cannot open a raw socket (needs CAP_NET_RAW): {error}");
+            std::process::exit(1);
+        }
+    };
+    let (mut requests, mut sent, mut failed) = (0u64, 0u64, 0u64);
+    while let Some(event) = seen.blocking_recv() {
+        let Seen::HashAsked(asked) = event else {
+            continue;
+        };
+        requests += 1;
+        for _ in 0..copies {
+            let msg_id = if observed_ids {
+                asked.msg_id
+            } else {
+                rand::random()
+            };
+            let answer = RpcMessage::FindHashHit {
+                seq: MAX_INTEGER,
+                hash: rand::random(),
+            };
+            let Ok(frame) = bincode::serialize(&(msg_id, false, answer)) else {
+                continue;
+            };
+            for fragment in encode_fragments(rand::random(), &frame) {
+                let packet = udp_datagram(asked.to, asked.from, &fragment);
+                if send_raw(fd, &packet, asked.from.0) {
+                    sent += 1;
+                } else {
+                    failed += 1;
+                }
+            }
+        }
+        log::info!(
+            "spoof: FindHash {} -> {} answered with {copies} spoofed answers; in all {requests} \
+             requests, {sent} spoofed answers sent, {failed} not sent",
+            asked.from.0,
+            asked.to.0
+        );
     }
 }
 
@@ -280,11 +439,38 @@ async fn attacker_nodes(
     (servers, protocols)
 }
 
-/// `race` and `burst`: answer each UPDATE with `copies` forged STOREs to the
-/// same replica, spread over the attacker's ports.
-async fn react_to_updates(
+/// The requests `race`, `burst` and `successor` answer with forged STOREs.
+#[derive(Clone, Copy)]
+enum Trigger {
+    /// An UPDATE (`race`, `burst`).
+    Update,
+    /// A STORE of a version 0 (`successor`).
+    VersionZero,
+}
+
+impl Trigger {
+    fn matches(self, observed: &Observed) -> bool {
+        match self {
+            Trigger::Update => observed.update,
+            Trigger::VersionZero => !observed.update && seq_of(&observed.value) == Some(0),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Trigger::Update => "UPDATE",
+            Trigger::VersionZero => "STORE of version 0",
+        }
+    }
+}
+
+/// `race`, `burst` and `successor`: answer each request `trigger` matches
+/// with `copies` forged STOREs to the same replica, spread over the
+/// attacker's ports.
+async fn react_to_requests(
     mut seen: mpsc::UnboundedReceiver<Seen>,
     protocols: Vec<Arc<KademliaProtocol>>,
+    trigger: Trigger,
     copies: usize,
     delay: Duration,
 ) {
@@ -293,7 +479,7 @@ async fn react_to_updates(
         let Seen::Request(update) = seen else {
             continue;
         };
-        if !update.update {
+        if !trigger.matches(&update) {
             continue;
         }
         let target = (update.to, update.key);
@@ -311,8 +497,11 @@ async fn react_to_updates(
 
         let protocols = protocols.clone();
         tokio::spawn(async move {
-            // The forged record: the same DID, the attacker's own keys.
-            let forged = Version::generate(&did).record;
+            // The forged record: the same DID and `prev`, the attacker's own
+            // key, which the version before did not commit to.
+            let Some(forged) = forge(&update.value) else {
+                return;
+            };
             let forged_after = elapsed_ms(update.seen);
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
@@ -328,8 +517,9 @@ async fn react_to_updates(
             .await;
             if copies == 1 {
                 log::info!(
-                    "UPDATE {} -> {} for {}: forged key {} sent {} ms after seeing it \
+                    "{} {} -> {} for {}: forged key {} sent {} ms after seeing it \
                      (forged in {} ms), answer {:?}",
+                    trigger.name(),
                     update.from,
                     update.to,
                     did,
@@ -340,8 +530,9 @@ async fn react_to_updates(
                 );
             } else {
                 log::info!(
-                    "UPDATE {} -> {} for {}: burst of {} forged STOREs (key {}) from {} ports \
+                    "{} {} -> {} for {}: burst of {} forged STOREs (key {}) from {} ports \
                      sent {} ms after seeing it, answers {}",
+                    trigger.name(),
                     update.from,
                     update.to,
                     did,
@@ -386,10 +577,10 @@ async fn persist(
                         continue;
                     }
                     Some(Seen::Request(observed)) => observed,
+                    Some(Seen::HashAsked(_)) => continue,
                 };
                 if let std::collections::hash_map::Entry::Vacant(entry) = targets.entry(observed.key) {
-                    if let Some(did) = did_of(&observed.value) {
-                        let forged = Version::generate(&did).record;
+                    if let (Some(did), Some(forged)) = (did_of(&observed.value), forge(&observed.value)) {
                         log::info!(
                             "persist: learned {} from a {} {} -> {}, forged key {}",
                             did,
@@ -465,6 +656,7 @@ async fn run() {
     // network.
     let gateway = format!("{a}.{b}.0.1");
     let port_count = if mode == "burst" { ports } else { 1 };
+    let observed_ids = std::env::var("ATTACK_SPOOF_IDS").is_ok_and(|ids| ids == "observed");
     let (_servers, protocols) = attacker_nodes(&gateway, attack_port, port_count).await;
 
     let (sender, seen) = mpsc::unbounded_channel();
@@ -476,7 +668,15 @@ async fn run() {
                  {dht_port} on {a}.{b}.0.0/16, extra delay {} ms",
                 delay.as_millis()
             );
-            react_to_updates(seen, protocols, 1, delay).await;
+            react_to_requests(seen, protocols, Trigger::Update, 1, delay).await;
+        }
+        "successor" => {
+            log::info!(
+                "attacker (successor) on {gateway}:{attack_port}: a forged version 1 for each \
+                 STORE of a version 0 to port {dht_port} on {a}.{b}.0.0/16, extra delay {} ms",
+                delay.as_millis()
+            );
+            react_to_requests(seen, protocols, Trigger::VersionZero, 1, delay).await;
         }
         "burst" => {
             log::info!(
@@ -485,7 +685,21 @@ async fn run() {
                 attack_port - (port_count as u16 - 1),
                 delay.as_millis()
             );
-            react_to_updates(seen, protocols, burst, delay).await;
+            react_to_requests(seen, protocols, Trigger::Update, burst, delay).await;
+        }
+        "spoof" => {
+            log::info!(
+                "attacker (spoof): {burst} answers claiming a version far ahead for each FindHash \
+                 between nodes on {a}.{b}.0.0/16, from the node asked, under {} ids",
+                if observed_ids {
+                    "the observed"
+                } else {
+                    "random"
+                }
+            );
+            // The raw socket blocks: its own thread, so the runtime keeps going.
+            let spoofer = std::thread::spawn(move || spoof(seen, burst, observed_ids));
+            let _ = tokio::task::spawn_blocking(move || spoofer.join()).await;
         }
         "persist" => {
             log::info!(
@@ -498,7 +712,9 @@ async fn run() {
             persist(seen, protocol, dht_port, period, did_ttl).await;
         }
         other => {
-            log::error!("unknown ATTACK_MODE {other}: use race, burst or persist");
+            log::error!(
+                "unknown ATTACK_MODE {other}: use race, burst, successor, spoof or persist"
+            );
             std::process::exit(1);
         }
     }

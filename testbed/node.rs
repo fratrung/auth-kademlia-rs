@@ -15,8 +15,10 @@
 //! SIG_CACHE   1 enables the signature cache (default 0)
 //! RUST_LOG    log filter (default `warn,testbed_node=info`)
 //!
-//! Commands: `info`, `new`, `publish`, `update`, `discard`, `forget`,
-//! `get <did|uuid>`, `watch <did|uuid> <ms>`, `stats`, `storage`, `routing`.
+//! Commands: `info`, `new`, `publish`, `update`, `republish`, `discard`,
+//! `forget`, `get <did>`, `watch <did> <ms>`, `lie on|off`, `stats`,
+//! `storage`, `routing`. A DID may be given as its suffix, without
+//! `did:iiot:`.
 //! Each answers with one JSON line. Times named `*_unix_ms` are wall-clock
 //! milliseconds: containers share the host clock, so they compare across
 //! nodes.
@@ -28,7 +30,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use auth_kademlia_rs::auth_handler::did::{key_of_did, DID_PREFIX};
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
+use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
 use auth_kademlia_rs::network::{Server, SetOutcome};
 use auth_kademlia_rs::storage::IStorage;
 use auth_kademlia_rs::utils::digest;
@@ -36,10 +40,9 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, RwLock};
-use uuid::Uuid;
 
 mod did;
-use did::{describe, signing_key_of, Version};
+use did::{describe, new_key, signing_key_of, version_after, version_zero};
 
 const STATS_EVERY: Duration = Duration::from_secs(30);
 const WATCH_PAUSE: Duration = Duration::from_millis(5);
@@ -51,18 +54,35 @@ fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
-/// A rotation that has not been confirmed yet. It is kept so that a retry
-/// sends exactly the same record and authorization.
+/// A version signed and not confirmed yet. It is kept so that a retry sends
+/// exactly the same bytes: another version with the same `seq`, signed by the
+/// same key, is refused by the replicas that took the first (ADR 0005).
 struct Rotation {
-    next: Version,
-    auth_signature: Vec<u8>,
+    record: Vec<u8>,
+    /// The key this version commits to: the one that will sign the version
+    /// after it.
+    next_after: MlDsa65KeyPair,
 }
 
 struct Identity {
-    uuid: String,
     did: String,
-    current: Version,
+    /// Every version published, from version 0 to the current one: the owner
+    /// keeps its chain to replay it to replicas that miss versions.
+    chain: Vec<Vec<u8>>,
+    /// The key the current version committed to, which alone may sign the
+    /// next version.
+    next: MlDsa65KeyPair,
     pending: Option<Rotation>,
+}
+
+impl Identity {
+    fn current(&self) -> &[u8] {
+        self.chain.last().map_or(&[], Vec::as_slice)
+    }
+
+    fn seq(&self) -> usize {
+        self.chain.len().saturating_sub(1)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -94,15 +114,21 @@ async fn handle(node: &Node, line: &str) -> Value {
         "new" => new_identity(node).await,
         "publish" => publish(node).await,
         "update" => update(node).await,
+        "republish" => republish(node).await,
         "discard" => discard(node).await,
         "forget" => forget(node).await,
         "get" => match words.next() {
             Some(target) => get(node, target).await,
-            None => json!({ "error": "usage: get <did|uuid>" }),
+            None => json!({ "error": "usage: get <did>" }),
         },
         "watch" => match (words.next(), words.next().and_then(|ms| ms.parse().ok())) {
             (Some(target), Some(ms)) => watch(node, target, ms).await,
-            _ => json!({ "error": "usage: watch <did|uuid> <ms>" }),
+            _ => json!({ "error": "usage: watch <did> <ms>" }),
+        },
+        "lie" => match words.next() {
+            Some("on") => lie(node, true).await,
+            Some("off") => lie(node, false).await,
+            _ => json!({ "error": "usage: lie on|off" }),
         },
         "stats" => stats(node).await,
         "counters" => counters(node).await,
@@ -110,8 +136,8 @@ async fn handle(node: &Node, line: &str) -> Value {
         "routing" => routing(node).await,
         other => json!({
             "error": format!("unknown command '{other}'"),
-            "commands": ["info", "new", "publish", "update", "discard", "forget",
-                         "get <did|uuid>", "watch <did|uuid> <ms>", "stats", "counters",
+            "commands": ["info", "new", "publish", "update", "republish", "discard", "forget",
+                         "get <did>", "watch <did> <ms>", "lie on|off", "stats", "counters",
                          "storage", "routing"],
         }),
     }
@@ -125,20 +151,22 @@ async fn info(node: &Node) -> Value {
         "address": node.address,
         "node_id": hex::encode(server.node.id),
         "did": identity.as_ref().map(|id| id.did.clone()),
-        "signing_key": identity.as_ref().map(|id| signing_key_of(&id.current.record)),
+        "seq": identity.as_ref().map(Identity::seq),
+        "signing_key": identity.as_ref().map(|id| signing_key_of(id.current())),
         "pending_rotation_to": identity.as_ref().and_then(|id| {
-            id.pending.as_ref().map(|rotation| signing_key_of(&rotation.next.record))
+            id.pending.as_ref().map(|rotation| signing_key_of(&rotation.record))
         }),
     })
 }
 
+/// A new DID: version 0, signed by a new key and committing to the next one.
 fn fresh_identity() -> Identity {
-    let uuid = Uuid::new_v4().to_string();
-    let did = format!("did:iiot:{uuid}");
+    let (signing, next) = (new_key(), new_key());
+    let (did, record) = version_zero(&signing, &next);
     Identity {
-        current: Version::generate(&did),
-        uuid,
         did,
+        chain: vec![record],
+        next,
         pending: None,
     }
 }
@@ -153,18 +181,18 @@ async fn new_identity(node: &Node) -> Value {
     json!({ "did": did })
 }
 
-/// Publish this node's DID Document, creating the DID on first use. Publishing
-/// again sends the same record, so it is a retry.
+/// Publish version 0 of this node's DID Document, creating the DID on first
+/// use. Publishing again sends the same record, so it is a retry; later
+/// versions go through `update`.
 async fn publish(node: &Node) -> Value {
     let mut identity = node.identity.lock().await;
     let created = identity.is_none();
     let id = identity.get_or_insert_with(fresh_identity);
+    let version_zero = id.chain[0].clone();
     let server = node.server.read().await;
     let started_unix_ms = unix_ms();
     let started = Instant::now();
-    let outcome = server
-        .set_detailed(&id.uuid, id.current.record.clone())
-        .await;
+    let outcome = server.set_detailed(&id.did, version_zero.clone()).await;
     let ms = elapsed_ms(started);
     let (status, report) = match &outcome {
         SetOutcome::Complete(report) => ("complete".to_string(), report),
@@ -173,14 +201,16 @@ async fn publish(node: &Node) -> Value {
     };
     log::info!(
         "publish {} key {}: {} - stored {}, already present {}, unavailable {}, \
-         conflicts {}, full {} ({} ms)",
+         conflicts {}, stale {}, newer claimed {}, full {} ({} ms)",
         id.did,
-        signing_key_of(&id.current.record),
+        signing_key_of(&version_zero),
         status,
         report.stored_replicas,
         report.already_present,
         report.unavailable_nodes,
         report.conflict_rejections,
+        report.stale_rejections,
+        report.newer_claimed,
         report.capacity_rejections,
         ms
     );
@@ -193,44 +223,43 @@ async fn publish(node: &Node) -> Value {
         "already_present": report.already_present,
         "unavailable": report.unavailable_nodes,
         "conflicts": report.conflict_rejections,
+        "stale": report.stale_rejections,
+        "newer_claimed": report.newer_claimed,
         "capacity_rejections": report.capacity_rejections,
         "invalid": report.invalid_rejections,
         "ms": ms,
         "started_unix_ms": started_unix_ms,
-        "record": describe(&id.current.record),
+        "record": describe(&version_zero),
+        "current_seq": id.seq(),
         "pending_rotation": id.pending.is_some(),
     })
 }
 
-/// Rotate the key: a new ML-DSA-65 key, the new record signed by the new key
-/// and authorized by the old one. A rotation that was not
-/// confirmed is retried as it is, until it is confirmed or discarded.
+/// Rotate the key (ADR 0005): the next version, signed by the key the current
+/// one committed to and committing to a new one, published with the versions
+/// before it, which `update` replays to replicas that miss some. A rotation
+/// that was not confirmed is retried as it is, until it is confirmed or
+/// discarded.
 async fn update(node: &Node) -> Value {
     let mut identity = node.identity.lock().await;
     let Some(id) = identity.as_mut() else {
         return json!({ "error": "this node has no DID yet: run publish first" });
     };
     let retry = id.pending.is_some();
+    let seq = id.chain.len() as u64;
     let rotation = id.pending.get_or_insert_with(|| {
-        let next = Version::generate(&id.did);
-        let auth_signature = id
-            .current
-            .secret_key
-            .sign(&next.record)
-            .expect("ML-DSA-65 signing");
-        Rotation {
-            next,
-            auth_signature,
-        }
+        let next_after = new_key();
+        let current = id.chain.last().map_or(&[][..], Vec::as_slice);
+        let record = version_after(&id.did, seq, current, &id.next, &next_after);
+        Rotation { record, next_after }
     });
-    let record = rotation.next.record.clone();
-    let auth_signature = rotation.auth_signature.clone();
-    let from = signing_key_of(&id.current.record);
+    let record = rotation.record.clone();
+    let from = signing_key_of(id.current());
     let to = signing_key_of(&record);
 
     let server = node.server.read().await;
     let started = Instant::now();
-    let result = server.update(&id.uuid, record, Some(auth_signature)).await;
+    let result = server.update(&id.did, record, id.chain.clone()).await;
     let ms = elapsed_ms(started);
     let outcome = match result {
         Some(true) => "confirmed",
@@ -239,12 +268,14 @@ async fn update(node: &Node) -> Value {
     };
     if result == Some(true) {
         if let Some(rotation) = id.pending.take() {
-            id.current = rotation.next;
+            id.chain.push(rotation.record);
+            id.next = rotation.next_after;
         }
     }
     log::info!(
-        "update {} key {} -> {}{}: {} ({} ms)",
+        "update {} to version {} key {} -> {}{}: {} ({} ms)",
         id.did,
+        seq,
         from,
         to,
         if retry { " (retry)" } else { "" },
@@ -253,6 +284,7 @@ async fn update(node: &Node) -> Value {
     );
     json!({
         "did": id.did,
+        "seq": seq,
         "from_key": from,
         "to_key": to,
         "retry": retry,
@@ -267,12 +299,73 @@ async fn update(node: &Node) -> Value {
     })
 }
 
+/// Send the current version again, the saved bytes, as the owner does at
+/// least once every 24 hours so that copies lost to churn come back (ADR
+/// 0005, section 5): version 0 by `set`, a later version by `update` with the
+/// versions before it. Nothing new is signed.
+async fn republish(node: &Node) -> Value {
+    let identity = node.identity.lock().await;
+    let Some(id) = identity.as_ref() else {
+        return json!({ "error": "this node has no DID yet: run publish first" });
+    };
+    let Some((current, earlier)) = id.chain.split_last() else {
+        return json!({ "error": "this node has no version to send" });
+    };
+    let server = node.server.read().await;
+    let started = Instant::now();
+    let outcome = if earlier.is_empty() {
+        match server.set_detailed(&id.did, current.clone()).await {
+            SetOutcome::Complete(_) => "complete".to_string(),
+            SetOutcome::Degraded(_) => "degraded".to_string(),
+            SetOutcome::Rejected { reason, .. } => format!("rejected: {reason:?}"),
+        }
+    } else {
+        match server
+            .update(&id.did, current.clone(), earlier.to_vec())
+            .await
+        {
+            Some(true) => "confirmed".to_string(),
+            Some(false) => "not confirmed".to_string(),
+            None => "refused".to_string(),
+        }
+    };
+    let ms = elapsed_ms(started);
+    log::info!(
+        "republish {} version {}: {} ({} ms)",
+        id.did,
+        id.seq(),
+        outcome,
+        ms
+    );
+    json!({
+        "did": id.did,
+        "seq": id.seq(),
+        "outcome": outcome,
+        "ms": ms,
+    })
+}
+
+/// Testbed only: make this node answer every `FindHash` with a made-up
+/// version far ahead, or stop (ADR 0005, Validation). A node that restarts
+/// answers honestly again.
+async fn lie(node: &Node, lying: bool) -> Value {
+    let listening = node.server.read().await.set_lying(lying);
+    log::info!(
+        "FindHash answers: {}",
+        if lying { "lying" } else { "honest" }
+    );
+    json!({ "lying": lying, "listening": listening })
+}
+
+/// Drop the pending rotation. The next `update` signs another version with
+/// the same `seq` and the same key: a replica that took the dropped one sees
+/// two versions signed by one key and refuses the new one (ADR 0005).
 async fn discard(node: &Node) -> Value {
     let mut identity = node.identity.lock().await;
     let dropped = identity
         .as_mut()
         .and_then(|id| id.pending.take())
-        .map(|rotation| signing_key_of(&rotation.next.record));
+        .map(|rotation| signing_key_of(&rotation.record));
     if let Some(key) = &dropped {
         log::info!("discarded the pending rotation to key {key}");
     }
@@ -289,16 +382,30 @@ async fn forget(node: &Node) -> Value {
     json!({ "forgotten": dropped })
 }
 
+/// The DID of a target given as a DID or as its suffix.
+fn did_of_target(target: &str) -> String {
+    if target.starts_with(DID_PREFIX) {
+        target.to_string()
+    } else {
+        format!("{DID_PREFIX}{target}")
+    }
+}
+
+/// Whether this node holds a record for `did`.
+fn holds(server: &Server, did: &str) -> bool {
+    key_of_did(did).is_some_and(|key| server.storage.get(&key).is_some())
+}
+
 async fn get(node: &Node, target: &str) -> Value {
-    let uuid = target.strip_prefix("did:iiot:").unwrap_or(target);
+    let did = did_of_target(target);
     let server = node.server.read().await;
-    let local_copy = server.storage.get(&digest(uuid)).is_some();
+    let local_copy = holds(&server, &did);
     let started = Instant::now();
-    let found = server.get(uuid).await;
+    let found = server.get(&did).await;
     let ms = elapsed_ms(started);
     log::info!(
-        "get did:iiot:{}: {} ({} ms, {})",
-        uuid,
+        "get {}: {} ({} ms, {})",
+        did,
         match &found {
             Some(record) => format!("found key {}", signing_key_of(record)),
             None => "not found".to_string(),
@@ -311,7 +418,7 @@ async fn get(node: &Node, target: &str) -> Value {
         }
     );
     json!({
-        "did": format!("did:iiot:{uuid}"),
+        "did": did,
         "found": found.is_some(),
         "local_copy": local_copy,
         "ms": ms,
@@ -322,18 +429,18 @@ async fn get(node: &Node, target: &str) -> Value {
 /// Read a DID again and again, until it is found or `ms` milliseconds have
 /// passed: to measure when a publication becomes readable from this node.
 async fn watch(node: &Node, target: &str, ms: u64) -> Value {
-    let uuid = target.strip_prefix("did:iiot:").unwrap_or(target);
+    let did = did_of_target(target);
     let server = node.server.read().await;
     let deadline = Instant::now() + Duration::from_millis(ms);
     let watch_started_unix_ms = unix_ms();
     let mut attempts = 0u32;
     loop {
         attempts += 1;
-        let local_copy = server.storage.get(&digest(uuid)).is_some();
+        let local_copy = holds(&server, &did);
         let attempt_started = Instant::now();
-        if let Some(record) = server.get(uuid).await {
+        if let Some(record) = server.get(&did).await {
             return json!({
-                "did": format!("did:iiot:{uuid}"),
+                "did": did,
                 "found": true,
                 "found_unix_ms": unix_ms(),
                 "watch_started_unix_ms": watch_started_unix_ms,
@@ -345,7 +452,7 @@ async fn watch(node: &Node, target: &str, ms: u64) -> Value {
         }
         if Instant::now() >= deadline {
             return json!({
-                "did": format!("did:iiot:{uuid}"),
+                "did": did,
                 "found": false,
                 "watch_started_unix_ms": watch_started_unix_ms,
                 "attempts": attempts,

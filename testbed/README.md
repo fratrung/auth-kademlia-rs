@@ -8,9 +8,12 @@ that get lost, replicas that are unreachable during an update.
 Modes:
 - **Interactive** (`testbed.py`): start a network and drive single nodes.
 - **Attack** (`attack.py`), built on the interactive network: an attacker that
-  reads the traffic and races updates with forged records.
+  reads the traffic and sends forged versions of the DIDs it sees, or spoofed
+  answers to the check of an empty replica.
 - **Measurement** (`measure.py`): publication time, and when other nodes can
-  read the record. With `--counters`, also what every node sent, read from the
+  read the record; rotations with replicas restarted empty and nodes that lie
+  in `FindHash`; copies of a record over time while nodes crash. With
+  `--counters`, also what every node sent, read from the
   library's counters (`src/counters.rs`, on in the testbed image). The traffic
   tables below were measured from the host, before the counters existed.
 
@@ -145,10 +148,13 @@ default; Y.1541 bounds delay variation at 50 ms for classes 0 and 1.
 | Command | What it does |
 |---|---|
 | `status` | Live contacts, contacts and records of every node |
-| `ctl NODE info` | Name, address, node id, DID, current signing key |
-| `ctl NODE publish` | Create the node's DID on first use and publish it; again, it republishes the same record |
-| `ctl NODE update` | Rotate the ML-DSA-65 key; the old key authorizes the new record |
-| `ctl NODE discard` | Drop a rotation that was not confirmed |
+| `ctl NODE info` | Name, address, node id, DID, current version and signing key |
+| `ctl NODE new` | Create a new DID (version 0) without publishing it |
+| `ctl NODE publish` | Create the node's DID on first use and publish version 0; again, it sends the same record |
+| `ctl NODE update` | Rotate the ML-DSA-65 key: the next version, signed by the key the current one committed to and committing to a new one, sent with the earlier versions (ADR 0005) |
+| `ctl NODE republish` | Send the current version again with the saved bytes, as the owner does at least every 24 hours |
+| `ctl NODE discard` | Drop a rotation that was not confirmed; the next `update` signs another version with the same key, which replicas that took the first refuse |
+| `ctl NODE lie on` / `lie off` | Answer every `FindHash` with a made-up version far ahead, or stop (testbed builds only) |
 | `ctl NODE get DID` | Read a DID; `get TARGET --from NODE` also takes a node name |
 | `ctl NODE storage` | Records this node holds, with their signing key |
 | `ctl NODE routing` | This node's closest contacts |
@@ -161,7 +167,7 @@ default; Y.1541 bounds delay variation at 50 ms for classes 0 and 1.
 
 Signing keys are shown as the first 6 bytes of their SHA-256, so versions can be
 told apart. An update that is not confirmed stays pending: `update` again
-retries the same record and authorization, as a retry must.
+retries the same record, as a retry must.
 
 **Logs.** Each node logs one line per command it runs (outcome, replicas,
 time), its contacts every 30 s, and the library's warnings, such as peers that
@@ -177,10 +183,16 @@ for n in $(seq 1 10); do testbed/testbed.py ctl node-$n storage; done   # find t
 testbed/testbed.py pause node-10          # one of them
 testbed/testbed.py ctl node-3 update      # confirmed after one RPC timeout
 testbed/testbed.py unpause node-10
-testbed/testbed.py ctl node-10 storage    # still the old key: nothing repairs it
+testbed/testbed.py ctl node-10 storage    # still the old version
+testbed/testbed.py ctl node-3 republish   # the owner sends the current version again
+testbed/testbed.py ctl node-10 storage    # the current version
 ```
 
-On 2026-11-03 this run also showed the owner locked out: while node-10 was
+Since ADR 0005 node-10, which holds the version before the current one, takes
+the owner's next `update` or `republish` directly: it checks the new version
+against the one it holds. A replica further behind answers `MissingPrevious`,
+and the owner replays the versions it missed. Before ADR 0005 nothing repaired
+it, and on 2026-11-03 this run also showed the owner locked out: while node-10 was
 frozen, node-3 entered the k closest and took a copy; once node-10 came back,
 node-3 left them, its copy stayed behind, and its next rotation was refused.
 Both are P3 defects in `dht_robustness_issues.md`.
@@ -192,23 +204,29 @@ network namespace, where it sees every container's traffic, as on a shared
 medium or a mirror port. It can read and send, but not change or drop packets:
 changing the owner's record would break its self-signature anyway.
 
-It takes the DID from the requests it sees, signs a document of its own for
-that DID, and sends it as STORE. A forged document passes the signature check,
-so only a replica with no record could take it. The attacker sits next to
-every node: netem delays only the containers' egress. `--delay` moves it
-farther away. Three modes (`start --mode`):
+It takes the DID from the requests it sees and forges a version of it (ADR
+0005): the `seq` and `prev` of the version it saw, or a version 1 after a
+version 0, self-signed with a key of its own, which no version committed to. A
+forged version passes the signature check; a replica holding the version
+before refuses it, and an empty replica refuses it unless its check of the
+network lets it through. The attacker sits next to every node: netem delays
+only the containers' egress. `--delay` moves it farther away. Modes (`start
+--mode`):
 
 | Mode | What it does |
 |---|---|
 | `race` (default) | For each UPDATE, one forged STORE to the same replica, racing the owner's STORE to a replica that refused the UPDATE |
 | `burst` | For each UPDATE, `--burst` (64) forged STOREs at once from `--ports` (16) ports. Many lookups at once can make the replica drop answers: it tests what the replica does then |
+| `successor` | For each STORE of a version 0, a forged version 1 after it to the same replica, at once: the key security case of ADR 0005 |
+| `spoof` | For each `FindHash` it sees, `--burst` (64) answers claiming a version far ahead, sent to the asking replica from the address and port of the node asked (a raw socket writes the IP header), under random message ids. `--spoof-ids observed` uses the ids read on the wire instead: the control, which shows the answers reach the replica and that the id is what stops them |
 | `persist` | Learns DIDs from the STOREs and UPDATEs it sees and, every `--period` ms (100), sends a forged STORE for each DID seen in the last `--did-ttl` s (20) to every node. It covers every moment a node lacks the record |
 
 ```bash
 testbed/testbed.py up --nodes 10 --k 3 --profile wan-eu --no-build
-testbed/attack.py start [--mode race|burst|persist] [--delay MS]
+testbed/attack.py start [--mode race|burst|successor|spoof|persist] [--delay MS]
 testbed/attack.py race --rounds 20 [--owner node-1]      # with race or burst
 testbed/attack.py restart --rounds 20 [--owner node-1]   # with persist, or none
+testbed/attack.py restart --rounds 20 --no-crash         # with successor
 testbed/attack.py logs
 testbed/attack.py stop                    # `testbed.py down` removes it too
 ```
@@ -339,6 +357,33 @@ nothing). Reading the counters runs `docker exec` in every container, which
 loads the host: time publications without `--counters`. Bytes are UDP payloads,
 KADF header included, without IP, UDP and Ethernet headers. Watchers' reads are
 counted too, so `--watchers 0` counts the publication alone.
+
+```
+testbed/measure.py update --rounds 20 --restart 1 [--liars N] [--counters]
+```
+
+`measure.py update` measures rotations: each round the owner publishes a new
+DID, rotates `--rotations` times (1), and `--restart M` replicas holding the
+current version crash and come back empty just before the last rotation. It
+prints the rotation time, what the replicas, the restarted ones and every
+other node hold or read (current, older, other, none), and with `--counters`
+the traffic of the last rotation, the checks by outcome and the checks that
+fetched the version before, with their duration. `--liars N` makes the `N`
+replicas closest to the key lie in `FindHash` (`ctl <node> lie on`) for the
+round. The key rule covers both UUID and ADR 0005 DIDs, so the same mode
+measures images from before and after ADR 0005.
+
+```
+testbed/measure.py churn --duration 600 --liars 1
+```
+
+`measure.py churn` counts the copies of one record over time while nodes
+crash: the owner publishes a new DID and rotates once; every `--churn-every`
+seconds (10) one of the `k` replicas (or any node, `--churn-among all`) other
+than the owner and the liars crashes and comes back empty; every
+`--republish-every` seconds (60) the owner sends its current version again;
+every `--sample-every` seconds (5) it prints what the replicas hold, and at the
+end how often fewer than the quorum held the current version.
 
 The results below come before two changes to the check: the DID binding is
 checked before asking the network (`e383d17`), and a replica asks all the
