@@ -1,0 +1,68 @@
+publish: 40 rounds, owner node-1, 127 nodes, k=20, profile wan-eu, image auth-kademlia-testbed:adr0005-final
+round  outcome      publish  first read  reads after
+    1  complete    160.6 ms       never  126/126
+    2  complete    213.3 ms       never  126/126
+    3  complete    137.4 ms       never  126/126
+    4  complete    231.2 ms       never  126/126
+    5  complete    194.1 ms       never  126/126
+    6  complete    142.0 ms       never  126/126
+    7  complete    221.4 ms       never  126/126
+    8  complete    631.1 ms       never  126/126
+    9  complete    166.9 ms       never  126/126
+   10  complete    111.2 ms       never  126/126
+   11  complete    136.4 ms       never  126/126
+   12  complete    199.9 ms       never  126/126
+   13  complete    116.2 ms       never  126/126
+   14  complete    204.3 ms       never  126/126
+   15  complete    168.9 ms       never  126/126
+   16  complete    194.3 ms       never  126/126
+   17  complete    142.9 ms       never  126/126
+   18  complete    145.2 ms       never  126/126
+   19  complete    155.1 ms       never  126/126
+   20  complete    607.8 ms       never  126/126
+   21  complete    137.8 ms       never  126/126
+   22  complete    185.2 ms       never  126/126
+   23  complete    131.4 ms       never  126/126
+   24  complete    319.6 ms       never  126/126
+   25  complete    164.5 ms       never  126/126
+   26  complete    276.8 ms       never  126/126
+   27  complete    138.0 ms       never  126/126
+   28  complete    105.3 ms       never  126/126
+   29  complete    223.3 ms       never  126/126
+   30  complete    183.9 ms       never  126/126
+   31  complete    245.7 ms       never  126/126
+   32  complete    117.2 ms       never  126/126
+   33  complete    156.3 ms       never  126/126
+   34  complete    153.0 ms       never  126/126
+   35  complete    146.4 ms       never  126/126
+   36  complete    150.9 ms       never  126/126
+   37  complete    577.7 ms       never  126/126
+   38  complete    216.4 ms       never  126/126
+   39  complete     76.6 ms       never  126/126
+   40  complete    142.7 ms       never  126/126
+
+summary
+  outcomes: complete 40
+  publication time: median 162.6 ms, p95 577.7 ms, max 631.1 ms (n=40)
+  readable by the first watcher, from the start of the publication: no samples
+  watchers that found it within 10000 ms: 0/0
+  reads by every other node right after the publication: 5040/5040 found
+  remote read time: median 16.4 ms, p95 31.2 ms, max 94.4 ms (n=4246)
+  sent by all nodes per publication (median of 40): 631.8 KiB, 994 datagrams
+    FindHash             33.5 KiB    404 datagrams
+    FindHashHit           0.8 KiB     14 datagrams
+    FindValue             1.7 KiB     20 datagrams
+    FindValueNodes      463.4 KiB    418 datagrams
+    Received              0.4 KiB     20 datagrams
+    Store               137.4 KiB    105 datagrams
+    StoreResult           0.5 KiB     20 datagrams
+  resends in all rounds: 454 to measured peers, 4 to peers never measured
+  checks in all rounds: accepted 794, newer_claimed 0, other_version 0, not_following 0, holder_behind 0, fetch_refused 0, too_few_votes 0, no_answer 0, nobody_to_ask 0, invalid 0
+  check lookups by rounds: 1: 770, 2: 24, 3: 0, 4: 0, 5+: 0
+  check lookups by duration: <=25 ms: 311, <=50 ms: 249, <=100 ms: 219, <=200 ms: 11, <=500 ms: 1, <=1000 ms: 3
+  check lookup mean duration: 41.0 ms
+  sent by all nodes per remote read (mean of 4246; local reads send nothing): 19.1 KiB, 17.6 datagrams
+    FindValue            0.25 KiB    3.0 datagrams
+    FindValueHit        18.71 KiB   14.4 datagrams
+    FindValueNodes       0.12 KiB    0.1 datagrams
+  details: testbed/.generated/publish-wan-eu-20261111-115508.json

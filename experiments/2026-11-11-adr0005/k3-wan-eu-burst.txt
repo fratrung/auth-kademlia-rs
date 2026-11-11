@@ -1,0 +1,35 @@
+race: 20 rounds, owner node-1, 10 nodes, k=3, profile wan-eu, image auth-kademlia-testbed:adr0005-final
+round  victim   before   update         after       others    forged reads
+    1  node-5   empty    confirmed      owner       2/2       0/3
+    2  node-7   empty    confirmed      owner       2/2       0/3
+    3  node-8   empty    confirmed      owner       2/2       0/3
+    4  node-3   empty    confirmed      owner       2/2       0/3
+    5  node-7   empty    confirmed      owner       2/2       0/3
+    6  node-7   empty    confirmed      owner       1/1       0/3
+    7  node-3   empty    confirmed      owner       2/2       0/3
+    8  node-5   empty    confirmed      owner       2/2       0/3
+    9  node-4   empty    confirmed      owner       1/1       0/3
+   10  node-2   empty    confirmed      owner       2/2       0/3
+   11  node-6   empty    confirmed      owner       2/2       0/3
+   12  node-9   empty    confirmed      owner       2/2       0/3
+   13  node-2   empty    confirmed      owner       2/2       0/3
+   14  node-7   empty    confirmed      owner       1/1       0/3
+   15  node-7   empty    confirmed      owner       2/2       0/3
+   16  node-3   empty    confirmed      owner       2/2       0/3
+   17  node-5   empty    confirmed      owner       2/2       0/3
+   18  node-10  empty    confirmed      owner       1/1       0/3
+   19  node-2   empty    confirmed      owner       2/2       0/3
+   20  node-5   empty    confirmed      owner       2/2       0/3
+
+summary
+  victim empty before the update: 20/20
+  victim after the update holds owner: 20/20
+  victim after the update holds attacker: 0/20
+  victim after the update holds old: 0/20
+  victim after the update holds empty: 0/20
+  owner's update: confirmed 20
+  other replicas holding the owner's record: 36/36
+  plain reads returning the forged record: 0/60
+  attacker: 56 attacks, sent 0.8 ms (median) after seeing the request
+  attacker's answers: Conflict 3584
+  details: testbed/.generated/race-wan-eu-20261111-115837.json

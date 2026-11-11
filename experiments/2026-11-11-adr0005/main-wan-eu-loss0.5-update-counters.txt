@@ -1,0 +1,46 @@
+update: 10 rounds, 1 rotation(s) each, 1 replica(s) restarted before the last, owner node-1, 127 nodes, k=20, profile wan-eu, image auth-kademlia-testbed:main-424b76f
+round  outcome           update  replicas cur/old/none  restarted cur/old/none  reads cur/old/none
+    1  confirmed       110.5 ms  19/0/0                 0/0/1                   126/0/0
+    2  confirmed       112.6 ms  19/0/0                 0/0/1                   126/0/0
+    3  confirmed       120.0 ms  19/0/0                 1/0/0                   126/0/0
+    4  confirmed       111.7 ms  19/0/0                 0/0/1                   126/0/0
+    5  confirmed        91.9 ms  18/0/0                 0/0/1                   126/0/0
+    6  confirmed       264.2 ms  19/0/0                 1/0/0                   126/0/0
+    7  confirmed       167.9 ms  19/0/0                 0/0/1                   126/0/0
+    8  confirmed       124.6 ms  19/0/0                 1/0/0                   126/0/0
+    9  confirmed        93.5 ms  18/0/0                 0/0/1                   126/0/0
+   10  confirmed        92.9 ms  18/0/0                 0/0/1                   126/0/0
+
+summary
+  publication of version 0: complete 10
+    stored replicas per publication: median 20, min 19, max 20 (n=10)
+    unavailable replicas per publication: median 0, min 0, max 0 (n=10)
+    newer_claimed replicas per publication: median 0, min 0, max 0 (n=10)
+    conflicts replicas per publication: median 0, min 0, max 0 (n=10)
+    stale replicas per publication: median 0, min 0, max 0 (n=10)
+  last rotation: confirmed 10
+  rotation time, no replica restarted: no samples
+  rotation time, after the restart: median 112.2 ms, p95 264.2 ms, max 264.2 ms (n=10)
+  replicas not restarted: current 187/187, older 0, other 0, none 0
+  restarted replicas: current 3/10, older 0, other 0, none 7
+  reads by every other node: current 1260/1260, older 0, other 0, none 0
+  sent by all nodes per update (median of 10): 253.1 KiB, 308 datagrams
+    FindHash              1.7 KiB     20 datagrams
+    FindHashHit           0.9 KiB     18 datagrams
+    FindNode              1.7 KiB     20 datagrams
+    FindNodeResult       22.2 KiB     20 datagrams
+    FindValue             0.2 KiB      3 datagrams
+    FindValueHit         12.8 KiB     10 datagrams
+    FindValueNodes        3.3 KiB      3 datagrams
+    Received              0.4 KiB     21 datagrams
+    Store                 6.4 KiB      5 datagrams
+    StoreResult           0.0 KiB      1 datagrams
+    Update              204.0 KiB    168 datagrams
+    UpdateResult          0.4 KiB     20 datagrams
+  resends in all rounds: 16 to measured peers, 0 to peers never measured
+  checks in all rounds: no_answer 0, nobody_to_ask 0, none_or_same 3, other 7, unbound 0
+  check lookups by rounds: 1: 7, 2: 3, 3: 0, 4: 0, 5+: 0
+  check lookups by duration: <=25 ms: 7, <=50 ms: 3
+  check lookup mean duration: 24.5 ms
+  Update datagrams per UpdateResult (fragments of an UPDATE, plus resends): 8.53
+  details: testbed/.generated/update-wan-eu-20261111-113236.json

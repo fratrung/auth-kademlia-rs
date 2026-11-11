@@ -1,0 +1,37 @@
+update: 20 rounds, 1 rotation(s) each, 1 replica(s) restarted before the last, owner node-1, 127 nodes, k=20, profile wan-atlantic, image auth-kademlia-testbed:main-424b76f
+round  outcome           update  replicas cur/old/none  restarted cur/old/none  reads cur/old/none
+    1  confirmed       431.3 ms  19/0/0                 1/0/0                   126/0/0
+    2  confirmed       359.0 ms  18/0/0                 0/0/1                   126/0/0
+    3  confirmed       432.2 ms  19/0/0                 1/0/0                   126/0/0
+    4  confirmed       575.4 ms  19/0/0                 1/0/0                   126/0/0
+    5  confirmed       578.2 ms  19/0/0                 1/0/0                   126/0/0
+    6  confirmed       576.1 ms  19/0/0                 1/0/0                   126/0/0
+    7  confirmed       576.8 ms  19/0/0                 1/0/0                   126/0/0
+    8  confirmed       579.9 ms  19/0/0                 1/0/0                   126/0/0
+    9  confirmed       577.5 ms  19/0/0                 1/0/0                   126/0/0
+   10  confirmed       579.5 ms  19/0/0                 1/0/0                   126/0/0
+   11  confirmed       580.4 ms  19/0/0                 1/0/0                   126/0/0
+   12  confirmed       579.1 ms  19/0/0                 1/0/0                   126/0/0
+   13  confirmed       580.7 ms  19/0/0                 1/0/0                   126/0/0
+   14  confirmed       579.3 ms  19/0/0                 1/0/0                   126/0/0
+   15  confirmed       582.5 ms  19/0/0                 1/0/0                   126/0/0
+   16  confirmed       580.0 ms  19/0/0                 1/0/0                   126/0/0
+   17  confirmed       584.7 ms  19/0/0                 1/0/0                   126/0/0
+   18  confirmed       582.8 ms  19/0/0                 1/0/0                   126/0/0
+   19  confirmed       582.2 ms  19/0/0                 1/0/0                   126/0/0
+   20  confirmed       582.0 ms  19/0/0                 1/0/0                   126/0/0
+
+summary
+  publication of version 0: complete 20
+    stored replicas per publication: median 20, min 20, max 20 (n=20)
+    unavailable replicas per publication: median 0, min 0, max 0 (n=20)
+    newer_claimed replicas per publication: median 0, min 0, max 0 (n=20)
+    conflicts replicas per publication: median 0, min 0, max 0 (n=20)
+    stale replicas per publication: median 0, min 0, max 0 (n=20)
+  last rotation: confirmed 20
+  rotation time, no replica restarted: no samples
+  rotation time, after the restart: median 579.4 ms, p95 582.8 ms, max 584.7 ms (n=20)
+  replicas not restarted: current 379/379, older 0, other 0, none 0
+  restarted replicas: current 19/20, older 0, other 0, none 1
+  reads by every other node: current 2520/2520, older 0, other 0, none 0
+  details: testbed/.generated/update-wan-atlantic-20261111-112304.json

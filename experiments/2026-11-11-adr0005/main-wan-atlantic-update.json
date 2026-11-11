@@ -1,0 +1,949 @@
+{
+  "config": {
+    "nodes": 127,
+    "k": 20,
+    "alpha": 3,
+    "seeds": 3,
+    "subnet": "10.213",
+    "profile": "wan-atlantic",
+    "delay_ms": 35.2,
+    "jitter_ms": 0.0,
+    "loss_pct": 0.0,
+    "cpus": null,
+    "image": "auth-kademlia-testbed:main-424b76f"
+  },
+  "args": {
+    "command": "update",
+    "owner": "node-1",
+    "rounds": 20,
+    "rotations": 1,
+    "restart": 1,
+    "counters": false,
+    "settle": 0.3,
+    "wait": 0.5,
+    "liars": 0,
+    "func": null
+  },
+  "rounds": [
+    {
+      "did": "did:iiot:f4754c02-96e7-4923-bf94-513ad28d49df",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "6543fd804a97",
+        "8f8e4ffc85a0"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 431.3,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-42"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:56a8b5e7-05c7-4149-b466-a905a3b6945b",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "8b74acf562d2",
+        "5e8f9660b22e"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 359.0,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-7"
+      ],
+      "replicas": {
+        "current": 18,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 1
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:2e1154ee-feb8-416c-8a45-fd9a27c69bdc",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "2f8891433663",
+        "03668876f256"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 432.2,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-69"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:f1d6a8cc-67dd-49eb-b74b-a78758e832d5",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "2adfc49c1fd4",
+        "f225be1d7b14"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 575.4,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-80"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:9bdde087-1601-4dbb-b194-38cb87982900",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "00cd11000823",
+        "90352173f4c0"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 578.2,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-14"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:8c490bb5-eab5-4242-a9a9-ea8e96ac12ef",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "bf7665994a0c",
+        "8fcb10166c12"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 576.1,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-43"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:b68370c4-d0cd-487a-bfec-46b51e00c189",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "85671b513fbc",
+        "43827cb4e74c"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 576.8,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-118"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:ce37636f-be90-4c43-b6d4-dde172169445",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "df33d8580b66",
+        "897e60d8b67d"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 579.9,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-82"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:49241f74-c772-4503-b313-c249bbe8fd54",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "2324b1c954d1",
+        "0be3a841d31d"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 577.5,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-31"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:a2d42b58-43ca-446a-baeb-a5705fbfead8",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "9392118ac279",
+        "c38460ec7bc7"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 579.5,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-56"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:92477178-4d34-41f3-8c8e-6ef75d75611c",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "da29171170db",
+        "c733f8f7e940"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 580.4,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-50"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:51193907-da6d-4b1d-9f3a-06b17ddfc179",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "53e9b8cde00a",
+        "bf17cb211216"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 579.1,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-43"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:e162db3a-eb6c-4554-bfc9-24c25502f521",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "39d02b95e58a",
+        "28025016e86d"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 580.7,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-37"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:aaf4023e-4cf2-4272-a5bf-a7fabe478ebe",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "3559b2c9b56b",
+        "8989ce624fdf"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 579.3,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-44"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:7d02bab4-299e-420c-bc76-ff3ca989783f",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "8a55fed7d97a",
+        "ac0da0a6cc23"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 582.5,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-62"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:aa9b270a-9f2b-4d5b-9323-fe3230975084",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "a94614f23b7d",
+        "cbe6250eb74b"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 580.0,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-33"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:3f79e0c0-1502-4360-a5b4-8d94e6725403",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "eb5d2171dd6c",
+        "f01461d27c6f"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 584.7,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-109"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:25aa01d6-8525-432d-82e7-5142ef08c99d",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "ada7cc41b90d",
+        "e63692d4b728"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 582.8,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-82"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:c3cc8c78-0e4e-417e-b392-8d7ad54f0093",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "f1de51a2c0f1",
+        "1bcde1b78aa0"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 582.2,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-89"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:ebd8ae3e-d5cf-4d86-a88c-5997a23509f3",
+      "liars": [],
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": null,
+        "newer_claimed": null,
+        "invalid": 0
+      },
+      "versions": [
+        "71bed20997ba",
+        "7960a89cd8b1"
+      ],
+      "rotations": [
+        {
+          "outcome": "confirmed",
+          "ms": 582.0,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-93"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    }
+  ]
+}

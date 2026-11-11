@@ -1,0 +1,31 @@
+publish: 20 rounds, owner node-1, 127 nodes, k=20, profile wan-eu, image auth-kademlia-testbed:main-424b76f
+round  outcome      publish  first read  reads after
+    1  complete     90.7 ms     62.0 ms  126/126
+    2  complete     87.9 ms     65.9 ms  126/126
+    3  complete     93.8 ms     57.3 ms  126/126
+    4  complete     84.2 ms     69.4 ms  126/126
+    5  complete     85.6 ms     64.5 ms  126/126
+    6  complete     93.5 ms     68.4 ms  126/126
+    7  complete     91.9 ms     62.2 ms  126/126
+    8  complete     92.7 ms     69.8 ms  126/126
+    9  complete     92.8 ms     70.9 ms  126/126
+   10  complete     90.2 ms     67.1 ms  126/126
+   11  complete     60.9 ms     40.3 ms  126/126
+   12  complete     62.8 ms     64.1 ms  126/126
+   13  complete     86.1 ms     55.1 ms  126/126
+   14  complete     62.0 ms     60.8 ms  126/126
+   15  complete     90.8 ms     62.4 ms  126/126
+   16  complete     90.3 ms     60.0 ms  126/126
+   17  complete     87.4 ms     62.0 ms  126/126
+   18  complete     84.1 ms     45.7 ms  126/126
+   19  complete     62.0 ms     47.3 ms  126/126
+   20  complete     88.9 ms     62.7 ms  126/126
+
+summary
+  outcomes: complete 20
+  publication time: median 88.4 ms, p95 93.5 ms, max 93.8 ms (n=20)
+  readable by the first watcher, from the start of the publication: median 62.3 ms, p95 69.8 ms, max 70.9 ms (n=20)
+  watchers that found it within 10000 ms: 60/60
+  reads by every other node right after the publication: 2520/2520 found
+  remote read time: median 15.6 ms, p95 45.3 ms, max 52.4 ms (n=2126)
+  details: testbed/.generated/publish-wan-eu-20261111-111612.json

@@ -1,0 +1,37 @@
+update: 20 rounds, 1 rotation(s) each, 1 replica(s) restarted before the last, owner node-1, 127 nodes, k=20, profile lan, image auth-kademlia-testbed:main-424b76f
+round  outcome           update  replicas cur/old/none  restarted cur/old/none  reads cur/old/none
+    1  confirmed         6.7 ms  19/0/0                 1/0/0                   126/0/0
+    2  confirmed         7.3 ms  19/0/0                 1/0/0                   126/0/0
+    3  confirmed         5.4 ms  19/0/0                 0/0/1                   126/0/0
+    4  confirmed         5.6 ms  19/0/0                 1/0/0                   126/0/0
+    5  confirmed         4.9 ms  18/0/0                 0/0/1                   126/0/0
+    6  confirmed         8.0 ms  19/0/0                 1/0/0                   126/0/0
+    7  confirmed         6.4 ms  19/0/0                 1/0/0                   126/0/0
+    8  confirmed         7.0 ms  19/0/0                 1/0/0                   126/0/0
+    9  confirmed         6.7 ms  19/0/0                 1/0/0                   126/0/0
+   10  confirmed         6.4 ms  19/0/0                 1/0/0                   126/0/0
+   11  confirmed         6.7 ms  19/0/0                 1/0/0                   126/0/0
+   12  confirmed         5.3 ms  18/0/0                 0/0/1                   126/0/0
+   13  confirmed         6.3 ms  19/0/0                 1/0/0                   126/0/0
+   14  confirmed         7.4 ms  18/0/0                 0/0/1                   126/0/0
+   15  confirmed         6.4 ms  19/0/0                 1/0/0                   126/0/0
+   16  confirmed         6.1 ms  19/0/0                 1/0/0                   126/0/0
+   17  confirmed         6.2 ms  19/0/0                 1/0/0                   126/0/0
+   18  confirmed         6.3 ms  19/0/0                 1/0/0                   126/0/0
+   19  confirmed         6.8 ms  19/0/0                 1/0/0                   126/0/0
+   20  confirmed         6.4 ms  19/0/0                 1/0/0                   126/0/0
+
+summary
+  publication of version 0: complete 20
+    stored replicas per publication: median 20, min 20, max 20 (n=20)
+    unavailable replicas per publication: median 0, min 0, max 0 (n=20)
+    newer_claimed replicas per publication: median 0, min 0, max 0 (n=20)
+    conflicts replicas per publication: median 0, min 0, max 0 (n=20)
+    stale replicas per publication: median 0, min 0, max 0 (n=20)
+  last rotation: confirmed 20
+  rotation time, no replica restarted: no samples
+  rotation time, after the restart: median 6.4 ms, p95 7.4 ms, max 8.0 ms (n=20)
+  replicas not restarted: current 377/377, older 0, other 0, none 0
+  restarted replicas: current 16/20, older 0, other 0, none 4
+  reads by every other node: current 2520/2520, older 0, other 0, none 0
+  details: testbed/.generated/update-lan-20261111-111215.json

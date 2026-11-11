@@ -1,0 +1,31 @@
+publish: 20 rounds, owner node-1, 127 nodes, k=20, profile wan-atlantic, image auth-kademlia-testbed:adr0005-final
+round  outcome      publish  first read  reads after
+    1  complete    437.9 ms    238.5 ms  126/126
+    2  complete    436.9 ms    301.7 ms  126/126
+    3  complete    434.2 ms    301.2 ms  126/126
+    4  complete    289.7 ms    306.2 ms  126/126
+    5  complete    432.7 ms    319.0 ms  126/126
+    6  complete    291.9 ms    295.6 ms  126/126
+    7  complete    438.5 ms    304.9 ms  126/126
+    8  complete    404.1 ms    312.3 ms  126/126
+    9  complete    434.2 ms    306.5 ms  126/126
+   10  complete    438.3 ms    304.1 ms  126/126
+   11  complete    436.9 ms    310.7 ms  126/126
+   12  complete    401.3 ms    299.7 ms  126/126
+   13  complete    436.1 ms    297.3 ms  126/126
+   14  complete    292.1 ms    309.6 ms  126/126
+   15  complete    289.5 ms    306.1 ms  126/126
+   16  complete    433.1 ms    306.9 ms  126/126
+   17  complete    291.7 ms    294.4 ms  126/126
+   18  complete    290.7 ms    308.2 ms  126/126
+   19  complete    432.7 ms    374.3 ms  126/126
+   20  complete    291.9 ms    307.4 ms  126/126
+
+summary
+  outcomes: complete 20
+  publication time: median 432.7 ms, p95 438.3 ms, max 438.5 ms (n=20)
+  readable by the first watcher, from the start of the publication: median 306.2 ms, p95 319.0 ms, max 374.3 ms (n=20)
+  watchers that found it within 10000 ms: 60/60
+  reads by every other node right after the publication: 2520/2520 found
+  remote read time: median 72.5 ms, p95 215.7 ms, max 222.2 ms (n=2122)
+  details: testbed/.generated/publish-wan-atlantic-20261111-114456.json

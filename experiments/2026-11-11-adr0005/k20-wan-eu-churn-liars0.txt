@@ -1,0 +1,131 @@
+churn: 600 s, a crash every 10 s among the replicas, republication every 60 s, 0 liar(s), 1 rotation(s), owner node-1, 127 nodes, k=20 (quorum 13), profile wan-eu, image auth-kademlia-testbed:adr0005-final
+  publication of version 0: complete, stored 20, newer claimed 0, unavailable 0
+  rotation to version 1: confirmed
+   time  replicas cur/old/other/none  event
+   0.0s  20/0/0/0                      
+   5.0s  20/0/0/0                      
+  10.0s  19/0/0/1                      crash node-93
+  15.0s  19/0/0/1                      
+  20.0s  18/0/0/2                      crash node-15
+  25.0s  18/0/0/2                      
+  30.0s  17/0/0/3                      crash node-68
+  35.0s  17/0/0/3                      
+  40.0s  16/0/0/4                      crash node-20
+  45.0s  16/0/0/4                      
+  50.0s  15/0/0/5                      crash node-26
+  55.0s  15/0/0/5                      
+  60.0s  20/0/0/0                      crash node-40, republish: confirmed
+  65.0s  20/0/0/0                      
+  70.0s  19/0/0/1                      crash node-22
+  75.0s  19/0/0/1                      
+  80.0s  18/0/0/2                      crash node-40
+  85.0s  18/0/0/2                      
+  90.0s  17/0/0/3                      crash node-100
+  95.0s  17/0/0/3                      
+ 100.0s  16/0/0/4                      crash node-67
+ 105.0s  16/0/0/4                      
+ 110.0s  15/0/0/5                      crash node-26
+ 115.0s  15/0/0/5                      
+ 120.0s  20/0/0/0                      crash node-40, republish: confirmed
+ 125.0s  20/0/0/0                      
+ 130.0s  19/0/0/1                      crash node-102
+ 135.0s  19/0/0/1                      
+ 140.0s  18/0/0/2                      crash node-100
+ 145.0s  18/0/0/2                      
+ 150.0s  17/0/0/3                      crash node-112
+ 155.0s  17/0/0/3                      
+ 160.0s  16/0/0/4                      crash node-18
+ 165.0s  16/0/0/4                      
+ 170.0s  16/0/0/4                      crash node-102
+ 175.0s  16/0/0/4                      
+ 180.0s  20/0/0/0                      crash node-22, republish: confirmed
+ 185.0s  20/0/0/0                      
+ 190.0s  19/0/0/1                      crash node-20
+ 195.0s  19/0/0/1                      
+ 200.0s  18/0/0/2                      crash node-21
+ 205.0s  18/0/0/2                      
+ 210.0s  17/0/0/3                      crash node-15
+ 215.0s  17/0/0/3                      
+ 220.0s  16/0/0/4                      crash node-26
+ 225.0s  16/0/0/4                      
+ 230.0s  15/0/0/5                      crash node-53
+ 235.0s  15/0/0/5                      
+ 240.0s  20/0/0/0                      crash node-102, republish: confirmed
+ 245.0s  20/0/0/0                      
+ 250.0s  19/0/0/1                      crash node-102
+ 255.0s  19/0/0/1                      
+ 260.0s  19/0/0/1                      crash node-102
+ 265.0s  19/0/0/1                      
+ 270.0s  18/0/0/2                      crash node-62
+ 275.0s  18/0/0/2                      
+ 280.0s  18/0/0/2                      crash node-102
+ 285.0s  18/0/0/2                      
+ 290.0s  17/0/0/3                      crash node-100
+ 295.0s  17/0/0/3                      
+ 300.0s  20/0/0/0                      crash node-67, republish: confirmed
+ 305.0s  20/0/0/0                      
+ 310.0s  19/0/0/1                      crash node-112
+ 315.0s  19/0/0/1                      
+ 320.0s  18/0/0/2                      crash node-102
+ 325.0s  18/0/0/2                      
+ 330.0s  17/0/0/3                      crash node-35
+ 335.0s  17/0/0/3                      
+ 340.0s  16/0/0/4                      crash node-21
+ 345.0s  16/0/0/4                      
+ 350.0s  15/0/0/5                      crash node-22
+ 355.0s  15/0/0/5                      
+ 360.0s  20/0/0/0                      crash node-40, republish: confirmed
+ 365.0s  20/0/0/0                      
+ 370.0s  19/0/0/1                      crash node-62
+ 375.0s  19/0/0/1                      
+ 380.0s  18/0/0/2                      crash node-21
+ 385.0s  18/0/0/2                      
+ 390.0s  17/0/0/3                      crash node-65
+ 395.0s  17/0/0/3                      
+ 400.0s  17/0/0/3                      crash node-21
+ 405.0s  17/0/0/3                      
+ 410.0s  17/0/0/3                      crash node-21
+ 415.0s  17/0/0/3                      
+ 420.0s  20/0/0/0                      crash node-22, republish: confirmed
+ 425.0s  20/0/0/0                      
+ 430.0s  19/0/0/1                      crash node-71
+ 435.0s  19/0/0/1                      
+ 440.0s  18/0/0/2                      crash node-102
+ 445.0s  18/0/0/2                      
+ 450.0s  17/0/0/3                      crash node-112
+ 455.0s  17/0/0/3                      
+ 460.0s  16/0/0/4                      crash node-62
+ 465.0s  16/0/0/4                      
+ 470.0s  15/0/0/5                      crash node-26
+ 475.0s  15/0/0/5                      
+ 480.0s  20/0/0/0                      crash node-76, republish: confirmed
+ 485.0s  20/0/0/0                      
+ 490.0s  19/0/0/1                      crash node-71
+ 495.0s  19/0/0/1                      
+ 500.0s  18/0/0/2                      crash node-26
+ 505.0s  18/0/0/2                      
+ 510.0s  17/0/0/3                      crash node-53
+ 515.0s  17/0/0/3                      
+ 520.0s  16/0/0/4                      crash node-35
+ 525.0s  16/0/0/4                      
+ 530.0s  15/0/0/5                      crash node-112
+ 535.0s  15/0/0/5                      
+ 540.0s  20/0/0/0                      crash node-35, republish: confirmed
+ 545.0s  20/0/0/0                      
+ 550.0s  19/0/0/1                      crash node-67
+ 555.0s  19/0/0/1                      
+ 560.0s  18/0/0/2                      crash node-71
+ 565.0s  18/0/0/2                      
+ 570.0s  18/0/0/2                      crash node-71
+ 575.0s  18/0/0/2                      
+ 580.0s  17/0/0/3                      crash node-15
+ 585.0s  17/0/0/3                      
+ 590.0s  16/0/0/4                      crash node-40
+ 595.0s  16/0/0/4                      
+
+summary
+  copies of the current version on the 20 replicas besides the owner: median 18, min 15, max 20 (n=120), last 16
+  samples below the quorum (13): 0/120
+  crashes: 59, of a replica 59
+  republications: confirmed 9
+  details: testbed/.generated/churn-wan-eu-20261111-123839.json

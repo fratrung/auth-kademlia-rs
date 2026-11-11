@@ -1,0 +1,51 @@
+publish: 40 rounds, owner node-1, 127 nodes, k=20, profile wan-eu, image auth-kademlia-testbed:adr0005-final
+round  outcome      publish  first read  reads after
+    1  complete    578.4 ms     64.3 ms  126/126
+    2  complete    576.0 ms     63.2 ms  126/126
+    3  complete    592.2 ms     62.4 ms  126/126
+    4  complete    172.1 ms     69.6 ms  126/126
+    5  complete    579.1 ms     65.1 ms  126/126
+    6  complete   1095.2 ms    572.4 ms  126/126
+    7  complete    576.5 ms     62.8 ms  126/126
+    8  complete    185.4 ms     72.4 ms  126/126
+    9  complete    160.5 ms     62.7 ms  126/126
+   10  complete    189.4 ms     61.5 ms  126/126
+   11  complete    577.3 ms     74.5 ms  126/126
+   12  complete    142.5 ms     63.7 ms  126/126
+   13  complete    198.0 ms     69.0 ms  126/126
+   14  complete    182.2 ms     68.4 ms  126/126
+   15  complete    150.2 ms    106.1 ms  126/126
+   16  complete    145.5 ms     76.6 ms  126/126
+   17  complete    152.1 ms     68.5 ms  126/126
+   18  complete    172.4 ms     69.0 ms  126/126
+   19  complete    176.7 ms     70.6 ms  126/126
+   20  complete    130.3 ms     61.7 ms  126/126
+   21  complete    156.0 ms     60.9 ms  126/126
+   22  complete    140.9 ms     64.3 ms  126/126
+   23  complete    215.2 ms    119.1 ms  126/126
+   24  complete    147.6 ms     64.1 ms  126/126
+   25  complete    153.6 ms     61.2 ms  126/126
+   26  complete    624.5 ms    129.4 ms  126/126
+   27  complete    187.7 ms    109.6 ms  126/126
+   28  complete    163.3 ms     83.5 ms  126/126
+   29  complete    176.3 ms    114.8 ms  126/126
+   30  complete    655.4 ms     72.2 ms  126/126
+   31  complete    108.9 ms     72.1 ms  126/126
+   32  complete    308.6 ms    110.8 ms  126/126
+   33  complete    141.9 ms     72.0 ms  126/126
+   34  complete    270.8 ms    172.8 ms  126/126
+   35  complete    180.3 ms     81.3 ms  126/126
+   36  complete    279.1 ms    203.2 ms  126/126
+   37  complete    128.1 ms     61.8 ms  126/126
+   38  complete    135.8 ms     77.7 ms  126/126
+   39  complete    145.7 ms     38.1 ms  126/126
+   40  complete    147.0 ms     67.4 ms  126/126
+
+summary
+  outcomes: complete 40
+  publication time: median 176.5 ms, p95 624.5 ms, max 1095.2 ms (n=40)
+  readable by the first watcher, from the start of the publication: median 69.3 ms, p95 172.8 ms, max 572.4 ms (n=40)
+  watchers that found it within 10000 ms: 120/120
+  reads by every other node right after the publication: 5040/5040 found
+  remote read time: median 15.8 ms, p95 22.2 ms, max 519.6 ms (n=4244)
+  details: testbed/.generated/publish-wan-eu-20261111-114947.json

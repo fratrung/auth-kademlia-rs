@@ -1,0 +1,217 @@
+{
+  "config": {
+    "nodes": 127,
+    "k": 20,
+    "alpha": 3,
+    "seeds": 3,
+    "subnet": "10.213",
+    "profile": "wan-eu",
+    "delay_ms": 6.8,
+    "jitter_ms": 0.0,
+    "loss_pct": 0.0,
+    "cpus": null,
+    "image": "auth-kademlia-testbed:adr0005-final"
+  },
+  "rounds": [
+    {
+      "victim": "node-5",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-5",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-36",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-25",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-39",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 18,
+      "others": 18,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-49",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-43",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-55",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 18,
+      "others": 18,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-53",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-81",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-70",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-66",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-106",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 18,
+      "others": 18,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-64",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-79",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-93",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-87",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-110",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-118",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-127",
+      "before": "empty",
+      "update": "confirmed",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    }
+  ]
+}

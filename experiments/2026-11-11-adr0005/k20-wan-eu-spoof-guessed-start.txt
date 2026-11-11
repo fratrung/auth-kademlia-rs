@@ -1,0 +1,1 @@
+[2026-11-11T11:24:28Z INFO  testbed_attacker] attacker (spoof): 64 answers claiming a version far ahead for each FindHash between nodes on 10.213.0.0/16, from the node asked, under random ids

@@ -2,17 +2,14 @@
 
 This file collects the experiments that validate how AuthKademlia nodes and the
 DHT behave, run on the Docker testbed (`testbed/`) against the current code:
-how fast a record is published and read, what it costs in traffic, and what an
-attacker who reads the network can achieve. The measurements that led to fixes
-are in `testbed/README.md` and in the commit history; they are not repeated
-here.
+how fast a record is published, rotated and read, what it costs in traffic,
+and what an attacker who reads the network can achieve. The measurements that
+led to fixes are in `testbed/README.md` and in the commit history; they are not
+repeated here.
 
 Each experiment states the question it answers, how it is run, what is
-measured, the results and how to read them.
-
-**The results predate ADR 0003 and ADR 0004**: they were measured with
-Dilithium-2 records and 160-bit ids. E1 and E2 must be measured again with
-ML-DSA-65 records and 256-bit ids (section 1).
+measured, the results and how to read them. The raw data of every run is in
+`experiments/2026-11-11-adr0005/` (section 1).
 
 ## Contents
 
@@ -20,26 +17,31 @@ ML-DSA-65 records and 256-bit ids (section 1).
 2. [What is measured](#2-what-is-measured)
 3. [E1. Publication and read latency](#3-e1-publication-and-read-latency)
 4. [E2. Traffic per publication and per read](#4-e2-traffic-per-publication-and-per-read)
-5. [E3. The empty-replica check and resends](#5-e3-the-empty-replica-check-and-resends)
-6. [A1. Race and burst attacks on a restarted replica](#6-a1-race-and-burst-attacks-on-a-restarted-replica)
-7. [A2. Persistent attacker and restarts](#7-a2-persistent-attacker-and-restarts)
-8. [Summary](#8-summary)
-9. [How to reproduce](#9-how-to-reproduce)
+5. [E3. The empty-replica check](#5-e3-the-empty-replica-check)
+6. [E4. Rotation and a replica restarted empty](#6-e4-rotation-and-a-replica-restarted-empty)
+7. [A1. Race and burst attacks on a restarted replica](#7-a1-race-and-burst-attacks-on-a-restarted-replica)
+8. [A2. Persistent attacker and restarts](#8-a2-persistent-attacker-and-restarts)
+9. [A3. A forged version 1 right after version 0](#9-a3-a-forged-version-1-right-after-version-0)
+10. [A4. Nodes that lie in `FindHash`](#10-a4-nodes-that-lie-in-findhash)
+11. [A5. Spoofed answers under guessed message ids](#11-a5-spoofed-answers-under-guessed-message-ids)
+12. [L1. Copies over time with churn and liars](#12-l1-copies-over-time-with-churn-and-liars)
+13. [Summary](#13-summary)
+14. [How to reproduce](#14-how-to-reproduce)
 
 ## 1. Environment
 
-**Code.** Commit `fc79016` (an empty replica asks all the nodes it knows at
-once) with the counters of `src/counters.rs`, which only count. Testbed image
-`auth-kademlia-testbed:o2-counters`, release build, Rust 1.98.1. For the
-before/after comparisons, commit `e383d17`, the same code without `fc79016`.
-All runs on 2026-11-04.
+**Code.** ADR 0005 (self-certifying DIDs, a pre-rotated chain of versions),
+branch `feat/self-certifying-did-and-pre-rotation`, testbed image
+`auth-kademlia-testbed:adr0005-final`. For the comparisons, `main` at
+`424b76f` (ADR 0004: UUID DIDs, updates authorized by an `auth_signature`),
+image `auth-kademlia-testbed:main-424b76f`. Both are release builds with
+Rust 1.98.1 and the counters of `src/counters.rs`, which only count. All runs
+on 2026-11-11.
 
-**Records since ADR 0003.** These runs used Dilithium-2 records, about 6 KB in
-5 fragments. Records are now signed with ML-DSA-65 and carry no KEM key: about
-6.5 KB, still 5 fragments, with a slower verification. E1 (latency) and E2
-(traffic) must be measured again; A1 and A2 are not expected to change. Since
-ADR 0004 ids and keys are 256 bits, 12 bytes more each in every message. Until
-then the numbers below describe the Dilithium-2 code with 160-bit ids.
+**Records.** ML-DSA-65 (ADR 0003), 256-bit ids and keys (ADR 0004). A version
+0 is about 6.5 KB, a later version about 6.6 KB (it adds `prev`), 5 fragments
+each. On `main` an UPDATE also carries the 3309-byte `auth_signature`: 8
+fragments; on the branch it carries the record only: 5 fragments.
 
 **Host.** AMD Ryzen 7 4800H (8 cores, 16 threads), 15 GB RAM, Linux 7.0,
 Docker 29.9.2. All containers share the host's CPU and kernel; no CPU limit
@@ -49,8 +51,8 @@ per container.
 30 nodes: the neighbour table (`gc_thresh1..3` = 4096, 16384, 32768) and the
 per-CPU receive backlog (`net.core.netdev_max_backlog` = 16384). With the
 default backlog the host drops datagrams between containers without any
-emulated loss; every run here was checked to have no such drop (second column
-of `/proc/net/softnet_stat`, before and after each run).
+emulated loss; every run records the drops of the host (second column of
+`/proc/net/softnet_stat`, before and after the run) in `runner.log`.
 
 **Network.** One node per container. `tc netem` delays each container's
 egress, so a request and its answer cross two delays.
@@ -64,14 +66,20 @@ egress, so a request and its answer cross two delays.
 Loss, when set, applies per direction. 0.5% is Verizon's delivery target (at
 least 99.5% of packets).
 
-**Nodes.** 3 seeds; every node bootstraps from them. A record is a DID
-Document signed with Dilithium-2, about 6 KB, sent in 5 fragments. Node ids
-are derived from container names; storage is in memory, so a restarted node is
-empty.
+**Nodes.** 3 seeds; every node bootstraps from them. Node ids are derived from
+container names; storage is in memory, so a restarted node is empty. Unless an
+experiment says otherwise: 127 nodes, `k` = 20, `alpha` = 3, owner `node-1`.
+With `k` = 20 an empty replica asks the other 19 and needs 13 votes
+(`store_quorum`).
 
-**Sample sizes.** 20 publications per configuration, 40 with loss; attacks 20
-rounds. A p95 over 20 samples is the 19th value: read it as "the slowest
-publications", not as a precise percentile.
+**Sample sizes.** 20 rounds per configuration, 40 with loss, 10 for the
+counter runs of rotations. A p95 over 20 samples is the 19th value: read it as
+"the slowest rounds", not as a precise percentile.
+
+**Data.** `experiments/2026-11-11-adr0005/` holds `run_experiments.sh`, which
+ran every step below one after the other with one network at a time, its log
+with the host drops of each step, and for each step what it printed and the
+data of every round (JSON). Its `README.md` explains the file names.
 
 ## 2. What is measured
 
@@ -82,65 +90,56 @@ publications", not as a precise percentile.
 | Readable by the first watcher | Three other nodes read the DID in a loop from 0.5 s before the publication; time from the start of the publication to the first successful read (containers share the host clock) |
 | Reads right after | Every other node reads the DID once after the publication |
 | Remote read time | `Server::get` on a node without a local copy |
+| Rotation time | `Server::update` timed inside the owner, from the call to the confirmation, the replay to replicas that miss versions included |
+| What a replica holds | By the signing key of its record: the current version, an older one, another record (forged), or nothing |
 | Traffic | Datagrams and bytes sent by all nodes, by message type, from the counters (`ctl <node> counters`). Bytes are UDP payloads including the 12-byte KADF header, without IP, UDP and Ethernet headers (42 bytes per datagram on Ethernet) |
-| Check | For each STORE to an empty replica: outcome, rounds of its lookup, duration |
+| Check | For each STORE to an empty replica: how it ended, rounds of its lookup, duration; on the branch also the checks that fetched the version before (R5), with their whole duration |
 | Resends | Requests sent again, split by whether the peer's round trip was measured when the request was first sent |
 
-Reading the counters runs `docker exec` in all 127 containers just before each
-publication, which loads the host. Latency (E1) is therefore measured in
-separate runs without counters; the publication times of the counter runs (E2,
-E3) are not used as latency.
+Reading the counters runs `docker exec` in all 127 containers just before and
+after each operation, which loads the host. Latency (E1, E4) is therefore
+measured in separate runs without counters; the times of the counter runs are
+not used as latency.
 
 ## 3. E1. Publication and read latency
 
 **Question.** How long does a first publication take in a network of 127
-nodes, and can every other node read the record right after?
+nodes, can every other node read the record right after, and does ADR 0005
+change it?
 
-**Setup.** 127 nodes, `k` = 20, `alpha` = 3. The owner (`node-1`) publishes a
-new DID each round.
+**Setup.** The owner publishes a new DID each round (version 0), 20 rounds (40
+with loss), on each profile, on both images.
 
 **Results.** Every publication was `complete` and every read right after found
-the record.
+the record, on both images.
 
-| Profile | Publication, median (p95) | First watcher, median (p95) | Reads right after | Remote read, median (p95) |
-|---|---|---|---|---|
-| LAN | 7.8 ms (11.4) | 6.0 ms (7.9) | 2520/2520 | 1.8 ms (6.5) |
-| WAN Europe | 84.8 ms (93.3) | 64.0 ms (69.2) | 2520/2520 | 15.6 ms (45.8) |
-| WAN Trans-Atlantic | 401 ms (440) | 299 ms (309) | 2520/2520 | 72.2 ms (216) |
-| WAN Europe, 0.5% loss, 40 rounds | 164 ms (591, max 1581) | 68.3 ms (115) | 5040/5040 | 15.5 ms (20.7) |
+| Profile | Image | Publication, median (p95) | First watcher, median (p95) | Reads right after | Remote read, median (p95) |
+|---|---|---|---|---|---|
+| LAN | `main` | 7.8 ms (10.4) | 6.0 ms (7.8) | 2520/2520 | 1.7 ms (6.9) |
+| LAN | ADR 0005 | 9.0 ms (11.0) | 6.3 ms (8.1) | 2520/2520 | 1.9 ms (7.0) |
+| WAN Europe | `main` | 88.4 ms (93.5) | 62.3 ms (69.8) | 2520/2520 | 15.6 ms (45.3) |
+| WAN Europe | ADR 0005 | 90.8 ms (97.9) | 64.5 ms (80.4) | 2520/2520 | 16.1 ms (46.3) |
+| WAN Trans-Atlantic | `main` | 419 ms (440) | 300 ms (308) | 2520/2520 | 72.2 ms (215) |
+| WAN Trans-Atlantic | ADR 0005 | 433 ms (438) | 306 ms (319) | 2520/2520 | 72.5 ms (216) |
+| WAN Europe, 0.5% loss, 40 rounds | `main` | 158 ms (592, max 1080) | 68.5 ms (119) | 5040/5040 | 15.6 ms (26.7) |
+| WAN Europe, 0.5% loss, 40 rounds | ADR 0005 | 177 ms (625, max 1095) | 69.3 ms (173) | 5040/5040 | 15.8 ms (22.2) |
 
 **Reading.**
-- On WAN a publication takes about 6 round trips (Europe 6.2, Trans-Atlantic
-  5.7): the owner's lookup, the STORE, and in between each replica's check,
-  which takes one or two more (E3). In LAN, with round trips of about
-  0.16 ms, the time is mostly processing, including a Dilithium verification
-  at each replica (about 5 ms on x86).
-- The record is readable before the owner's call returns: the first watcher
-  finds it one to one and a half round trips earlier, once the first replicas
-  store it.
-- A remote read takes about one round trip in the median: one round of three
-  requests reaches a holder. The p95 of about three round trips is a read that
-  needs one or two more hops.
-- Under 0.5% loss nothing failed, but the slowest publications take 0.5 to
-  1.6 s. The values cluster near 0.57 s and 1.1 s, about one and two waits of
-  500 ms: the wait before resending a request to a peer whose round trip has
-  not been measured yet. This is consistent with the resend rules, not yet
-  attributed message by message.
-
-**Effect of asking all close nodes at once (`fc79016`).** Same session,
-images alternated per profile, no host drops:
-
-| Profile | Before (`e383d17`) | After (`fc79016`) |
-|---|---|---|
-| LAN, median (p95) | 8.2 ms (10.1) | 7.8 ms (11.4) |
-| WAN Europe, median (p95) | 87.2 ms (123.3) | 84.8 ms (93.3) |
-| WAN Europe, first watcher, median | 77.3 ms | 64.0 ms |
-| WAN Trans-Atlantic, median (p95) | 504 ms (513) | 401 ms (440) |
-| WAN Europe 0.5% loss, median (p95) | 183 ms (1151) | 164 ms (591) |
-
-The gain grows with the round-trip time: about 100 ms, one and a half round
-trips, across the Atlantic; little on the European median, more on its slowest
-publications.
+- ADR 0005 leaves a first publication about as fast as before on WAN: 3%
+  slower in the medians (2.4 ms in Europe, 14 ms across the Atlantic). In LAN,
+  where the time is mostly processing, it is 1.2 ms slower (15%). Each replica
+  now checks the form of version 0 before asking (canonical JSON, the hash of
+  the hashed form); the difference is not attributed further. Under loss the medians differ by 18 ms within a spread
+  of hundreds of milliseconds made of resends.
+- On WAN a publication still takes about 6 round trips (Europe 6.7,
+  Trans-Atlantic 6.1): the owner's lookup, the STORE, and in between each
+  replica's check (E3). The record is readable one to one and a half round
+  trips before the owner's call returns.
+- A remote read takes about one round trip in the median, on both images: a
+  read is unchanged by ADR 0005.
+- Against the results before ADR 0003 and 0004 (Dilithium-2, 160-bit ids):
+  LAN 7.8 ms, WAN Europe 84.8, Trans-Atlantic 401, with loss 164. ML-DSA-65
+  records and 256-bit ids cost little in time.
 
 ## 4. E2. Traffic per publication and per read
 
@@ -149,127 +148,193 @@ remote read cost?
 
 **Setup.** As E1, with `--watchers 0 --counters`: no node reads during the
 publication, and the counters of every node are read before the publication,
-0.3 s after it, and after the reads that follow.
+0.3 s after it, and after the reads that follow. LAN, WAN Europe and WAN Europe
+with 0.5% loss, both images.
 
 **Results.** Medians per publication, all nodes together.
 
-| Message | LAN | WAN Europe | WAN Europe, 0.5% loss |
-|---|---|---|---|
-| `Store` (owner to replicas) | 120.3 KiB, 100 | 120.3 KiB, 100 | 132.3 KiB, 110 |
-| `FindHash` (check questions) | 24.4 KiB, 410 | 24.2 KiB, 406 | 24.3 KiB, 408 |
-| `FindValueNodes` (answers with closer nodes) | 357.5 KiB, 409 | 373.1 KiB, 426 | 366.2 KiB, 420 |
-| `FindHashHit` (answers with a hash) | 1.0 KiB, 20 | 0, 0 | 0.3 KiB, 6 |
-| `FindValue` (owner's lookup) | 1.2 KiB, 20 | 1.2 KiB, 20 | 1.2 KiB, 20 |
-| `Received`, `StoreResult` | 0.9 KiB, 40 | 0.9 KiB, 40 | 1.0 KiB, 42 |
-| **Total** | **503 KiB, 999 datagrams** | **520 KiB, 993** | **526 KiB, 1014** |
+| Message | LAN `main` | LAN ADR 0005 | WAN Europe `main` | WAN Europe ADR 0005 | 0.5% loss `main` | 0.5% loss ADR 0005 |
+|---|---|---|---|---|---|---|
+| `Store` (owner to replicas) | 128.8 KiB, 100 | 130.8 KiB, 100 | 128.8 KiB, 100 | 130.8 KiB, 100 | 135.3 KiB, 105 | 137.4 KiB, 105 |
+| `FindHash` (check questions) | 33.2 KiB, 400 | 33.2 KiB, 400 | 33.2 KiB, 400 | 33.3 KiB, 401 | 33.6 KiB, 405 | 33.5 KiB, 404 |
+| `FindValueNodes` (answers with closer nodes) | 454.5 KiB, 411 | 447.0 KiB, 403 | 465.3 KiB, 420 | 465.7 KiB, 420 | 460.7 KiB, 416 | 463.4 KiB, 418 |
+| `FindHashHit` (answers with a hash) | 0.7 KiB, 14 | 1.0 KiB, 17 | 0, 0 | 0, 0 | 0.5 KiB, 9 | 0.8 KiB, 14 |
+| `FindValue` (owner's lookup) | 1.7 KiB, 20 | 1.7 KiB, 20 | 1.7 KiB, 20 | 1.7 KiB, 20 | 1.7 KiB, 20 | 1.7 KiB, 20 |
+| **Total** (with `Received`, `StoreResult`) | **620 KiB, 980 datagrams** | **615 KiB, 980** | **630 KiB, 980** | **632 KiB, 982** | **629 KiB, 993** | **632 KiB, 994** |
 
 A remote read, averaged over about 2100 reads per run (4200 with loss):
 
 | | LAN | WAN Europe | WAN Europe, 0.5% loss |
 |---|---|---|---|
-| Total | 16.6 KiB, 17.2 datagrams | 15.8 KiB, 16.6 | 16.2 KiB, 16.8 |
-| of which `FindValueHit` (records) | 15.8 KiB, 13.2 | 14.9 KiB, 12.4 | 15.4 KiB, 12.9 |
+| `main` | 18.2 KiB, 17.1 datagrams | 18.1 KiB, 17.0 | 18.9 KiB, 17.6 |
+| ADR 0005 | 18.5 KiB, 17.1 | 18.6 KiB, 17.2 | 19.1 KiB, 17.6 |
 
 A read served from a local copy sends nothing.
 
 **Reading.**
-- About 70% of a first publication's bytes are the answers to the replicas'
-  checks. At a first publication no node holds the record, so each node asked
-  answers with its 20 closest contacts (about 900 bytes) instead of a 32-byte
-  hash, and each of the 20 replicas asks about 20 nodes. The replica already
-  knows most of those contacts.
-- The 20 STOREs are the record itself, 6 KB to each replica: 120 KiB that no
-  change to the check can remove.
+- A first publication costs the same on both images, about 630 KiB and 980
+  datagrams at `k` = 20. Version 0 is about 100 bytes larger (`seq` and
+  `nextKeyHash`): 2 KiB more in the 20 STOREs.
+- About 73% of the bytes are the answers to the replicas' checks: at a first
+  publication no node holds the record, so each node asked answers with its
+  20 closest contacts instead of a hash, and each of the 20 replicas asks about
+  20 nodes. Against the runs before ADR 0003 and 0004 (503 KiB), these answers
+  grew with 256-bit ids (357 to about 460 KiB) and the STOREs with ML-DSA-65
+  records (120 to about 130 KiB).
 - A remote read sends three requests at once (`alpha`), and two or three
-  holders answer with the whole record before the reader takes the first valid one and
-  cancels the rest.
-- Loss adds little traffic: resends are mostly small `FindHash` questions; a
-  STORE is sent again in full (10 more datagrams per publication, about two
-  STOREs).
+  holders answer with the whole record before the reader takes the first valid
+  one and cancels the rest.
 
-## 5. E3. The empty-replica check and resends
+## 5. E3. The empty-replica check
 
-**Question.** How many rounds and how long does an empty replica's check take,
-and how often are requests sent again?
+**Question.** How does the check of an empty replica end, how many rounds and
+how long does it take, and on the branch, how long does it take when it must
+fetch the version before (R5)? ADR 0005 requires that check, fetch included,
+to fit within `STORE_LOOKUP_TIMEOUT` (2 s) on the WAN profiles.
 
-**Setup.** The counter runs of E2.
+**Setup.** The counter runs of E2 (checks of version 0, R2) and of E4 (checks
+of a later version at a replica restarted empty, R5), on every profile.
 
-**Results.** All checks ended `none_or_same` (no node held another record).
+**Results: version 0 (R2), the publications of E2.** Every check ended
+`none_or_same` on `main` and `accepted` with ADR 0005: no node held another
+record.
 
-| | LAN | WAN Europe | WAN Europe, 0.5% loss |
-|---|---|---|---|
-| Checks | 395 | 395 | 795 |
-| Lookup in 1 round / 2 rounds / more | 243 / 152 / 0 | 267 / 128 / 0 | 660 / 135 / 0 |
-| Mean duration | 4.0 ms | 29.7 ms | 59.9 ms |
-| Checks over 500 ms | 0 | 0 | 22 (17 up to 1 s, 5 up to 2 s) |
-| Resends to measured / never measured peers | 0 / 0 | 30 / 0 | 417 / 24 |
+| | LAN `main` | LAN ADR 0005 | WAN Europe `main` | WAN Europe ADR 0005 | 0.5% loss `main` | 0.5% loss ADR 0005 |
+|---|---|---|---|---|---|---|
+| Checks | 400 | 398 | 399 | 397 | 793 | 794 |
+| Lookup in 1 round / 2 rounds / more | 381 / 19 / 0 | 378 / 20 / 0 | 389 / 10 / 0 | 376 / 21 / 0 | 781 / 12 / 0 | 770 / 24 / 0 |
+| Mean duration | 3.9 ms | 4.7 ms | 26.3 ms | 27.6 ms | 40.7 ms | 41.0 ms |
+| Resends to measured / never measured peers | 0 / 0 | 0 / 0 | 41 / 0 | 15 / 0 | 547 / 2 | 454 / 4 |
+
+**Results: a later version (R5), the counter runs of E4.** Each round one
+replica restarted empty checks the version the owner's rotation sends it. ADR
+0005 only, 10 rounds per profile; `main` has no such check.
+
+| | LAN | WAN Europe | WAN Trans-Atlantic | WAN Europe, 0.5% loss |
+|---|---|---|---|---|
+| Checks, all `accepted` | 10 | 10 | 10 | 10 |
+| Checks that fetched version N−1 | 2, all within 10 ms | 3, all within 100 ms | 1, within 500 ms | 0 |
+| Mean lookup duration | 1.7 ms | 44.1 ms | 151 ms | 152 ms |
 
 **Reading.**
-- No lookup needed more than two rounds: a replica asks every node it knows
-  at once, and a second round only for closer nodes it learned from the
-  answers.
-- In WAN Europe without loss a check takes about two round trips on average.
-- Without loss there are still 30 resends in 20 publications in WAN Europe:
-  answers that came later than three round trips of that peer, the shortest
-  wait the resend rule allows. In LAN there are none.
-- With loss, few resends go to peers never measured (24 in 40 publications),
-  but each costs at least 500 ms; they are the likely source of the slow
-  publications in E1.
+- The check of a version 0 behaves as before: one round, sometimes two, about
+  two round trips in WAN Europe.
+- **The check of a later version fits within `STORE_LOOKUP_TIMEOUT` (2 s)** on
+  every profile, with its fetch: at most 500 ms across the Atlantic, where a
+  round trip is 70 ms. ADR 0005 asked to stop and ask before changing the
+  timeout if it did not fit; it fits. The samples are few (6 fetches); A4 adds
+  the checks of 20 more rounds in WAN Europe.
+- A check fetches version N−1 only when some node asked still holds it. Most
+  checks find the other replicas already on version N, which vote for it
+  without a fetch.
 
-## 6. A1. Race and burst attacks on a restarted replica
+## 6. E4. Rotation and a replica restarted empty
+
+**Question.** How long does a rotation take, what does it cost, and is a
+replica that restarted empty filled with the new version? On `main` such a
+replica refused the owner's STORE of the new version while the old one was
+still on other replicas (the known gap that ADR 0005 closes).
+
+**Setup.** Each round the owner publishes a new DID; one replica holding it
+crashes and restarts empty; the owner rotates its key (`update`). 20 rounds
+per profile without counters (time), 10 with counters (traffic, checks),
+both images.
+
+**Results.** Every rotation was confirmed, and every replica that did not
+restart and every read by the other 126 nodes had the new version, on both
+images.
+
+| Profile | Image | Rotation, median (p95) | Restarted replica holds the new version, timing runs | The same, counter runs |
+|---|---|---|---|---|
+| LAN | `main` | 6.4 ms (7.4) | 16/20 | 7/10 |
+| LAN | ADR 0005 | 5.7 ms (6.8) | **20/20** | **10/10** |
+| WAN Europe | `main` | 122 ms (127) | 18/20 | 6/10 |
+| WAN Europe | ADR 0005 | 109 ms (122) | **20/20** | **10/10** |
+| WAN Trans-Atlantic | `main` | 579 ms (583) | 19/20 | 8/10 |
+| WAN Trans-Atlantic | ADR 0005 | 509 ms (579) | **20/20** | **10/10** |
+| WAN Europe, 0.5% loss | `main` | 122 ms (211) | 9/20 | 3/10 |
+| WAN Europe, 0.5% loss | ADR 0005 | 178 ms (255) | **20/20** | **10/10** |
+
+On `main` the restarted replica stayed empty in 34 of 120 rounds; its check
+ended `other` in 16 of the 40 counter rounds: another replica still held the
+old version, so it refused the new one (the known gap). With ADR 0005 it held
+the new version in 120 of 120.
+
+Traffic per rotation, counter runs, medians, all nodes together:
+
+| | `main` | ADR 0005 |
+|---|---|---|
+| `Update` | 194.3 KiB, 160 datagrams | 131.9 KiB, 100 datagrams |
+| `Update` datagrams per `UpdateResult` | 8.00 (8.53 with loss) | 5.00 (5.05 with loss) |
+| The owner's read of a copy first (`FindValue`, `FindValueHit`) | 16.1 KiB, 15 datagrams | none |
+| **Total**, LAN / WAN Europe / Trans-Atlantic / 0.5% loss | 247 / 248 / 247 / 253 KiB | 170 / 170 / 168 / 171 KiB |
+
+**Reading.**
+- **The known gap is closed.** A replica that restarted empty gets the new
+  version every time: the owner's UPDATE gets `MissingPrevious`, and its
+  STORE of the new version passes R5 at once, since the other replicas
+  already hold it or its predecessor.
+- **A rotation costs about 31% less traffic**, 170 KiB instead of 247: an
+  UPDATE carries the record only, 5 fragments instead of 8, and the owner no
+  longer reads a copy before sending.
+- A rotation takes about as long, or less, without loss. Under loss its median
+  is 56 ms longer: the owner now fills the restarted replica every time, a
+  check and a STORE more, where on `main` the replica stayed empty in 11 of 20
+  rounds.
+
+## 7. A1. Race and burst attacks on a restarted replica
 
 **Question.** Can an attacker that reads all traffic get a forged record onto
-a replica that has just restarted empty, by racing the owner's record after an
-UPDATE?
+a replica that has just restarted empty, by racing the owner after an UPDATE?
 
-**Setup.** 10 nodes, `k` = 3, `alpha` = 3. The attacker runs in the host's
-network namespace: it sees every container's packets and can send its own,
-but cannot change or drop the owner's. It signs a document of its own for the
-DID it sees, so the forged record passes the signature check. No extra delay.
+**Setup.** The attacker runs in the host's network namespace: it sees every
+container's packets and can send its own, but cannot change or drop the
+owner's. Since ADR 0005 it forges a version with the owner's DID and the
+`prev` of the version it saw, self-signed with a key of its own, which no
+version committed to. No extra delay. 10 nodes, `k` = 3 (as before ADR 0005),
+then 127 nodes, `k` = 20, WAN Europe.
 
 **Procedure.** Each round: the owner publishes a new DID; one of its replicas
-crashes and restarts empty; the owner rotates its keys (UPDATE). The replica
-without the record refuses the UPDATE, and the owner then sends it the new
-record as a STORE. In `race` mode the attacker sends one forged STORE to that
-replica as soon as it sees the UPDATE; in `burst` mode 64 at once from 16
-ports.
+crashes and restarts empty; the owner rotates its keys (UPDATE). In `race`
+mode the attacker sends one forged STORE to the replica as soon as it sees the
+UPDATE; in `burst` mode 64 at once from 16 ports.
 
-**Results.** 20 rounds each.
+**Results.** 20 rounds each. On the branch the restarted replica was empty
+before the update in every round.
 
-| Network, mode | Attacker wins | Restarted replica holds the owner's record / stays empty | Owner's update | Other replicas intact | Plain reads returning a forged record | Forged STOREs answered |
-|---|---|---|---|---|---|---|
-| LAN, race | 0/20 | 14 / 6 | confirmed 20/20 | 36/36 | 0/60 | 56, all `Conflict` |
-| WAN Europe, race | 0/20 | 9 / 11 | confirmed 20/20 | 29/29 | 0/60 | 49, all `Conflict` |
-| WAN Trans-Atlantic, race | 0/20 | 13 / 7 | confirmed 20/20 | 33/33 | 0/60 | 53, all `Conflict` |
-| WAN Europe, burst | 0/20 | 17 / 3 | confirmed 20/20 | 37/37 | 0/60 | 3648, all `Conflict` |
+| Network, mode | Image | Attacker wins | Restarted replica holds the owner's record / stays empty | Owner's update | Other replicas intact | Plain reads returning a forged record | Forged STOREs answered |
+|---|---|---|---|---|---|---|---|
+| 10 nodes, LAN, race | ADR 0005 | 0/20 | 20 / 0 | confirmed 20/20 | 31/31 | 0/60 | 51, all `Conflict` |
+| 10 nodes, WAN Europe, race | `main` | 0/20 | 15 / 5 | confirmed 20/20 | 35/35 | 0/60 | |
+| 10 nodes, WAN Europe, race | ADR 0005 | 0/20 | 20 / 0 | confirmed 20/20 | 35/35 | 0/60 | 55, all `Conflict` |
+| 10 nodes, WAN Trans-Atlantic, race | ADR 0005 | 0/20 | 20 / 0 | confirmed 20/20 | 38/38 | 0/60 | 58, all `Conflict` |
+| 10 nodes, WAN Europe, burst | `main` | 0/20 | 14 / 6 | confirmed 20/20 | 34/34 | 0/60 | |
+| 10 nodes, WAN Europe, burst | ADR 0005 | 0/20 | 20 / 0 | confirmed 20/20 | 36/36 | 0/60 | 3584, all `Conflict` |
+| 127 nodes, WAN Europe, race | ADR 0005 | 0/20 | 20 / 0 | confirmed 20/20 | 377/377 | 0/60 | 357, all `Conflict` |
+| 127 nodes, WAN Europe, burst | ADR 0005 | 0/20 | 20 / 0 | confirmed 20/20 | 379/379 | 0/60 | 20,928, all `Conflict` |
 
-The attacker sent its forged STORE 0.3 to 0.7 ms (median) after seeing the
-UPDATE, while the owner needs one more round trip to send its own.
-
-Before and after `fc79016`, WAN Europe, race, 40 rounds each in the same
-session: the restarted replica held the owner's record 27/40 before and 30/40
-after, and stayed empty 13/40 and 10/40; the attacker won 0/40 in both, and
-no plain read (0/120) returned a forged record. Asking all close nodes at once
-does not leave the replica empty more often: the 11/20 in the table is within
-the spread of 20-round runs.
+The `main` rows are the baseline of 2026-11-11 (the answers the attacker got
+were in its log, which was not kept). The attacker sent its forged STORE 0.4 to
+2.2 ms (median) after seeing the UPDATE.
 
 **Reading.**
-- No forged record was stored. The restarted replica asks the other replicas,
-  which hold the owner's record, and refuses the forged one without verifying
-  its signature.
-- The restarted replica often stays empty. While another replica still holds
-  the previous version of the record, the owner's STORE of the new one gets
-  `Conflict` too (a known gap, `DESIGN.md` section 7). The replica is refilled
-  by the hourly republication.
+- No forged version was stored, on either image. A forged version N carries
+  the owner's `prev` but a key that version N−1 did not commit to: the empty
+  replica either hears another version N from the other replicas, or fetches
+  version N−1 and finds it commits to another key.
+- **The restarted replica now always gets the owner's version**: 20 of 20 in
+  every network, against 15 and 14 of 20 on `main`, where it stayed empty
+  while another replica still held the old version (the known gap, E4).
 
-## 7. A2. Persistent attacker and restarts
+## 8. A2. Persistent attacker and restarts
 
 **Question.** What does an attacker achieve that sends forged records for
 every DID it sees, to every node, all the time?
 
-**Setup.** 10 nodes, `k` = 3, WAN Europe. In `persist` mode the attacker learns
-DIDs from the STOREs and UPDATEs it sees and, every 100 ms, sends a forged
-STORE for each DID seen in the last 20 s to every node.
+**Setup.** In `persist` mode the attacker learns DIDs from the STOREs and
+UPDATEs it sees and, every 100 ms, sends a forged STORE for each DID seen in
+the last 20 s to every node. 10 nodes, `k` = 3, WAN Europe, then 127 nodes,
+`k` = 20, WAN Europe.
 
 **Procedure.** Each round: the owner publishes a new DID; after 0.5 s one of
 its replicas crashes and restarts empty; 3 s later the script reads what the
@@ -279,92 +344,253 @@ first.
 
 **Results.** 20 rounds each.
 
-| | Restarted replica: owner's / forged / empty | Owner's publication | Nodes holding a forged record | Plain reads returning it |
-|---|---|---|---|---|
-| No attacker | 0 / 0 / 20 | complete 20/20 | 0/180 | 0/60 |
-| Persistent attacker | 0 / 1 / 19 | complete 19, rejected 1 | 6/180, all in one round | 3/60, all in that round |
+| Network | Image | Restarted replica: owner's / forged / empty | Owner's publication | Nodes holding a forged record | Plain reads returning it |
+|---|---|---|---|---|---|
+| 10 nodes, no attacker | `main` | 0 / 0 / 20 | complete 20/20 | 0/180 | 0/60 |
+| 10 nodes, persistent attacker | `main` | 0 / 0 / 20 | complete 20/20 | 0/180 | 0/60 |
+| 10 nodes, no attacker | ADR 0005 | 0 / 0 / 20 | complete 20/20 | 0/180 | 0/60 |
+| 10 nodes, persistent attacker | ADR 0005 | 0 / 0 / 20 | complete 20/20 | 0/180 | 0/60 |
+| 127 nodes, no attacker | ADR 0005 | 0 / 0 / 20 | complete 20/20 | 0/2520 | 0/60 |
+| 127 nodes, persistent attacker | ADR 0005 | 0 / 0 / 20 | complete 20/20 | 0/2520 | 0/60 |
 
-The attacker's STOREs over the run were answered `Conflict` 27,515 times,
-`AlreadyStored` 1613, not answered 189 (most likely refused because a node did
-not answer the check, or because the restarted node knew nobody yet) and
-`Stored` 19. The script
-counts forged copies only of the current round's DID; the stores outside the
-failed round are not attributed (they may be copies of that round's DID on
-nodes restarted later).
+With ADR 0005 the attacker's forged STOREs were answered `Conflict` 29,826
+times and not answered 3075 times on 10 nodes, `Conflict` 168,281 times and not
+answered 167,871 times on 127 nodes; none was `Stored`. A node that holds
+nothing runs a check for each forged STORE, and beyond 256 checks at once it
+drops the STORE without an answer (`MAX_STORE_LOOKUPS`).
 
 **Reading.**
-- A restarted replica did not take a forged record of a DID the network
-  already held: the check found the owner's record on the other replicas.
-- The one failed round is the first-publication window. The attacker learned
-  the DID from the owner's first STOREs and sent forged ones to the other
-  nodes before any of them had stored the owner's record, so their checks found
-  nothing and the first writer won. The owner saw `ReplicaConflict` and knows
-  the publication failed. This is a known limit (`DESIGN.md` section 7): the
-  check protects a record the network holds, not a first publication.
-- Without an attacker the restarted replica is still empty after 3 s in every
-  round: its neighbours do not resend records to a node that comes back within
-  about a second. The hourly republication refills it.
+- No node took a forged record, on either image, in these runs. Before ADR
+  0005 a persistent attacker could still win the first-publication window: on
+  2026-11-04 it put a forged record on 6 nodes in 1 round of 20, by racing the
+  owner's first STOREs. With ADR 0005 that window has no prize: a forged
+  version 0 does not bind to the DID, and a forged version 1 is refused (A3).
+- Without an update, the restarted replica is still empty after 3 s in every
+  round, on both images and at both sizes: its neighbours do not notice a node
+  that comes back within about a second, so they send it nothing. The hourly
+  republication, or the owner's next update or republication, fills it (L1).
 
-## 8. Summary
+## 9. A3. A forged version 1 right after version 0
 
-Validated on the current code:
+**Question.** The key security case of ADR 0005: right after the owner
+publishes version 0, can a forged version 1, whose `prev` is the real hash of
+version 0 but signed by a key whose hash is not the `nextKeyHash` of version
+0, get onto any node?
+
+**Setup.** In `successor` mode the attacker answers each STORE of a version 0
+it sees with a forged version 1 to the same node, at once. 10 nodes, `k` = 3,
+WAN Europe, then 127 nodes, `k` = 20, WAN Europe.
+
+**Procedure.** Each round: the owner publishes a new DID; 3.5 s later the
+script reads how many nodes hold a forged record and what three plain reads
+return. No replica restarts.
+
+**Results.** 20 rounds each.
+
+| Network | Forged versions 1 sent | Answered | Nodes holding a forged record | Plain reads returning it | Owner's publication |
+|---|---|---|---|---|---|
+| 10 nodes, `k` = 3 | 55 | all `Conflict` | 0/180 | 0/60 | complete 20/20 |
+| 127 nodes, `k` = 20 | 367 | all `Conflict` | 0/2520 | 0/60 | complete 20/20 |
+
+**Reading.** The forged version 1 was sent about 1 ms after the owner's
+version 0, and no node took it: a node holding version 0 checks the forged key
+against its `nextKeyHash` (R3), and an empty one hears version 0 from the
+others and finds the same mismatch (R5). The owner's publication was not
+disturbed.
+
+## 10. A4. Nodes that lie in `FindHash`
+
+**Question.** How many nodes that lie in the check of an empty replica does it
+take to block a publication, or the repair of a replica restarted empty?
+
+**Setup.** A testbed switch, compiled only with the `testbed` feature
+(`ctl <node> lie on`), makes a node answer every `FindHash`, for any key, with
+a version far ahead (`seq` 2^53 − 1) and a made-up hash it never serves; it
+stores and serves records as usual. Each round the liars are the replicas
+closest to the key, those every check asks: 0, 1, 12 (one below the quorum)
+and 13 (the quorum). 127 nodes, `k` = 20, WAN Europe, the procedure of E4 with
+counters.
+
+**What ADR 0005 predicts.** A version 0 at an empty replica (R2) is refused
+only when a quorum claims a later version, so that a single holder of a later
+version cannot stop the owner's replay: 1 to 12 liars do not block a first
+publication, 13 do. A later version at an empty replica (R5) is refused on a
+single claim of a version ahead of it: one liar blocks the repair. This is the
+single liar's veto the review of ADR 0005 recorded; removing it (refusals that
+show their evidence) is a later ADR.
+
+**Results.** 20 rounds each, 127 nodes, `k` = 20, WAN Europe.
+
+| Liars | Publication of version 0 | Replicas storing it, median | Restarted replica holds the new version | Checks of the restarted replica | Reads by every other node |
+|---|---|---|---|---|---|
+| 0 | complete 20/20 | 20 | 20/20 | `accepted` 20 | 2520/2520 |
+| 1 | complete 20/20 | 20 | **0/20** | `newer_claimed` 60 | 2520/2520 |
+| 12 | complete 20/20 | 20 | **0/20** | `newer_claimed` 60 | 2520/2520 |
+| 13 (quorum) | **rejected 20/20** (`NewerVersion`) | 13 (the liars), 7 refusing | no replica to restart | `newer_claimed` 396 | 2520/2520 |
+
+With 13 liars no honest replica stored the record (132 of the 392 replica
+slots stayed empty over the 20 rounds); the 13 liars, which store and serve
+records as usual, held it, and every read found it there. The rotation was
+`confirmed` with 0 to 13 liars: the owner and the replicas that hold the record
+form its majority.
+
+**Reading.**
+- As predicted: up to 12 liars do not block a first publication, 13 do; one
+  liar blocks the repair of a replica restarted empty, every time: every check
+  of the restarted replica, three per round, ended `newer_claimed`.
+- A liar cannot get a forged record accepted or change what readers get here;
+  it keeps empty replicas empty. On `main` one node could already do so,
+  by answering another hash or by not answering (section 7 of `DESIGN.md`);
+  ADR 0005 keeps that veto for later versions and removes it for a version 0,
+  where a quorum is needed. Here the liars claim a later version; a liar that
+  claims another version 0, or stays silent, also blocks the owner's replay
+  from version 0. That variant was not measured.
+
+## 11. A5. Spoofed answers under guessed message ids
+
+**Question.** Message ids are drawn at random for each request (ADR 0005, open
+point 25). Can an attacker who does not read them get a forged `FindHash`
+answer accepted by a replica, by sending it from the address of the node the
+replica asked?
+
+**Setup.** In `spoof` mode the attacker answers each `FindHash` it sees with 64
+answers claiming a version far ahead, sent to the asking replica from the
+address and port of the node asked (a raw socket writes the IP header), under
+random message ids. As a control, the same with the ids read on the wire: it
+shows the spoofed answers reach the replica, and that the id is what stops
+them; an attacker who reads the traffic still sees every id, which stays a
+limit. 127 nodes, `k` = 20, WAN Europe, the procedure of E4 with counters. A
+check that took a spoofed answer ends `newer_claimed` where it would have
+accepted.
+
+**Results.** 20 rounds each, 64 spoofed answers for each `FindHash` the
+attacker saw (about 20 per round).
+
+| Spoofed answers under | Checks of the restarted replica | Restarted replica holds the new version | Publication of version 0 |
+|---|---|---|---|
+| no attacker (A4, 0 liars) | `accepted` 20 | 20/20 | complete 20/20 |
+| random ids | `accepted` 20, `newer_claimed` 0 | 20/20 | complete 20/20 |
+| the ids read on the wire (control) | `accepted` 5, `newer_claimed` 45 | 5/20 | complete 20/20 |
+
+**Reading.**
+- Under random ids no spoofed answer was taken: the replica's checks ended as
+  without an attacker.
+- The control shows the spoofed answers reach the replica and are taken when
+  their id is right: they blocked the repair in 15 of 20 rounds. The ids are
+  what stops an attacker that does not read the traffic; one that reads it
+  answers for any node it sees asked, and has the single liar's veto of A4.
+- The first publication was not blocked in the control either: a version 0 is
+  refused only on a quorum of claims, which the spoofed answers did not reach.
+
+## 12. L1. Copies over time with churn and liars
+
+**Question.** How many replicas keep the current version over time while
+nodes crash and come back empty, with 0, 1 or a quorum of liars near the key?
+The review of ADR 0005 calls this the weakest property of the design; no
+system it cites reports it.
+
+**Setup.** The owner publishes a new DID and rotates once. For 10 minutes,
+every 10 s one of the `k` replicas other than the owner and the liars crashes
+and comes back empty; every 60 s the owner sends its current version again
+with the saved bytes (`republish`, which the application does at least once
+every 24 hours, ADR 0005 section 5); every 5 s the script counts what the
+replicas hold. 0, 1 and 13 liars, 127 nodes, `k` = 20, WAN Europe.
+
+**Results.** 600 s, 59 crashes of a replica and 9 republications per run, 120
+samples. Copies of the current version on the replicas other than the owner
+(20, or 19 when the owner is one of the `k` closest):
+
+| Liars | Copies, median (min, max) | Samples below the quorum (13) | Republications |
+|---|---|---|---|
+| 0 | 18 (15, 20) | 0/120 | confirmed 9/9 |
+| 1 | 15 (10, 20) | 26/120 | confirmed 9/9 |
+| 13 | 13 (13, 13), all on the liars | 0/120, but no honest copy | confirmed 9/9 |
+
+**Reading.**
+- Without liars, each crash takes a copy away and nothing fills it until the
+  owner's republication, which fills every empty replica at once: the copies
+  go from 20 down to 15 and back every minute, never below the quorum. The
+  holders' hourly republication did not run: the records were younger than
+  an hour.
+- With one liar the copies follow a cycle. While 13 or more replicas hold the
+  record, the liar blocks every repair and crashes take copies away; once
+  fewer hold it, the owner's replay starts from version 0, which one claim of
+  a later version does not block, then sends the later versions by UPDATE,
+  which a replica checks against the version before without asking anyone; it
+  fills every empty replica at once. The record spent about a fifth of the
+  time below the quorum, never below 10 copies, and the owner's republication
+  is what kept it.
+- With 13 liars the honest replicas refused the first publication and stayed
+  empty for the whole run; the record lived only on the liars. A quorum of
+  liars near a DID decides what the DID's honest replicas hold.
+- The time scale is compressed: a crash every 10 s and a republication every
+  60 s stand for rarer crashes and a republication at least every 24 hours.
+  What the runs show is the shape: with a liar the copies depend on the
+  owner's republication.
+
+## 13. Summary
+
+Validated on the code of ADR 0005:
 - **Publication and availability.** 100 first publications in a network of 127
   nodes (`k` = 20), in LAN, WAN Europe, WAN Trans-Atlantic and WAN Europe with
   0.5% loss: all `complete`, and all 12,600 reads right after found the
-  record.
-- **Latency.** About 6 round trips for a publication, about 1 for a remote read
-  (median).
-- **Forged records against a record the network holds.** No forged record
-  stored in 80 rounds of race and burst attacks, or in 19 of 20 rounds of a
-  persistent attacker; no plain read returned a forged record there.
+  record. Latency and traffic as before ADR 0005 (on WAN 3% slower, 1.2 ms in
+  LAN; about 630 KiB per publication).
+- **Rotation.** A replica restarted empty gets the new version 120 times of
+  120, against 86 on `main`: the known gap is closed. A rotation sends 170 KiB
+  instead of 247 (an UPDATE in 5 fragments instead of 8, no read first), and
+  takes about as long.
+- **Forged records.** None stored in 160 rounds of race, burst and
+  persistent attacks at 10 and 127 nodes (about 223,000 forged STOREs answered
+  `Conflict` and 171,000 dropped unanswered, none `Stored`), nor in 40 rounds
+  of a forged version 1 right after version 0.
+- **Check of a later version.** At most 500 ms with its fetch across the
+  Atlantic: it fits within `STORE_LOOKUP_TIMEOUT` (2 s).
+- **Message ids.** No spoofed answer under a guessed id was taken; under the
+  ids read on the wire they were.
 
-Measured costs and open points:
-- **Traffic.** A first publication costs about 500 KiB and 1000 datagrams at
-  `k` = 20, 70% of it in the answers to the replicas' checks. A remote read
-  costs about 16 KiB, mostly whole records from several holders.
-- **First publication.** An attacker that sees the owner's first STOREs can
-  win the race to nodes that do not hold the record yet (1 of 20 rounds).
-- **Refill.** A replica that restarts empty stays empty until the hourly
-  republication, and after an UPDATE in 3 to 11 of 20 rounds.
-- **Tail under loss.** Publications of 0.5 to 1.6 s under 0.5% loss.
+Measured costs and limits:
+- **One liar near a DID** keeps its empty replicas empty (0 of 20 repairs);
+  with churn the copies then depend on the owner's republication, and spent a
+  fifth of the time below the quorum. **A quorum of liars** blocks a first
+  publication and keeps every honest replica empty.
+- **An attacker that reads the traffic** can answer for other nodes, with the
+  power of a liar.
+- **A replica that restarts empty without an update** stays empty until a
+  republication, on `main` as with ADR 0005: its neighbours do not notice a
+  node that comes back within a second. Under churn the copies of a record
+  younger than an hour come back only through the owner's republication (L1).
+- **Traffic of a first publication**: about 630 KiB at `k` = 20, 73% of it in
+  the answers to the replicas' checks.
+- **Tail under loss**: publications of 0.5 to 1.1 s under 0.5% loss.
 
-## 9. How to reproduce
+## 14. How to reproduce
 
 Host limits, once per boot:
 
 ```bash
 sudo sysctl -w net.ipv4.neigh.default.gc_thresh1=4096 net.ipv4.neigh.default.gc_thresh2=16384 net.ipv4.neigh.default.gc_thresh3=32768
 sudo sysctl -w net.core.netdev_max_backlog=16384
-testbed/testbed.py build
 ```
 
-E1, one profile (`lan`, `wan-eu`, `wan-atlantic`; with loss add `--loss 0.5`
-and use 40 rounds):
+The two images (the `main` one from a worktree of `424b76f`):
 
 ```bash
-testbed/testbed.py up --nodes 127 --k 20 --alpha 3 --profile wan-eu --no-build
+testbed/testbed.py build --tag auth-kademlia-testbed:adr0005-final
+```
+
+Every experiment, one network at a time, as run on 2026-11-11:
+
+```bash
+experiments/2026-11-11-adr0005/run_experiments.sh all   # or: compare, attacks
+```
+
+One step by hand, for example E1 on WAN Europe:
+
+```bash
+testbed/testbed.py up --nodes 127 --k 20 --alpha 3 --profile wan-eu --image auth-kademlia-testbed:adr0005-final --no-build
 testbed/measure.py publish --rounds 20
 testbed/testbed.py down
 ```
 
-E2 and E3: the same with `testbed/measure.py publish --rounds 20 --watchers 0
---counters`.
-
-A1 (`--mode burst` for the burst row) and A2:
-
-```bash
-testbed/testbed.py up --nodes 10 --k 3 --alpha 3 --profile wan-eu --no-build
-testbed/attack.py start --mode race
-testbed/attack.py race --rounds 20
-testbed/testbed.py down
-
-testbed/testbed.py up --nodes 10 --k 3 --alpha 3 --profile wan-eu --no-build
-testbed/attack.py restart --rounds 20          # control, no attacker
-testbed/attack.py start --mode persist
-testbed/attack.py restart --rounds 20
-testbed/testbed.py down
-```
-
-To check that the host dropped nothing during a run, compare the sum of the
-second column of `/proc/net/softnet_stat` (hexadecimal) before and after it.
 Each run writes its rounds to `testbed/.generated/` (not in the repository).

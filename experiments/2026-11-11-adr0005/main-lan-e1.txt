@@ -1,0 +1,31 @@
+publish: 20 rounds, owner node-1, 127 nodes, k=20, profile lan, image auth-kademlia-testbed:main-424b76f
+round  outcome      publish  first read  reads after
+    1  complete     14.1 ms      9.6 ms  126/126
+    2  complete      7.0 ms      5.6 ms  126/126
+    3  complete      8.3 ms      6.6 ms  126/126
+    4  complete      9.1 ms      7.6 ms  126/126
+    5  complete      6.2 ms      6.0 ms  126/126
+    6  complete      7.7 ms      5.9 ms  126/126
+    7  complete      9.9 ms      2.8 ms  126/126
+    8  complete     10.4 ms      5.9 ms  126/126
+    9  complete      7.0 ms      5.3 ms  126/126
+   10  complete      7.1 ms      6.1 ms  126/126
+   11  complete      7.2 ms      5.1 ms  126/126
+   12  complete      9.4 ms      4.4 ms  126/126
+   13  complete      8.7 ms      6.7 ms  126/126
+   14  complete      8.9 ms      6.3 ms  126/126
+   15  complete      9.5 ms      7.1 ms  126/126
+   16  complete      6.8 ms      6.2 ms  126/126
+   17  complete      7.1 ms      5.6 ms  126/126
+   18  complete      6.5 ms      5.6 ms  126/126
+   19  complete      7.8 ms      5.1 ms  126/126
+   20  complete      7.8 ms      7.8 ms  126/126
+
+summary
+  outcomes: complete 20
+  publication time: median 7.8 ms, p95 10.4 ms, max 14.1 ms (n=20)
+  readable by the first watcher, from the start of the publication: median 6.0 ms, p95 7.8 ms, max 9.6 ms (n=20)
+  watchers that found it within 10000 ms: 60/60
+  reads by every other node right after the publication: 2520/2520 found
+  remote read time: median 1.7 ms, p95 6.9 ms, max 21.7 ms (n=2121)
+  details: testbed/.generated/publish-lan-20261111-111114.json

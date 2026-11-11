@@ -1,0 +1,57 @@
+update: 20 rounds, 1 rotation(s) each, 1 replica(s) restarted before the last, owner node-1, 127 nodes, k=20, profile wan-eu, image auth-kademlia-testbed:adr0005-final
+round  outcome           update  replicas cur/old/none  restarted cur/old/none  reads cur/old/none
+    1  confirmed        76.4 ms  19/0/0                 1/0/0                   126/0/0
+    2  confirmed       104.2 ms  19/0/0                 1/0/0                   126/0/0
+    3  confirmed       104.4 ms  19/0/0                 1/0/0                   126/0/0
+    4  confirmed       104.7 ms  19/0/0                 1/0/0                   126/0/0
+    5  confirmed       121.9 ms  18/0/0                 1/0/0                   126/0/0
+    6  confirmed       104.3 ms  19/0/0                 1/0/0                   126/0/0
+    7  confirmed       107.6 ms  19/0/0                 1/0/0                   126/0/0
+    8  confirmed       109.9 ms  19/0/0                 1/0/0                   126/0/0
+    9  confirmed       109.1 ms  19/0/0                 1/0/0                   126/0/0
+   10  confirmed       109.1 ms  19/0/0                 1/0/0                   126/0/0
+   11  confirmed       107.5 ms  19/0/0                 1/0/0                   126/0/0
+   12  confirmed       121.7 ms  18/0/0                 1/0/0                   126/0/0
+   13  confirmed       110.4 ms  19/0/0                 1/0/0                   126/0/0
+   14  confirmed       111.5 ms  19/0/0                 1/0/0                   126/0/0
+   15  confirmed       121.4 ms  18/0/0                 1/0/0                   126/0/0
+   16  confirmed       107.5 ms  19/0/0                 1/0/0                   126/0/0
+   17  confirmed       107.2 ms  19/0/0                 1/0/0                   126/0/0
+   18  confirmed       109.8 ms  19/0/0                 1/0/0                   126/0/0
+   19  confirmed       110.4 ms  19/0/0                 1/0/0                   126/0/0
+   20  confirmed       114.0 ms  19/0/0                 1/0/0                   126/0/0
+
+summary
+  publication of version 0: complete 20
+    stored replicas per publication: median 20, min 20, max 20 (n=20)
+    unavailable replicas per publication: median 0, min 0, max 0 (n=20)
+    newer_claimed replicas per publication: median 0, min 0, max 0 (n=20)
+    conflicts replicas per publication: median 0, min 0, max 0 (n=20)
+    stale replicas per publication: median 0, min 0, max 0 (n=20)
+  last rotation: confirmed 20
+  rotation time, no replica restarted: no samples
+  rotation time, after the restart: median 109.1 ms, p95 121.7 ms, max 121.9 ms (n=20)
+  replicas not restarted: current 377/377, older 0, other 0, none 0
+  restarted replicas: current 20/20, older 0, other 0, none 0
+  reads by every other node: current 2520/2520, older 0, other 0, none 0
+  sent by all nodes per update (median of 20): 173.1 KiB, 237 datagrams
+    FindHash              2.1 KiB     25 datagrams
+    FindHashHit           1.1 KiB     19 datagrams
+    FindNode              1.7 KiB     20 datagrams
+    FindNodeResult       22.2 KiB     20 datagrams
+    FindValue             0.0 KiB      0 datagrams
+    FindValueHit          0.0 KiB      0 datagrams
+    FindValueNodes        6.6 KiB      6 datagrams
+    Received              0.4 KiB     21 datagrams
+    Store                 6.6 KiB      5 datagrams
+    StoreResult           0.0 KiB      1 datagrams
+    Update              131.9 KiB    100 datagrams
+    UpdateResult          0.5 KiB     20 datagrams
+  resends in all rounds: 0 to measured peers, 0 to peers never measured
+  checks in all rounds: accepted 20, newer_claimed 0, other_version 0, not_following 0, holder_behind 0, fetch_refused 0, too_few_votes 0, no_answer 0, nobody_to_ask 0, invalid 0
+  checks that fetched the version before: 3, by whole check duration: <=100 ms: 3
+  check lookups by rounds: 1: 1, 2: 19, 3: 0, 4: 0, 5+: 0
+  check lookups by duration: <=25 ms: 1, <=50 ms: 15, <=100 ms: 4
+  check lookup mean duration: 48.1 ms
+  Update datagrams per UpdateResult (fragments of an UPDATE, plus resends): 5.00
+  details: testbed/.generated/update-wan-eu-20261111-122632.json

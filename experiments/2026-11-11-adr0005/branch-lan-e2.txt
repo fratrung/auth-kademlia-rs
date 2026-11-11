@@ -1,0 +1,48 @@
+publish: 20 rounds, owner node-1, 127 nodes, k=20, profile lan, image auth-kademlia-testbed:adr0005-final
+round  outcome      publish  first read  reads after
+    1  complete      8.9 ms       never  126/126
+    2  complete     10.0 ms       never  126/126
+    3  complete     12.5 ms       never  126/126
+    4  complete      7.6 ms       never  126/126
+    5  complete      8.9 ms       never  126/126
+    6  complete      8.4 ms       never  126/126
+    7  complete      7.8 ms       never  126/126
+    8  complete      7.5 ms       never  126/126
+    9  complete      9.4 ms       never  126/126
+   10  complete      7.8 ms       never  126/126
+   11  complete     14.1 ms       never  126/126
+   12  complete      8.7 ms       never  126/126
+   13  complete     20.0 ms       never  126/126
+   14  complete      8.7 ms       never  126/126
+   15  complete     24.6 ms       never  126/126
+   16  complete     12.4 ms       never  126/126
+   17  complete     20.5 ms       never  126/126
+   18  complete     10.5 ms       never  126/126
+   19  complete     10.8 ms       never  126/126
+   20  complete     14.6 ms       never  126/126
+
+summary
+  outcomes: complete 20
+  publication time: median 9.7 ms, p95 20.5 ms, max 24.6 ms (n=20)
+  readable by the first watcher, from the start of the publication: no samples
+  watchers that found it within 10000 ms: 0/0
+  reads by every other node right after the publication: 2520/2520 found
+  remote read time: median 2.2 ms, p95 6.6 ms, max 13.6 ms (n=2122)
+  sent by all nodes per publication (median of 20): 614.6 KiB, 980 datagrams
+    FindHash             33.2 KiB    400 datagrams
+    FindHashHit           1.0 KiB     17 datagrams
+    FindValue             1.7 KiB     20 datagrams
+    FindValueNodes      447.0 KiB    403 datagrams
+    Received              0.4 KiB     20 datagrams
+    Store               130.8 KiB    100 datagrams
+    StoreResult           0.5 KiB     20 datagrams
+  resends in all rounds: 0 to measured peers, 0 to peers never measured
+  checks in all rounds: accepted 398, newer_claimed 0, other_version 0, not_following 0, holder_behind 0, fetch_refused 0, too_few_votes 0, no_answer 0, nobody_to_ask 0, invalid 0
+  check lookups by rounds: 1: 378, 2: 20, 3: 0, 4: 0, 5+: 0
+  check lookups by duration: <=10 ms: 383, <=25 ms: 15
+  check lookup mean duration: 4.7 ms
+  sent by all nodes per remote read (mean of 2122; local reads send nothing): 18.5 KiB, 17.1 datagrams
+    FindValue            0.25 KiB    3.0 datagrams
+    FindValueHit        18.02 KiB   13.9 datagrams
+    FindValueNodes       0.24 KiB    0.2 datagrams
+  details: testbed/.generated/publish-lan-20261111-113641.json
