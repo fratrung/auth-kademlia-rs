@@ -4,13 +4,13 @@ sequenceDiagram
     participant A as Attacker (reads the traffic)
     participant E as Empty replica (just restarted)
     participant H as Other replicas
-    O->>E: UPDATE(v2, auth = sign(v2, old key))
-    A-->>A: sees the UPDATE, signs a forged<br/>document for the same DID
-    E-->>O: refused: no record to verify the rotation against
-    A->>E: STORE(forged)
+    O->>E: UPDATE(v1)
+    A-->>A: sees it, signs a forged v1 with the same DID and prev<br/>and a key of its own, which v0 did not commit to
+    E-->>O: MissingPrevious: no version 0 to check v1 against
+    A->>E: STORE(forged v1)
     E->>H: FindHash(key)
-    H-->>E: hash(v1) or hash(v2)
-    E-->>A: Conflict: the network holds another record
-    O->>E: STORE(v2), fallback after the refusal
-    E->>H: FindHash(key)
-    H-->>E: hash(v2) from all: stored<br/>hash(v1) from one: Conflict (known gap)
+    H-->>E: 1 and hash(v1), or 0 and hash(v0)
+    Note over E: R5: another version 1 refuses at once,<br/>or the fetched v0 does not commit to the forged key
+    E-->>A: Conflict, nothing stored
+    O->>E: replay: STORE(v0), then UPDATE(v1)<br/>or STORE(v1) once a quorum holds v1
+    E-->>O: Stored, then Updated

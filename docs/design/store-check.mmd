@@ -3,19 +3,27 @@ sequenceDiagram
     participant S as Sender
     participant R as Empty replica
     participant C as Nodes closest to the DID
-    S->>R: STORE(key, record)
-    Note over R: no record for key, so it cannot tell<br/>a forged record from the owner's
-    opt record not bound to key (malformed, or another DID)
+    S->>R: STORE(key, version N)
+    Note over R: no record for key, so it cannot check<br/>version N against the version before
+    opt record not in form, or not bound to key
         R-->>S: InvalidRecord (nobody asked)
     end
     R->>C: FindHash(key), all of them at once, deadline 2 s
-    C-->>R: SHA-256 of their record, or closer nodes
-    alt another hash
-        R-->>S: Conflict (signature not verified, nothing stored)
-    else same hash, or no node holds the key
+    C-->>R: seq and SHA-256 of their record, or closer nodes
+    alt version 0 (R2): a quorum claims a later version, or one holds another version 0
+        R-->>S: NewerClaimed or Conflict (nothing verified or stored)
+    else version N >= 1 (R5): one answer is enough to refuse
+        Note over R: a later version: NewerClaimed<br/>another version N, a version N-1 that is not its prev,<br/>or a version older than N-1: Conflict
+        R-->>S: NewerClaimed or Conflict (nothing verified or stored)
+    else no refusal, and every node asked answered
+        opt version N >= 1
+            R->>C: FindValue(key) to the nodes that answered N-1 and prev
+            C-->>R: version N-1
+            Note over R: its hash is prev and it commits to the key of version N<br/>votes: holders of N and confirmed N-1, 13 of 19 at k = 20<br/>for version 1, one confirmed version 0 is enough
+        end
         Note over R: verify the signature,<br/>then insert if still absent
         R-->>S: Stored
-    else a node did not answer, or nobody to ask
+    else a node did not answer, nobody to ask, or too few votes
         Note over R: refuse: fail-safe default
         R--xS: no answer, the sender counts it unavailable
     end

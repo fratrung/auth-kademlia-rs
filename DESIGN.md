@@ -46,10 +46,11 @@ The DHT must hold up against:
   attacker cannot modify or drop the owner's packets. If it could, it would
   still not forge a signature, but it could deny service.
 - **Malicious nodes** that answer requests with anything, or not at all.
-- **Forged records**: anyone can generate a key pair and sign a DID Document
-  for any DID, because a DID is a random UUID, not derived from a key. The
-  signature proves that the document is consistent, not that it belongs to the
-  device.
+- **Forged records**: anyone can generate a key pair and sign a document that
+  claims a DID. The first version of a DID cannot be forged, since the DID is
+  its hash (section 3), but a later version can be: a self-signed version N
+  with the right `prev` and a key of the attacker's own is consistent, and
+  only the version before it shows that its key was not the committed one.
 
 Out of scope for the DHT, by design:
 
@@ -61,15 +62,20 @@ Out of scope for the DHT, by design:
   DID resolves to. Kademlia's defences against such eclipse attacks (many
   disjoint lookups, costly node ids) are not implemented.
 
-The DID is kept separate from the key on purpose: a key-derived DID would make
-forgery impossible but would change identity at every key rotation.
+The DID is derived from the first document, not from the current key (ADR
+0005): it stays the same across rotations, as a random identifier did, and
+nobody can write a first document for another device's DID, as nobody could
+with a key-derived one. Each version names the hash of the next key, so the
+chain of versions carries the authority to rotate, as in KERI's pre-rotation
+[KERI].
 
 ## 3. Identifiers and records
 
 | Item | Definition |
 |---|---|
 | Node id | 256 bits. Distance is the XOR of the full 256 bits, never folded |
-| DHT key of a DID | `SHA-256(uuid)`, where the DID is `did:iiot:<uuid>` and the UUID is in canonical form |
+| DID | `did:iiot:` and the base64url, without padding (43 characters), of the SHA-256 of version 0 in hashed form (below) |
+| DHT key of a DID | The DID's suffix, decoded: the 32 bytes of that hash |
 | DHT key of the Status List | `SHA-256("status-list")` |
 | Record | `algorithm (12 B) | signature | DID Document (canonical JSON)` |
 
@@ -77,13 +83,31 @@ The algorithm field must be `ML-DSA-65` (ADR 0003): a record with any other
 is refused, so no DID is published with a key a quantum computer breaks. The
 signature is pure ML-DSA with an empty context, 3309 bytes. The document has
 one key, a JWK of the type RFC 9964 defines [RFC 9964]: `{"kty": "AKP",
-"alg": "ML-DSA-65", "pub": <base64url>}`. A record is accepted for a key only if:
+"alg": "ML-DSA-65", "pub": <base64url>}`.
 
-1. **DID binding:** the document's `id` is `did:iiot:<uuid>`, the UUID is in
-   the canonical form of RFC 9562 (lower case, hyphenated), and `SHA-256(uuid)`
-   is the key (ADR 0004). Without this check a valid record could be stored
-   under any key; without the canonical form one UUID would give many DIDs,
-   each under its own key.
+Every document carries three fields that make a chain of versions (ADR 0005):
+`seq`, its number, from 0; `prev`, the base64url SHA-256 of the whole record
+before it (not in version 0); and `nextKeyHash`, the base64url SHA-256 of the
+raw public key that alone may sign the next version. A version that commits
+to its own key is refused. Documents are in a canonical form, so that one
+document has one hash: printable ASCII only, integers within ±(2^53 − 1)
+without fraction or exponent, sorted keys and no whitespace, and the bytes
+must equal their re-serialization.
+
+The **hashed form** of version 0 is the document without `id`, with its own
+DID written as the placeholder `did:iiot:self` wherever a string value is the
+DID or a DID URL of it (`#`, `?` or `/` after it). The owner builds that draft,
+hashes it, and writes the DID back in, `id` included. A document that already
+holds the placeholder is refused, so the hashed form cannot be ambiguous.
+
+A record is accepted for a key only if:
+
+1. **Form and binding:** the document is canonical; its `id` is a DID whose
+   suffix is canonical (it encodes back to itself, so one DID is one key) and
+   decodes to the key; `seq`, `prev` and `nextKeyHash` are well formed. For a
+   version 0, the SHA-256 of its hashed form is the key: nobody can store a
+   first document under another device's DID. A later version binds by its
+   `id`; its place in the chain is checked by the rules of section 7.
 2. **Signature:** the document's key has `kty` `AKP` and the `alg` of the
    record's algorithm field, and the signature verifies over the canonical
    JSON with that key, the one the document itself declares.
@@ -178,52 +202,77 @@ node has no live contact, retries its bootstrap seeds.
 
 *Source: [`docs/design/publish.mmd`](docs/design/publish.mmd).*
 
-The owner first looks the key up. If the network already holds a different
-valid record, publication is refused: records are immutable once created, and
-a new version must go through UPDATE. Otherwise the record is sent as STORE to
-the `k` closest nodes that answered the lookup, the owner included if it is one
-of them. The outcome is reported per replica:
+SET publishes version 0 of a new DID; a later version passed to it is refused
+locally, and goes through UPDATE (section 9). The owner first looks the key
+up. If the network already holds a different valid record, publication is
+refused. Otherwise the record is sent as STORE to the `k` closest nodes that
+answered the lookup, the owner included if it is one of them. The lookup
+leaves no copy on the nodes it asked. The outcome is reported per replica:
 
 - **Complete:** every replica stored the record. Replicas are the nodes that
   answered the lookup; a node that did not is not counted as one.
 - **Degraded:** at least one replica stored it, but some did not answer the
   STORE or had no room.
-- **Rejected:** a replica holds a different record, the record is invalid, or
-  no replica stored it.
+- **Rejected:** a replica holds a different record or a later version of the
+  DID (counted apart, `stale_rejections`, `newer_claimed`), the record is
+  invalid, or no replica stored it.
 
 A retry of the same record is safe: replicas that already hold it answer
 `AlreadyStored`, and the retry completes the ones that missed it.
 
 ## 7. Storing at a replica (STORE)
 
-A replica that already holds a record for the key compares bytes: the same
-record is `AlreadyStored`, a different one is `Conflict`. The first writer wins,
-and a record is never overwritten by STORE.
+A replica that already holds a record for the key decides on its own, with
+what it holds (ADR 0005, section 3):
 
-An empty replica has a problem: it cannot tell a forged record from the
-owner's, because both are self-signed for the same DID. "First writer wins"
-then protects whoever arrives first. In the testbed, an attacker that read an
-UPDATE and raced a forged STORE to a replica that had just restarted won 16 to
-17 rounds out of 20 on WAN profiles. So an empty replica asks the network
+- **The same bytes:** `AlreadyStored`, nothing verified or written (R1).
+- **The next version:** its `prev` is the hash of the stored record and its
+  signing key hashes to the stored `nextKeyHash`. Once its signature verifies
+  it replaces the stored record, by a compare and swap that fails if the record
+  changed meanwhile (R3). STORE and UPDATE follow the same rule.
+- **An older version:** `Stale`. **Another version with the stored `seq`:**
+  `Conflict`; when it is signed by the same key as the stored one, the owner
+  signed two versions, which is logged as duplicity (R4).
+- **A version further ahead:** `MissingPrevious`, and nothing is asked: the
+  owner's replay brings the versions in between.
+
+An empty replica has a problem: it cannot check a later version against the
+one before it, which it does not hold. "First writer wins" would protect
+whoever arrives first: in the testbed, before the check, an attacker that read
+an UPDATE and raced a forged STORE to a replica that had just restarted won 16
+to 17 rounds out of 20 on WAN profiles. So an empty replica asks the network
 before storing:
 
-![Sequence diagram of a STORE to an empty replica: binding check, FindHash to the closest nodes, then Conflict, Stored, or no answer](docs/design/store-check.png)
+![Sequence diagram of a STORE to an empty replica: form check, FindHash to the closest nodes, the rules for version 0 and for a later version with the fetch of the version before, then a refusal, Stored, or no answer](docs/design/store-check.png)
 
 *Source: [`docs/design/store-check.mmd`](docs/design/store-check.mmd).*
 
-1. It checks the DID binding of section 3, a JSON parse. A record that does not
-   belong to the key is `InvalidRecord`, and nobody is asked: a malformed
-   STORE does not cost a lookup.
-2. It sends `FindHash` to the nodes closest to the key, all of them rather than
+1. It checks the form and binding of section 3, without the signature. A record
+   that does not belong to the key is `InvalidRecord`, and nobody is asked: a
+   malformed STORE does not cost a lookup.
+2. It sends `FindHash` to the nodes closest to the key, asking for the `seq` and
+   SHA-256 of the record they hold, all of them rather than
    stopping at the first answer, and leaves no cached copy behind. A replica
    asks them all at once, not three at a time as a GET does: it must hear all
    of them anyway, and a node asked late could be pushed out of the lookup by
    made-up nodes closer to the key in an earlier answer. A node that knows `k`
    nodes closer to the key than itself is not a replica and keeps three at a
    time.
-3. **Another hash:** it answers `Conflict` without verifying the signature.
-4. **The same hash, or no node holds the key:** it verifies the signature and
+3. **Version 0 (R2):** it refuses when a quorum of the nodes asked holds a later
+   version (`NewerClaimed`), so that a single holder of a later version cannot
+   stop the owner's replay, and when one holds another version 0 (`Conflict`).
+   Otherwise, once every node asked has answered, it verifies the signature and
    stores the record.
+4. **Version N ≥ 1 (R5):** one answer is enough to refuse: a later version,
+   another version N, a version N−1 that is not its `prev`, or a version older
+   than N−1, a holder that is behind. Otherwise it fetches version N−1 from the
+   nodes that answered with it (one whole record), and checks that it is the
+   `prev` and commits to the new version's key. It stores the record when the
+   nodes that hold version N or a confirmed version N−1 reach the quorum,
+   `max(2, min(n, ⌈(n + f + 1)/2⌉))` of the `n` nodes asked, with
+   `f = max(1, ⌊(n − 1)/3⌋)`: 13 of 19 at `k = 20`. For a version 1, one
+   fetched version 0 is enough, since version 0 proves its own binding. Nobody
+   holding the key gives no votes, so it refuses.
 5. **A node did not answer within 2 s, or it knows nobody to ask:** it refuses
    and sends no answer, so the sender counts it as unavailable.
 
@@ -232,10 +281,12 @@ SHA-256, 32 bytes in one datagram, instead of a whole record, about 6.5 KB in
 five fragments. With records, every check cost about `k` records, and a burst of forged
 STOREs made the replica receive more fragmented answers from the same holder
 than its reassembly limit allows, so it dropped them. A hash cannot be
-verified, so a node can block a STORE by answering with a wrong hash. It can
-block it just as well by staying silent, so this gives it no new power, and it
-cannot make the replica accept anything. SHA-256 resists second preimages, so
-a forged record cannot have the hash of the genuine one.
+verified, so a node can block a STORE by claiming a later or another version.
+It can block it just as well by staying silent, so this gives it no new power;
+to make the replica accept a forged version it needs a quorum of the nodes
+asked, and one honest holder among them refuses it. SHA-256 resists second
+preimages, so a forged record cannot have the hash of the genuine one. R5
+fetches one whole record, the version before, only after the hashes allow it.
 
 **Why refuse on silence.** This is the fail-safe default of Saltzer and
 Schroeder [Saltzer 1975]: base access decisions on permission rather than
@@ -255,24 +306,25 @@ only. The first STORE after a node dies is refused by every replica that still
 asks it, and a retry succeeds. A STORE to an empty replica takes a few
 round trips longer.
 
-**What it does not do.** It is a read before write without consensus: two
-STOREs racing for a key that no node holds yet can both pass, and the first
-writer wins as before. Databases that need a strict "insert if absent" across
-replicas run a consensus round instead, such as Cassandra's lightweight
-transactions [Cassandra LWT]. It does not protect a first publication, when
-the network holds nothing yet: an attacker who learns a UUID before the owner
-publishes it can publish first, and one that sees the owner's first STOREs can
-race them to nodes that do not hold the record yet. It does not help against an attacker who
-controls every node close to the DID. It hears every node the replica knows,
-not every node that exists: a node that answers with made-up nodes closer to
-the key can still push out of the lookup a holder the replica learns of only
-from another answer, before it is asked.
+**What it does not do.** It is a read before write without consensus.
+Databases that need a strict "insert if absent" across replicas run a
+consensus round instead, such as Cassandra's lightweight transactions
+[Cassandra LWT]. A first publication needs no race protection any more: a
+forged version 0 cannot bind to the DID, and a forged version 1 right after it
+is refused, since the version 0 it would follow does not commit to its key.
+It does not help against an attacker who controls a quorum of the nodes close
+to the DID. It hears every node the replica knows, not every node that exists:
+a node that answers with made-up nodes closer to the key can still push out of
+the lookup a holder the replica learns of only from another answer, before it
+is asked. And an answer counts for the node whose address it comes from:
+message ids are drawn at random for each request, so a node that does not read
+the traffic cannot answer for another, but one that reads it can.
 
 The check runs outside the workers that read incoming datagrams (section 12),
 because the answers to its own lookup arrive through those workers. Run on a
 worker, 8 such STOREs at once left their lookups without answers.
 
-![Sequence diagram of the race attack: a forged STORE races the owner's record to a restarted replica](docs/design/attack.png)
+![Sequence diagram of the race attack: a forged version 1, signed by a key version 0 did not commit to, races the owner's update to a restarted replica and is refused](docs/design/attack.png)
 
 *Source: [`docs/design/attack.mmd`](docs/design/attack.mmd).*
 
@@ -295,35 +347,50 @@ public key with the hash in the Verifiable Credential.**
 
 ## 9. Key rotation (UPDATE)
 
-![Sequence diagram of a key rotation: UPDATE to replicas holding v1, STORE to a replica without the record](docs/design/update.png)
+![Sequence diagram of a key rotation: UPDATE to a replica holding the version before, MissingPrevious and the replay of the chain to a replica behind or empty](docs/design/update.png)
 
 *Source: [`docs/design/update.mmd`](docs/design/update.mmd).*
 
 A rotation replaces the ML-DSA-65 key, the only key of the document, and
 needs new VCs. Key agreement between devices happens outside the DHT, with
-ephemeral keys (ADR 0003), so no KEM key is published or rotated.
-The new record `v2` carries an authorization: `auth = sign(v2, secret key of
-v1)`. The chain of authorizations, each new version signed by the previous
-key, is the same idea as root key rotation in TUF [Samuel 2010].
+ephemeral keys (ADR 0003), so no KEM key is published or rotated. Every
+update is a rotation (ADR 0005): version N is signed by the key whose hash
+version N−1 committed to, and commits to a new one. The device keeps that next
+key as its 32-byte seed, in a secure element where it has one, until the
+rotation that reveals it; a thief of the current key cannot rotate. This is
+the pre-rotation of KERI [KERI]; the chain of versions, each authorized by the one
+before, is the same idea as root key rotation in TUF [Samuel 2010].
 
-1. The owner reads the current record, checks the authorization against it,
-   and checks that `v2` is self-signed.
-2. It sends `Update(v2, auth)` to the `k` closest nodes.
-3. A replica holding `v1` verifies `auth` with the key in its stored `v1` and
-   replaces the record.
-4. A replica holding `v2` already acknowledges without verifying: retrying an
-   applied update is safe, as for an idempotent request [RFC 9110 §9.2.2]
-   [Hohpe 2003]. The retry must resend the same bytes.
-5. A replica without the record has nothing to verify against and refuses. The
-   owner then sends it `v2` as STORE, which passes the check of section 7 only
-   if the network holds `v2` or nothing.
+1. The owner signs version N once and saves it, with every version before.
+   It reads no copy first.
+2. It sends `Update(vN)`, the record only, to the `k` closest nodes.
+3. A replica holding version N−1 checks the new version on its own (section 7,
+   R3): one hash of the stored record, one hash of the new key, one signature.
+4. A replica already holding version N answers `AlreadyStored` without
+   verifying: retrying an applied update is safe, as for an idempotent request
+   [RFC 9110 §9.2.2] [Hohpe 2003]. The retry must resend the same bytes: a
+   second version N signed by the same key is refused as duplicity.
+5. A replica that is behind, or holds nothing, answers `MissingPrevious`. The
+   owner replays its chain to it, one version at a time and waiting for each
+   answer: version 0 by STORE (R2 at an empty replica), the next ones by
+   UPDATE, the replicas behind first and the empty ones after. If version 0 of
+   a replay is refused because a quorum now holds a later version (a sibling
+   replica was just repaired), it sends the current version once by STORE, for
+   R5. Only `MissingPrevious` starts a replay, never a missing answer.
 6. The update succeeds on a strict majority of a consistency group of `alpha`
-   members: the local copy, if the owner is a replica, and the closest remote
-   replicas. Only then does the owner commit its local copy.
+   members: the local copy, if the owner is a replica, voted by the same rules
+   against what it holds, and the closest remote replicas. Only then does the
+   owner write its local copy.
 
-As long as every update changes the key, an old record cannot be replayed as
-"new": that would need a signature by the newer key. An update that keeps the
-key could be replayed.
+An old version cannot be replayed as new: a holder refuses it by `seq` and
+`prev` (`Stale`, `Conflict`), and an empty replica by R2 and R5, as long as a
+quorum of the nodes it asks hold the record. Nothing rests on the key
+changing, and nothing reads a clock.
+
+The owner keeps every version it published and sends its current version
+again at least once every 24 hours: holders alone cannot bring a record back
+once fewer than the quorum hold it, since R5 needs that many answers, while
+the owner's replay needs none.
 
 ## 10. Status List
 
@@ -348,6 +415,9 @@ exempt from the STORE check of section 7, which is about self-signed records.
   refilled the same way.
 - **Republication:** every hour each node sends records older than an hour to
   the `k` closest nodes, which also refills replicas that came back empty.
+  These STOREs pass the check of section 7 only while a quorum of the nodes
+  asked hold the record; below it, the owner's replay restores the copies
+  (section 9).
 - **Expiry:** records expire 14 days after they were written. There is no
   delete. An application that needs a record to stay must publish or update it
   before then.
@@ -385,16 +455,44 @@ exempt from the STORE check of section 7, which is about self-signed records.
 ## 13. Known limits
 
 - **`FindHash` is not understood by older nodes**, and the check refuses on
-  silence, so mixed-version networks refuse STOREs to empty replicas.
+  silence, so mixed-version networks refuse STOREs to empty replicas. Nodes
+  before and after ADR 0005 cannot talk at all.
+- **One node can keep an empty replica empty** (ADR 0005, Consequences). One
+  answer that claims a later version, or one silent node, refuses a later
+  version at an empty replica, at any number of holders; with one persistent
+  liar near a DID the number of copies can only fall (`EXPERIMENTS.md`, A4
+  and L1). A refusal that had to show its evidence would remove this veto; it
+  is a later ADR.
+- **The check counts answers, so its safety assumes** that an answer comes
+  from the node it names (a node that reads the traffic sees every message id
+  and can answer for another), that node ids cannot be chosen (a quorum of
+  admitted nodes could place themselves next to one DID), and that the
+  replica knows enough contacts (a restarted replica asks few nodes and needs
+  few votes).
+- **A forgery accepted at an empty replica stays there** until it expires: the
+  genuine chain is refused there as a fork. It needs a quorum of colluders
+  among the nodes asked and no honest holder among them.
+- **Below the quorum, an old version can be pinned at an empty replica** by
+  replaying the genuine chain up to it, and a thief of a revealed key can sign
+  another version M and get it onto a replica holding M−1 or nothing; holders
+  of version M or later refuse it. The owner's replay moves a pinned replica
+  on, not a fork.
+- **A lost next key ends the DID:** no further rotation, as with a lost key
+  before. A next seed suspected of having leaked has one answer: rotate with it
+  at once.
 
 ## 14. How behaviour is measured
 
 `testbed/` runs one node per Docker container, with latency and loss emulated
 by `tc netem` from published backbone measurements (LAN, WAN Europe, WAN
-Trans-Atlantic), and an attacker that reads all the containers' traffic. Its
-modes are a forged STORE per UPDATE (`race`), many at once (`burst`), and
-forged records sent to every node all the time (`persist`). A measurement
-mode times publications and the moment other nodes can read the record. See
+Trans-Atlantic), and an attacker that reads all the containers' traffic. It
+sends forged versions (the owner's DID and `prev`, its own key): one per
+UPDATE (`race`), many at once (`burst`), a version 1 right after each version
+0 (`successor`), or to every node all the time (`persist`); and it can answer
+`FindHash` for other nodes under guessed ids (`spoof`). A testbed-only switch
+makes chosen nodes lie in `FindHash`. Measurement modes time publications,
+rotations with replicas restarted empty, and count copies over time under
+churn. See
 `testbed/README.md` for the commands, and `EXPERIMENTS.md` for the experiments
 that validate the current code and their results.
 
@@ -410,6 +508,8 @@ that validate the current code and their results.
   Addison-Wesley, 2003, "Idempotent Receiver".
 - [Karn 1987] P. Karn and C. Partridge, "Improving Round-Trip Time Estimates in
   Reliable Transport Protocols", ACM SIGCOMM 1987.
+- [KERI] Trust over IP, "Key Event Receipt Infrastructure (KERI)", v1.1,
+  "Pre-rotation". https://trustoverip.github.io/kswg-keri-specification/
 - [Langley 2012] A. Langley, "Revocation checking and Chrome's CRL", 5 February
   2012. https://www.imperialviolet.org/2012/02/05/crlsets.html
 - [Maymounkov 2002] P. Maymounkov and D. Mazières, "Kademlia: A Peer-to-peer

@@ -3,9 +3,12 @@
 ## What this is
 Kademlia DHT in Rust with **authenticated records**: every stored value is a
 self-signed DID Document (post-quantum: an ML-DSA-65 signature, FIPS 204;
-ADR 0003). Nodes accept a record only if the embedded signature is valid;
-updates require a second auth-signature produced with the owner's private key.
-Records have no explicit delete operation and are removed only by TTL expiry.
+ADR 0003). Nodes accept a record only if the embedded signature is valid.
+A DID is the hash of its first document, and each version of a DID Document
+names the hash of the only key that may sign the next one (ADR 0005): a
+replica checks an update against the version before it, with no second
+signature. Records have no explicit delete operation and are removed only by
+TTL expiry.
 
 **Target platform**: edge/embedded nodes (ARM multi-core, low per-core frequency)
 for the `did:iiot` method. The Rust core is the performance-critical layer:
@@ -18,8 +21,9 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 257 tests
-cargo test --features counters       # 260: also the counters' own tests
+cargo test                           # all 335 tests
+cargo test --features counters       # 339: also the counters' own tests
+cargo test --features testbed        # 340: also the testbed's FindHash lie switch
 cargo test <name>                    # single test, e.g. test_update_did_record_key_rotation
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -43,9 +47,22 @@ maturin develop --features python
   GIL. Async `Server` methods execute on Tokio and do not hold the GIL while the
   Rust future is running.
 - `Server.get()` returns `bytes | None` (not `list | None`).
-- `Server.set_detailed()` returns the publication status/reason and replica
-  counters as a Python `dict`; `Server.stats()` exposes routing, storage-budget,
-  and signature-cache counters.
+- Keys are DIDs (`did:iiot:` and the base64url of the SHA-256 of the first
+  document, ADR 0005), not UUIDs.
+- `Server.set()` and `Server.set_detailed()` publish only a version 0.
+  `set_detailed()` returns the publication status/reason and replica counters
+  as a Python `dict`: `stale_rejections` and `newer_claimed` are the replicas
+  that hold or were told of a later version (reason `newer_version`); a later
+  version passed to them is refused locally (reason `use_update`).
+- `Server.update(key, value, earlier)` publishes a version N >= 1: `earlier`
+  are the owner's saved versions 0 to N-1, used only to replay the chain to
+  replicas that miss versions. Retries resend the same saved bytes; the owner
+  calls it again with them at least once every 24 hours.
+- `MlDsaKeyManager.keypair_from_seed(seed)` returns the ML-DSA-65 key pair of a
+  32-byte seed, the same pair for the same seed: the application keeps only the
+  seed of the next key, and `nextKeyHash` is the SHA-256 of its public key.
+- `Server.stats()` exposes routing, storage-budget, and signature-cache
+  counters.
 - `MlKemKeyManager(max_age_secs=30, max_outstanding=64)` gives one ML-KEM-768
   key pair per handshake: `ephemeral_public_key()` returns `(key_id, bytes)`,
   `decapsulate(key_id, ciphertext)` returns the shared secret and destroys the
@@ -86,41 +103,45 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/protocol/mod.rs` | `KademliaProtocol`: the struct, its constructor and its tasks; the other files of `protocol/` each hold one part of its methods |
 | `src/protocol/messages.rs` | `RpcMessage` (the wire format: variants are encoded by position, so new ones go at the end), `Frame`, `ExpectedResponse` |
 | `src/protocol/transport.rs` | Sending and receiving: KADF fragments and reassembly, `call` with its resends, `handle_datagram`, `InProgress` |
-| `src/protocol/handlers.rs` | `dispatch_request` and the handlers of every request except STORE (`rpc_update`, `rpc_find_node`, `rpc_find_value`, ...); verification of a record for a key |
-| `src/protocol/store_check.rs` | `rpc_store` and the network check of an empty replica (`network_copy`) |
+| `src/protocol/handlers.rs` | `dispatch_request` and the handlers of every request except STORE (`rpc_update`, `rpc_find_node`, `rpc_find_value`, `rpc_find_hash`, ...); verification of a record for a key |
+| `src/protocol/store_check.rs` | `rpc_store` and the network check of an empty replica (`network_check`: R2 for a version 0, R5 with the fetch of the version before for a later one) |
+| `src/protocol/acceptance_tests.rs` | Tests of the STORE and UPDATE rules against neighbours that hold, claim, serve or keep silent |
 | `src/protocol/client.rs` | Outgoing calls (`call_*`) and `SpiderProtocol`, the requests of the lookups |
 | `src/protocol/contacts.rs` | Failing and returning contacts, pings of failing contacts, refresh ids |
 | `src/protocol/welcome.rs` | Nodes met through a message: inline routing insert, bounded replication queue |
 | `src/protocol/test_support.rs` | Helpers shared by the protocol tests |
 | `src/network/mod.rs` | Public `Server` API: the struct, `new`, `listen`, `stop`, `bootstrap`; the other files of `network/` each hold one operation |
-| `src/network/publish.rs` | SET (`set`, `set_detailed`) and its report (`SetReport`, `SetOutcome`) |
+| `src/network/publish.rs` | SET of a version 0 (`set`, `set_detailed`) and its report (`SetReport`, `SetOutcome`) |
 | `src/network/read.rs` | GET |
-| `src/network/update.rs` | UPDATE (`update`, `update_digest`) |
+| `src/network/update.rs` | UPDATE of a version N >= 1 (`update`, `update_digest`): the owner's chain (`OwnerChain`), the local vote, and the replay to replicas that miss versions (`replay`, `fill_empty_replica`) |
 | `src/network/maintenance.rs` | Refresh and republication, recovery tick, stats (`ServerStats`), saved state |
 | `src/crawling.rs` | Iterative lookup — `NodeSpiderCrawl` (find nodes) + `ValueSpiderCrawl` (find value; `search` with a deadline tells `NotFound` from `Incomplete`) |
 | `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `find_neighbors` returns the exact local top-k across known primary contacts, skipping failing ones (see Concurrency model); `touch_last_updated()` is called only for the bucket containing the lookup target — bucket staleness reflects lookup activity, not node additions |
-| `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day TTL and configurable byte budget (default 512 MiB), with lazy expiry on read |
+| `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day TTL and configurable byte budget (default 512 MiB), with lazy expiry on read; `insert_if_absent` and `replace_if` (compare and swap under the entry) |
 | `src/signature_cache.rs` | `SignatureCache` — moka bounded cache (SHA-256 key, TTL 1 h, 4096 entries) for ML-DSA-65 verification results |
 | `src/fragmentation.rs` | KADF fragmentation + reassembly (`encode_fragments`, `parse_fragment`, `accept_fragment`, `ReassemblyMap`) |
 | `src/retransmit.rs` | When to send a request again: per-peer round-trip estimate (`RoundTrips`, RFC 6298), `MAX_RESENDS`, bounds of the wait |
 | `src/counters.rs` | Datagrams, bytes, resends and STORE checks counted for measurements (feature `counters`, off by default; empty without it) |
-| `src/auth_handler.rs` | `SignatureVerifierHandler` trait + `DIDSignatureVerifierHandler` (DID record verification); `verify_record`, `verify_rotation`, `verify_issuer_signed`: how a node runs it (binding first, signature cache, blocking thread), shared by protocol and network |
+| `src/auth_handler/mod.rs` | `SignatureVerifierHandler` trait + `DIDSignatureVerifierHandler` (DID record verification); `verify_record`, `verify_issuer_signed`: how a node runs it (binding first, signature cache, blocking thread), shared by protocol and network |
+| `src/auth_handler/did.rs` | The `did:iiot` DID (ADR 0005): canonical suffix, `key_of_did`, canonical JSON, the hashed form of version 0 (`derive_did`), and step 1 of the rules, the form of a record for a key (`record_form`: `seq`, `prev`, `nextKeyHash`) |
+| `src/auth_handler/rules.rs` | The STORE and UPDATE rules as pure functions: `decide_locally` against the stored copy (R1, R3, R4), `decide_version_zero` (R2), `decide_successor` and `check_fetched` (R5), `store_quorum` |
+| `src/auth_handler/test_chain.rs` | Chains of versions for the unit tests, the DID computed as the Python application computes it |
 | `src/crypto/signature_verifier.rs` | `SignatureVerifier` trait, `resolve_alg_and_length()`, algorithm registry |
 | `src/crypto/factory.rs` | `SignatureVerifierFactory` + `SignerFactory` — dispatch by algorithm string |
-| `src/crypto/mldsa.rs` | ML-DSA-65 from `aws-lc-rs`: `MlDsa65KeyPair` (generate, sign, raw public key, expanded private key), verifier + signer (pure ML-DSA, empty context), `signature_len()`/`public_key_len()`, `ML_DSA_65` name |
+| `src/crypto/mldsa.rs` | ML-DSA-65 from `aws-lc-rs`: `MlDsa65KeyPair` (generate, from a 32-byte seed, sign, raw public key, expanded private key), verifier + signer (pure ML-DSA, empty context), `signature_len()`/`public_key_len()`, `ML_DSA_65` name |
 | `src/crypto/ed25519.rs` | Ed25519 verifier + signer |
 | `src/crypto/rsa.rs` | RSA verifier + signer |
-| `src/crypto/key_manager.rs` | `KeyManager` — keypair generation, storage, sign/verify helpers (`MlDsaKeyManager`, `Ed25519KeyManager`); `MlKemKeyManager` — ephemeral ML-KEM-768 pairs, one per handshake, in memory only, expiring after 30 s, at most 64 given out (ADR 0003) |
+| `src/crypto/key_manager.rs` | `KeyManager` — keypair generation, storage, sign/verify helpers (`MlDsaKeyManager`, with `keypair_from_seed`; `Ed25519KeyManager`); `MlKemKeyManager` — ephemeral ML-KEM-768 pairs, one per handshake, in memory only, expiring after 30 s, at most 64 given out (ADR 0003) |
 | `src/node.rs` | `Node` struct, full **256-bit** XOR distance (`long_id: U256`, no folding), `from_id`; `NodeHeap` shortlist backed by a distance-sorted `Vec`, which keeps every node a lookup met so that one beyond `k` replaces a peer that did not answer (reads see the closest `k`), while `add_reported` takes at most `k` nodes per answer; `Display` shows `ip:port` for real peers, `<key:hex8>` for key-space targets |
 | `src/utils.rs` | `digest()` (SHA-256 → `[u8; 32]`), `digest_bytes()`, `ID_LEN = 32`, `STATUS_LIST_KEY` (ADR 0004) |
-| `scripts/dht_node.rs` | Docker container entry point (`publisher` / `retriever` roles) |
-| `tests/common/mod.rs` | Shared test helpers: `start_node`, `build_did_document`, `build_signed_record`, `generate_did_iiot` |
-| `testbed/node.rs` | Testbed node (`testbed_node` binary): one DHT node per container, driven through a control socket inside the container |
+| `scripts/dht_node.rs` | Docker container entry point (`publisher` / `retriever` roles, the DID passed through `/shared/did`) |
+| `tests/common/mod.rs` | Shared test helpers: `start_node`, `build_did_document`, `build_signed_record`, `version0`, `new_did_record`, `key_of`, and `Chain`, the versions of one DID with their keys |
+| `testbed/node.rs` | Testbed node (`testbed_node` binary): one DHT node per container, driven through a control socket inside the container; keeps its DID's chain of versions |
 | `testbed/testbed.py` | Testbed driver: generates the Docker network, applies `tc netem` profiles, sends commands to nodes |
-| `testbed/attack.py` | Testbed attack mode: starts the attacker and runs the `race` scenario on a running network |
-| `testbed/measure.py` | Testbed measurement mode: publication time and availability of the record to other nodes |
-| `testbed/attacker.rs` | Testbed attacker (`testbed_attacker` binary): sniffs the host's packets and races UPDATEs with forged STOREs |
-| `testbed/did.rs` | DID record helpers shared by the two testbed binaries |
+| `testbed/attack.py` | Testbed attack mode: starts the attacker (`race`, `burst`, `successor`, `spoof`, `persist`) and runs the `race` and `restart` scenarios on a running network |
+| `testbed/measure.py` | Testbed measurement mode: publication time and availability (`publish`), rotations with restarted replicas and liars (`update`), copies over time under churn (`churn`) |
+| `testbed/attacker.rs` | Testbed attacker (`testbed_attacker` binary): sniffs the host's packets, sends forged versions as STOREs and spoofed `FindHash` answers |
+| `testbed/did.rs` | DID records shared by the two testbed binaries: version 0, the versions after it, forged versions |
 
 ## Wire record format
 ```
@@ -129,7 +150,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | DID Document (JSON, canonical/sorted keys) |
 ```
 A node accepts only `ML-DSA-65` records (ADR 0003): `record_algorithm()` in
-`src/auth_handler.rs` refuses any other algorithm field, for DID Documents,
+`src/auth_handler/mod.rs` refuses any other algorithm field, for DID Documents,
 key rotations and the Status List. `resolve_alg_and_length()` in
 `src/crypto/signature_verifier.rs` gives the signature length, from
 `aws-lc-rs` (`mldsa::signature_len()`), never from a literal; it also knows `Ed25519`
@@ -141,6 +162,17 @@ that `aws-lc-rs` would also take. A `kty` other than
 `AKP` or an `alg` other than the record's algorithm field is `KeyMismatch`
 (`InvalidRecord`). There is no `keyAgreement` key: key agreement is ephemeral
 ML-KEM, outside the DHT.
+
+Every DID Document (ADR 0005) has `seq`, `prev` (the base64url SHA-256 of the
+whole record before it, not in version 0) and `nextKeyHash` (the base64url
+SHA-256 of the raw public key that alone may sign the next version), and is in
+canonical form: printable ASCII only, integers within ±(2^53 − 1) without
+fraction or exponent, and bytes equal to their `serde_json` re-serialization
+(sorted keys, no whitespace). A version that commits to its own key is
+refused. The DID is `did:iiot:` and the base64url, without padding, of the
+SHA-256 of version 0 in hashed form: without `id`, its own DID written as the
+placeholder `did:iiot:self` in string values (`derive_did`, `hashed_form` in
+`src/auth_handler/did.rs`).
 
 ## Application-level fragmentation (`src/fragmentation.rs`)
 Large PQ records (~6 KB) are split into 1400-byte chunks before sending.
@@ -160,12 +192,12 @@ entering the reassembly buffer to bound memory usage.
 | Variant | Direction | Purpose |
 |---|---|---|
 | `Ping` / `Pong` | req/resp | Liveness check + node discovery |
-| `Store` / `StoreResult` | req/resp | Store an authenticated record; result is `Stored`, `AlreadyStored`, `Conflict`, `CapacityExceeded`, or `InvalidRecord` |
-| `Update` / `UpdateResult` | req/resp | Key-rotation update (requires `auth_signature`) |
+| `Store` / `StoreResult` | req/resp | Store an authenticated record; result is `Stored`, `AlreadyStored`, `Conflict`, `Stale` (a later version is held), `NewerClaimed` (the check was told of a later one), `MissingPrevious`, `CapacityExceeded`, or `InvalidRecord` |
+| `Update` / `UpdateResult` | req/resp | Version N >= 1 of a DID, the record only (ADR 0005); result is an `UpdateStatus`: `Updated`, `AlreadyStored`, `MissingPrevious` (the `seq` held, or none), `Stale`, `Conflict`, `CapacityExceeded`, `InvalidRecord` |
 | `UpdateStatusList` / `UpdateStatusListResult` | req/resp | Issuer-signed status-list update |
 | `FindNode` / `FindNodeResult` | req/resp | Kademlia FIND_NODE |
 | `FindValue` / `FindValueHit` / `FindValueNodes` | req/resp | Kademlia FIND_VALUE |
-| `FindHash` / `FindHashHit` / `FindValueNodes` | req/resp | SHA-256 of the stored record (`record_hash`), asked by an empty replica before a STORE; one datagram. Added after `Leave`, so older nodes cannot decode it |
+| `FindHash` / `FindHashHit` / `FindValueNodes` | req/resp | `seq` and SHA-256 of the stored record (`record_hash`), asked by an empty replica before a STORE; one datagram. Added after `Leave`, so older nodes cannot decode it |
 | `Received` | resp | Receipt for a request carrying a record (`Store`, `Update`, `UpdateStatusList`), sent before the answer and again for each copy that arrives while the request is handled. Added after `FindHashHit` |
 | `Leave` | fire-and-forget | Graceful departure, removes node from routing table |
 
@@ -173,8 +205,9 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 
 ## Concurrency model
 - `ForgetfulStorage` is `Arc<ForgetfulStorage>` (no outer `RwLock`). All `IStorage` methods take `&self`; internal synchronization via `DashMap` shards.
-- `rpc_store` uses `insert_if_absent` (DashMap `Entry` API) with atomic global byte reservation. Identical bytes are idempotent; different bytes conflict; active records are never evicted for capacity.
+- `rpc_store` uses `insert_if_absent` (DashMap `Entry` API) with atomic global byte reservation. Identical bytes are idempotent; active records are never evicted for capacity. A verified successor (R3) replaces the stored record with `replace_if`, a compare and swap under the entry: if the record changed since the rules read it, the handler decides once more, and after a second change it sends no answer. `rpc_update` writes the same way.
 - A STORE for a key the node does not hold waits for a lookup (see Key invariants), whose answers arrive through the receive workers. `handle_datagram` therefore runs it in its own task (`spawn_task`) instead of on the worker, and answers when it is done; at most `MAX_STORE_LOOKUPS` (256) wait at once, beyond that the STORE is dropped. Handled on the worker, 8 such STOREs at once left the lookups without their answers and forged records were stored 5/5.
+- **Message ids** (ADR 0005, open point 25): each request draws its msg_id at random (`rand`), never one a pending request holds (`fresh_id`, under the lock of the pending map); an answer counts only if its id is pending for the address it comes from. An attacker who does not read the traffic cannot guess one; one who reads it still sees every id.
 - **Lost datagrams** (`call`, `src/retransmit.rs`): a request with no sign of its peer after `resend_after` is sent again, same msg_id and fragment id, up to `MAX_RESENDS` (2) times, doubling the wait; the call still ends at `RPC_TIMEOUT`. The wait is 3 round trips of that peer, or smoothed + 4 × variation if larger (RFC 6298), within 20 ms–1 s, and 500 ms for a peer never measured. Only requests sent once are measured (Karn). A request carrying a record gets a receipt (`Received`) before it is handled, so the sender does not resend a 6 KB record while an empty replica runs its network check; after a receipt a copy only asks again for an answer that may have been lost (a stored record then answers `AlreadyStored` at once). The receiver recognises a copy of a request it is still handling by sender address and SHA-256 of the whole request (`InProgress`) and answers it with the receipt only, so a copy never starts a second check; another request under the same msg_id is not a copy. Measured before this (0.5% loss, 30 nodes, k=5): the check refused on a single lost datagram and left 15/40 publications degraded, against 7/40 without the check.
 - All RPC handlers use `self: &Arc<Self>` receiver to enable `tokio::spawn` without cloning the full struct.
 - **Futurelock** (Oxide RFD 609): the router is a fair `tokio::sync::RwLock`, so a waiting writer blocks later readers. Never keep futures that may wait for the router in a set the task stops polling while it awaits something else that takes the router (a `FuturesUnordered` pulled with `next()` and an await in the loop body, a `&mut future` in `select!`). `ValueSpiderCrawl::search` reads the router between answers (`failing_among`) and writes it at its deadline (`note_no_answer`), while its requests may wait to write it (`schedule_welcome_if_new` adds a node met in an answer): it therefore spawns them in a `JoinSet`. With a `FuturesUnordered` a node of the 127-node testbed stopped answering two seconds after the first publication, and `a_lookup_keeps_polling_a_request_that_waits_for_the_routing_table` hung. `join_all` (`find_round`) keeps polling every future and is safe.
@@ -192,7 +225,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 - **Routing table internals** (`src/routing.rs`): `KBucket.add_node()` does **not** update `last_updated`; only lookups reset the timer. `find_neighbors` touches the bucket containing the lookup target, evaluates every known primary contact with the full 256-bit XOR metric, excludes `target.id` and the optional caller-supplied peer, then returns the exact local top-k. Split condition §4.2: `covers(local_node) OR depth % 5 != 0`.
 
 ## Key invariants
-- Records are **immutable after creation**: byte-identical STORE retries return `AlreadyStored`; different bytes for the same key return `Conflict`.
+- **One record per key, replaced only by a verified successor** (ADR 0005, `decide_locally`): byte-identical bytes return `AlreadyStored` (R1); a version N+1 whose `prev` is the hash of the stored record and whose signing key hashes to the stored `nextKeyHash` replaces it once its signature verifies (R3); an older version is `Stale`; another version with the stored `seq` is `Conflict` (R4: signed twice, proven duplicity by the same key, or another key); a version further ahead is `MissingPrevious` and nothing is asked. The network check fills only a replica that holds nothing.
 - A new `set()` reuses the nodes from one `ValueSpiderCrawl`. An identical retry performs node discovery so missing replicas can be completed. Remote candidates plus the local node are XOR-sorted and truncated to `k`, preventing `k+1` copies.
 - A remote DID GET takes no vote: `find_first_valid` returns the first record
   that passes DID binding and signature verification (Kademlia §2.3), discards
@@ -203,32 +236,42 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
   check. Do not bring the vote back as a defence: two colluding nodes win it.
 - The Status List GET keeps a quorum derived from `alpha`, not independently
   configurable: with `alpha = 3`, two byte-identical record responses, or `None`.
-- Updates require `auth_signature = sign(new_record_bytes, old_private_key)`.
-  `verify_key_rotation()` checks: (1) auth_sig valid under old public key, (2) new record self-signed.
-  **Downgrade is rejected as long as every update changes the signing key**: to submit
-  `record_v1` as "new" when `record_v2` is stored, an attacker would need to sign with
-  `sk_v2`. An update that keeps the key stays replayable: its old auth signature still
-  verifies, and nothing rejects a new record with the same key.
-- UPDATE does not converge on its own. `Server::update` checks the authorization against
-  the first copy it reads, `rpc_update` rejects a missing record, and a replica that missed
-  an update gets `Conflict` on every later STORE. The quorum counts only nodes that
-  responded during the lookup.
-- Retrying an applied UPDATE is safe. `rpc_update` acknowledges a record identical to the
-  stored one without verifying or writing it, and does not touch routing: the answer means
-  the replica holds the record, not that the signature is valid. `Server::update` treats a
-  copy that already is the new record as authorized and publishes it again, so the retry
-  completes the replicas that missed it. Retries must resend the saved bytes.
-- An UPDATE is accepted only as a verified rotation: a replica without the record refuses
-  it, because it has no key to verify the auth signature with. `update_digest` then sends
-  that replica the new record as a plain STORE (first-writer-wins, `Conflict` for a
-  replica holding another record). Only a refusal triggers the STORE, not a missing
-  answer (`call_update_rpc_answer` tells them apart). Never make `rpc_update` accept an
-  update without a stored record: with nothing to verify, it would let a forged update
-  overwrite a valid record.
-- An empty replica checks the network before a STORE (`rpc_store`, `network_copy`). It
-  asks the nodes closest to the key for the SHA-256 of their record (`FindHash`, through
-  `ValueSpiderCrawl::search`), asking all of them, leaving no cached copy, giving up after
-  `STORE_LOOKUP_TIMEOUT` (2 s, below `RPC_TIMEOUT`). The Status List is exempt.
+- **An update is authorized by the chain** (ADR 0005, section 2): version N-1
+  names the only key that may sign version N (`nextKeyHash`), and a version that
+  commits to its own key is refused. There is no `auth_signature`. A replay of an
+  old version is refused by `seq` and `prev` at a holder (`Stale`, `Conflict`),
+  and at an empty replica by R2 and R5 at or above the quorum; it does not rest
+  on the key changing. A stolen current key cannot rotate: the next key is kept
+  as a seed until the rotation that reveals it.
+- **UPDATE** (`Server::update`, `update_digest`): the owner sends version N with
+  its earlier versions; it reads no copy first. `rpc_update` answers an
+  `UpdateStatus`. A replica holding N-1 replaces it (R3); one behind or empty
+  answers `MissingPrevious`, and only that answer makes the owner replay its
+  chain to it, stop-and-wait: version 0 by STORE (R2), the next ones by UPDATE,
+  the replicas behind first and the empty ones after. If version 0 of a replay
+  is refused with `NewerClaimed` (a sibling replica was just repaired), the
+  owner sends its current version once by STORE (R5), a departure from the
+  ADR. Success is a strict majority of the consistency group, capped at
+  `alpha`: the local copy, voted by the same rules against what it holds, and
+  the closest remote replicas that answered `Updated` or `AlreadyStored` (or
+  were filled by the replay); the others are updated best-effort. The local
+  copy is written after the majority, with `replace_if`. `update` validates the earlier
+  versions it gets (consecutive, linked by `prev`, the last committing to the
+  key of version N) and refuses locally otherwise.
+- Retrying an applied UPDATE is safe: a replica holding the same bytes answers
+  `AlreadyStored`. Retries must resend the saved bytes: another version N signed
+  by the same key is proven duplicity, refused and logged, and the owner signs
+  each version once.
+- `rpc_update` never accepts a version without the one before it: with nothing
+  stored it has no key to check, and answers `MissingPrevious`. Never make it
+  accept without a stored record.
+- An empty replica checks the network before a STORE (`rpc_store`,
+  `network_check`), for every DID record (`store_needs_lookup`): the Status List
+  is exempt. It asks the nodes closest to the key for the `seq` and SHA-256 of
+  their record (`FindHash`, through `ValueSpiderCrawl::search`), asking all of
+  them, leaving no cached copy, giving up after `STORE_LOOKUP_TIMEOUT` (2 s,
+  below `RPC_TIMEOUT`). The rules decide once every node asked has answered or
+  the deadline has passed, refusals first.
   - A replica asks them all at once (`asking_everyone`), and in a later round all the
     nodes that answers added, instead of `alpha` per round: one round, sometimes two,
     instead of several, and a node it knows cannot be pushed out of the lookup before it
@@ -238,16 +281,28 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
     node it asked, including one pushed out since. A node that knows `k` nodes closer to
     the key than itself is not a replica by its own table and keeps `alpha` per round:
     asking all would ask `k` nodes per hop, most replaced at the next.
-  - Before asking, it checks the DID binding (a JSON parse): a record that does not
-    belong to the key is `InvalidRecord` and starts no lookup.
-  - Another hash: `Conflict`, without verifying the signature. A hash cannot be
-    verified, so a node can block a STORE this way, as it can by not answering.
-  - The same hash, or no node holds the key: verify the signature and store.
-  - A node did not answer, even after the resends, or there was nobody to ask (a node that has just restarted
-    knows no contacts yet): `rpc_store` returns `None` and the replica sends no answer,
-    so the sender counts it as unavailable. Nobody to ask is not "nobody holds it": in
-    the testbed a persistent attacker got forged records onto 6/20 restarted replicas
-    through that window.
+  - Before asking, it checks the form of the record for the key (step 1,
+    `record_form`, no signature): a record that does not bind to the key is
+    `InvalidRecord` and starts no lookup.
+  - **Version 0 (R2):** refused with `NewerClaimed` only when a quorum claims a
+    later version, so that one holder of a later version cannot stop the owner's
+    replay; refused with `Conflict` on another version 0; accepted, after its
+    signature, when every node asked answered.
+  - **Version N >= 1 (R5):** one answer is enough to refuse: a `seq` above N
+    (`NewerClaimed`), another version N, a version N-1 that is not its `prev`
+    (`Conflict`), or a `seq` below N-1, a holder behind (open point 26). Without
+    a refusal it fetches version N-1 from the nodes that answered `(N-1, prev)`
+    (`FindValue`, one record), checks that it is the `prev` and commits to the
+    key of version N, and accepts when the holders of version N and the fetched
+    versions reach `store_quorum` of the nodes asked; for N = 1 one fetched,
+    verified version 0 is enough. "No node holds the key" gives no votes: no
+    answer.
+  - A node did not answer, even after the resends, or there was nobody to ask (a
+    node that has just restarted knows no contacts yet): `rpc_store` returns
+    `None` and the replica sends no answer, so the sender counts it as
+    unavailable. Nobody to ask is not "nobody holds it": in the testbed a
+    persistent attacker got forged records onto 6/20 restarted replicas through
+    that window.
 
   **Never make the check accept when a node did not answer** (fail-safe default, Saltzer
   and Schroeder 1975; accepting on silence is the soft-fail revocation flaw, Langley 2012).
@@ -255,21 +310,22 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
   holders' fragmented answers (`MAX_REASSEMBLY_ENTRIES_PER_PEER`), and accepting on
   timeout stored up to 86/128 forged records. Do not switch the check back to `FindValue`
   either: a hash answer fits in one datagram, a whole record takes about 6 KB in 5
-  fragments per holder. Cost: the first STORE after a node dies is refused by each replica
-  that still asks it. Known gap: while the old version of a rotated record is anywhere in
-  the network, an empty replica refuses the new one by STORE, so the `update_digest`
-  fallback fails then.
+  fragments per holder; R5 fetches one record only after the hashes allow it. Cost: the
+  first STORE after a node dies is refused by each replica that still asks it.
+  Limits (ADR 0005, Consequences): one node that claims a later version, or does not
+  answer, blocks the repair of an empty replica by a later version (the single liar's
+  veto); below the quorum the owner's replay restores copies only where the check
+  allows it; a forgery accepted at an empty replica stays there until it expires.
 - There is no DELETE API or RPC. Active records are never removed explicitly;
   TTL expiry is the only record-removal mechanism.
-- DHT key = `digest(did_uuid_string)` where `digest` is SHA-256 → `[u8; 32]`
-  (ADR 0004). For ordinary records, the DID Document JSON covered by the
-  record's self-signature must contain a top-level `id = "did:iiot:<uuid>"`.
-  `<uuid>` must be a UUID in canonical form (RFC 9562: lower case, hyphenated,
-  as `Uuid::to_string` writes it), and its digest must equal the requested DHT
-  key. Another text of a UUID (upper case, no hyphens, braces, `urn:uuid:`)
-  binds to no key, so one UUID is one DID and one key. This check runs before
-  signature-cache lookup and on SET, GET, and UPDATE paths. `STATUS_LIST_KEY`
-  is exempt.
+- DHT key = the decoded suffix of the DID (ADR 0005, `key_of_did`): `did:iiot:`
+  then 43 characters of base64url without padding, in canonical form (the text
+  encodes back to itself, so one DID is one key), the SHA-256 of version 0 in
+  hashed form. Version 0 binds to a key only if its hashed form hashes to that
+  key; a later version binds by the suffix of its `id`, and its place in the
+  chain is checked by the rules. A UUID DID binds to no key. This check runs
+  before the signature cache and on SET, GET, and UPDATE paths.
+  `STATUS_LIST_KEY` is exempt.
 - Invalid STORE requests return `InvalidRecord` and never add, replace, remove,
   or otherwise mutate routing contacts based on the unauthenticated `sender_id`.
 - XOR distance is computed over the **full 256-bit id** (`Node.long_id: U256`,
@@ -293,9 +349,9 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | File | Count | Notes |
 |---|---|---|
 | `tests/network_tests.rs` | 17 | Full multi-node integration tests (real UDP) |
-| `tests/crypto_tests.rs` | 27 | Crypto layer unit + DID handler unit tests |
+| `tests/crypto_tests.rs` | 24 | Crypto layer unit + DID handler unit tests |
 | `tests/routing_tests.rs` | 22 | Routing table unit tests |
-| `tests/storage_tests.rs` | 15 | `ForgetfulStorage` unit tests (includes `insert_if_absent` cases) |
+| `tests/storage_tests.rs` | 20 | `ForgetfulStorage` unit tests (includes `insert_if_absent` and `replace_if` cases) |
 | `tests/dht_integration.rs` | 1 | Legacy 3-node end-to-end scenario |
 | `tests/scenarios/replication.rs` | 1 | replication to a joining node (3-node join) |
 | `tests/scenarios/cache.rs` | 2 | SignatureCache hit-rate + false caching |
@@ -303,7 +359,8 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/scenarios/worker_pool.rs` | 1 | 40-client burst, all responses delivered |
 | `tests/scenarios/crypto.rs` | 4 | End-to-end crypto invariants (tamper, injection, downgrade, revocation) |
 | `tests/quorum_tests.rs` | 19 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum, delayed UPDATE commit, retry of an applied UPDATE, UPDATE to replicas without the record, and the network check of a STORE to an empty replica |
-| `src/**` (inline) | 147 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, and fragmentation tests) |
+| `tests/chain_tests.rs` | 11 | Chains of versions over real UDP (ADR 0005): `set` refuses a later version, forged versions at empty replicas, the replay below the quorum and to replicas behind, the closed gap, no cache STORE |
+| `src/**` (inline) | 212 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID derivation with a Python test vector, the STORE and UPDATE rules, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 4 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 
@@ -331,7 +388,7 @@ All tests are network-clean (loopback only) and run in parallel without interfer
 | 15866–15883 | quorum consistency: DID GET, Status List GET, and UPDATE commit |
 | 15888–15894 | quorum consistency: iterative multi-hop DID GET |
 | 15895–15896 | degraded SET report when one responsible node is at capacity |
-| 15897 | valid DID record rejected under a different DID UUID key |
+| 15897 | valid DID record rejected under the key of another DID |
 | 15898–15899, 15901–15903 | shutdown: `stop`, server drop, and cancellation of in-flight replication |
 | 15904–15905 | Status List publication under the Python issuer's key |
 | 15906–15912 | recovery: outage, late seed, lone node |
@@ -340,8 +397,9 @@ All tests are network-clean (loopback only) and run in parallel without interfer
 | 15928–15932 | retry of an already applied UPDATE |
 | 15933–15937 | UPDATE to replicas without the record |
 | 15938–15953 | STORE to an empty replica: network check |
+| 15954–16017 | chains of versions (`tests/chain_tests.rs`) |
 
-When adding a new integration test use ports **15954+** and document them here (15900 is reserved below).
+When adding a new integration test use ports **16018+** and document them here (15900 is reserved below).
 
 | 15900 | resilience test: Node A victim (host-exposed UDP, Docker only) |
 
@@ -398,9 +456,15 @@ Use this example to distinguish:
 docker compose up --build            # 4 containers: seed, peer1, peer2, peer3
 docker compose logs -f dht_peer_2   # follow a single container
 ```
-`DEMO_DID_UUID` in `.env` is the shared key for the publisher→retriever demo.
-Environment variables per container: `NODE_PORT`, `IS_SEED`, `BOOTSTRAP_ADDR`,
-`ROLE` (`publisher`|`retriever`), `FIXED_DID_UUID`, `RETRIEVE_KEY`, `RUST_LOG`.
+The publisher builds version 0 of a new DID, publishes it, and writes the DID to
+`/shared/did` (a temporary file, then a rename) on a volume it shares with the
+retriever, which waits for the file and reads the record. The DID changes on
+every run, since it is the hash of a document with a new key; the volume is a
+tmpfs, emptied once no container uses it, so a retriever never reads the DID of
+an earlier run. No key or seed is in `.env` or the compose file (ADR 0005, open
+point 17). Environment variables per container: `NODE_PORT`, `IS_SEED`,
+`BOOTSTRAP_ADDR`, `ROLE` (`publisher`|`retriever`), `RETRIEVE_KEY` (a DID to
+read instead of the file), `RUST_LOG`.
 
 Every Dockerfile builds on the Debian release it runs on (`bookworm`): the C
 code of AWS-LC links against the builder's glibc, and a binary built on a newer
@@ -411,7 +475,7 @@ N nodes in Docker with configurable `k`, `alpha`, seeds and `tc netem` profiles
 (LAN, WAN Europe, WAN Trans-Atlantic, from Verizon's published latencies).
 ```
 testbed/testbed.py up --nodes 10 --k 3 --profile wan-eu
-testbed/testbed.py ctl node-3 publish        # also: update, get, storage, routing
+testbed/testbed.py ctl node-3 publish        # also: update, republish, get, lie on|off, storage, routing
 testbed/testbed.py get node-3 --from node-5
 testbed/testbed.py pause node-10             # also: netem, stop, start, logs
 testbed/testbed.py down
@@ -422,17 +486,31 @@ default, shared by all containers) must be raised first, or nodes cannot send,
 and so must the per-CPU receive backlog (`net.core.netdev_max_backlog`, 1000 by
 default), or the host drops datagrams silently even without emulated loss: see
 "More than about 30 nodes on one machine" in `testbed/README.md`.
+A node keeps its DID's chain of versions: `publish` sends version 0,
+`update` signs the next version with the committed key and sends it with the
+earlier ones, `republish` sends the current version again with the saved
+bytes. `lie on` (testbed builds only, `KademliaProtocol::set_lying`) makes it
+answer every `FindHash` with a made-up version far ahead.
 `testbed/attack.py` adds an attacker that reads the traffic and sends forged
-records: `start --mode race|burst|persist`, then the `race` or `restart`
-scenario. `testbed/measure.py publish` measures publication time and when
-other nodes can read the record (`ctl <node> new`, `ctl <node> watch`). See
-`testbed/README.md`. With `--counters` it also reads every node's counters
-(`ctl <node> counters`) before and after each publication.
+versions (the owner's DID and `prev`, its own key): `start --mode
+race|burst|successor|spoof|persist`, then the `race` or `restart` scenario.
+`successor` answers each STORE of a version 0 with a forged version 1;
+`spoof` answers each `FindHash` with answers claiming a later version from the
+address of the node asked, under random ids (`--spoof-ids observed`, the
+control, under the ids read on the wire). `testbed/measure.py publish`
+measures publication time and when other nodes can read the record (`ctl
+<node> new`, `ctl <node> watch`); `update` measures rotations, with replicas
+restarted empty (`--restart`) and liars near the key (`--liars`); `churn`
+counts the copies of a record over time while nodes crash, with liars. See
+`testbed/README.md`. With `--counters` they also read every node's counters
+(`ctl <node> counters`) before and after each operation.
 
 `EXPERIMENTS.md` holds the experiments that validate the current code
-(latency, traffic, check, attacks) with their setup and results; rerun and
-update it when a change affects them. `testbed/README.md` keeps the commands
-and the measurements that led to fixes.
+(latency, traffic, check, rotation, attacks, liars, churn) with their setup
+and results, and `experiments/<date>-<topic>/` the raw data of each campaign
+with the script that ran it; rerun and update them when a change affects
+them. `testbed/README.md` keeps the commands and the measurements that led to
+fixes.
 
 ### Counters (`src/counters.rs`, feature `counters`)
 Off by default; the `testbed` feature turns them on. Without the feature
@@ -440,8 +518,11 @@ Off by default; the `testbed` feature turns them on. Without the feature
 datagrams and bytes sent by message type (in `send_datagrams`, so first copies
 and resends together, KADF header included); resends, split by whether the
 peer's round trip was measured when the request was first sent; and the STORE
-checks of empty replicas, by outcome (`unbound`, `nobody_to_ask`,
-`none_or_same`, `other`, `no_answer`), lookup rounds and duration.
+checks of empty replicas, by outcome (`invalid`, `nobody_to_ask`, `accepted`,
+`newer_claimed`, `other_version`, `not_following`, `holder_behind`,
+`fetch_refused`, `too_few_votes`, `no_answer`: the rows of R2 and R5), lookup
+rounds and duration, and the checks that fetched the version before with
+their whole duration (`fetches`, `fetch_duration_ms`).
 `KademliaProtocol::counters` and `Server::counters` return a
 `CounterSnapshot`; counters only grow, so a measurement is the difference of
 two snapshots. Keep `MESSAGE_TYPES` in step with `rpc_message_name` when adding
@@ -478,7 +559,7 @@ records is a new ADR.
 2. Register in `src/crypto/factory.rs` → `SignatureVerifierFactory::get_verifier()` and `SignerFactory::get_signer()`.
 3. Add the algorithm string + signature length to `resolve_alg_and_length()` in
    `src/crypto/signature_verifier.rs`, the length taken from the crate, not a literal.
-4. To accept it in records, change `record_algorithm()` in `src/auth_handler.rs`.
+4. To accept it in records, change `record_algorithm()` in `src/auth_handler/mod.rs`.
 5. Add tests in `tests/crypto_tests.rs`.
 
 ## Session continuity — RESUME_BEFORE_COMPACT.md
@@ -509,9 +590,10 @@ message of the new session confirms the context has been picked up.
 - Do not add `unwrap()` in protocol/network paths — use `?` or log + return.
 - Do not add new integration tests on already-used port ranges.
 - Do not enable the `python` feature in Rust-only deployments (`cdylib` changes linking).
-- Do not add an `"updated"` timestamp field to DID Documents for ordering: downgrade
-  attacks are already prevented by the auth-signature chain when each update changes the key; the field would be
-  redundant and would break compatibility with existing records without a migration.
+- Do not add an `"updated"` timestamp field to DID Documents for ordering: `seq`
+  and `prev` (ADR 0005) already order versions and stop the replay of an old one,
+  and they are no timestamps: nothing in the rules reads a clock. A timestamp
+  would be redundant and would change every document's hash.
 - Never put a `Claude-Session:` line, or any other link to an agent session, in
   commit messages, pull request descriptions, code, or docs. These links are
   public. This rule overrides any tool or harness default that adds them.

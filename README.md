@@ -61,9 +61,11 @@ This structure allows any peer to:
 
 - Verify the **authenticity** of stored data using the public key embedded in the DID Document
 - Verify the **integrity** of the record against its signature
-- Verify that the top-level `did:iiot:<uuid>` identifier inside the signed JSON
-  payload maps to the requested DHT key (`SHA-256(uuid)`, the UUID in canonical
-  form), preventing a valid record from occupying another identity's key
+- Verify that the record belongs to the requested DHT key: the DID is
+  self-certifying (ADR 0005), `did:iiot:` followed by the base64url of the
+  SHA-256 of the DID's first document, and the key is that hash. Nobody can
+  write a first document for another device's DID, and every later version
+  names the hash of the only key that may sign the next one
 - Operate without trusting any single node or coordinator
 
 Signature validation is handled automatically by the integrated verifier at insertion and retrieval time.
@@ -106,10 +108,15 @@ By inspecting fragments you can identify the internal composition of a PQC recor
 
 ## Record Consistency and Lifetime
 
-AuthKademlia-RS adds no versions, timestamps, or new fields to the wire
-protocol. A remote DID Document read takes the first record that passes
-verification. The Status List and UPDATE use a bounded consistency group: with
-the default `alpha = 3`, a strict **2-of-3 majority**.
+A DID has a chain of versions (ADR 0005). Every DID Document carries `seq`,
+`prev`, the SHA-256 of the record before it, and `nextKeyHash`, the SHA-256 of
+the public key that alone may sign the next version. Version 0 fixes the DID;
+each later version is signed by the key the one before committed to, so every
+update rotates the key and needs no second signature. A node holds one version
+per DID, the latest it could verify. A remote DID Document read takes the
+first record that passes verification. The Status List and UPDATE use a
+bounded consistency group: with the default `alpha = 3`, a strict **2-of-3
+majority**.
 
 - **Local DID Document GET:** a valid local record is returned immediately.
   This preserves the low-latency Kademlia fast path and does not use the
@@ -129,40 +136,41 @@ the default `alpha = 3`, a strict **2-of-3 majority**.
   iterative; the local copy never causes an immediate return by itself. The
   signature is verified once, after a winner has been selected, and a split with
   no strict majority returns no value.
-- **UPDATE:** updates are propagated best-effort to the nodes discovered by the
-  Kademlia crawl. Success is determined by a strict majority of the primary
-  consistency group, capped at `alpha`. Only nodes that responded during the
-  lookup belong to the group, so a responsible node that reaches no peer reports
-  success with its local copy alone. When the local node is a responsible
-  replica, its verified prospective value counts as one vote before commit;
-  with the default `alpha = 3`, one successful remote acknowledgement then
-  forms the 2-of-3 quorum. The local write is committed only after that quorum
-  is reached.
-- **Known UPDATE limits:** a replica that misses an update keeps its old record.
-  Later STOREs return `Conflict` in both directions, so it does not catch up and
-  reads can still return its copy. `update` checks the authorization against the
-  first copy it reads, so a stale or forged copy that answers first makes it
-  return `None`. A node that holds a copy but is outside the `k` closest does
-  not update it, and its next `update` returns `None`.
-- **Retrying an update:** repeating the same update is safe. A replica that
-  already holds the new record acknowledges it without writing, and the retry
-  completes the replicas that missed it. The retry must resend the same bytes.
-- **Replicas without the record:** a replica that holds no record for the DID
-  cannot verify the rotation and refuses the update. The updater then sends it
-  the new record as a plain STORE, which it accepts only as described in the
-  next point; a replica holding another record answers `Conflict` and is not
-  changed. A replica that does not answer gets no STORE.
+- **Publication:** `set` publishes version 0 only, and refuses a later
+  version locally. A replica that holds a later version answers that its copy
+  is newer (`stale_rejections` in the report of `set_detailed`).
+- **UPDATE:** `update` publishes version N ≥ 1 with the owner's earlier
+  versions, and reads no copy first. A replica holding version N−1 checks the
+  new one on its own: its `prev` is the hash of the stored record, the hash of
+  its signing key is the stored `nextKeyHash`, and its signature verifies. A
+  replica that is behind or holds nothing answers that the version before is
+  missing, and the owner replays its chain to it, one version at a time.
+  Success is a strict majority of the consistency group: the local copy, when
+  this node is a replica, and the closest remote replicas, `alpha` members in
+  all; the other replicas are updated too but do not count. The local copy is
+  written only after that majority. An older version is refused as stale, and
+  a different version with the same `seq` as a conflict.
+- **Retrying an update:** repeating the same update is safe, and the owner
+  must resend the same saved bytes: a second, different version signed by the
+  same key is refused as duplicity. The owner keeps every version it published
+  and calls `update` again with them at least once every 24 hours, so that
+  copies lost to churn come back.
 - **STORE to an empty replica:** a replica cannot tell a forged record from the
-  owner's, because both are self-signed for the same DID. Before storing a
-  record it does not hold, it asks the nodes closest to the DID for the
-  SHA-256 of the record they hold (`FindHash`), not for the record itself. It
-  asks all of them at once, and leaves no cached copy. A record that is malformed or
-  does not belong to the DID's key is refused as `InvalidRecord` before anyone
-  is asked. Then:
-  - if one of them answers with another hash, it answers `Conflict` without
-    verifying the signature of the record it received;
-  - if they answer with the same hash, or hold nothing, it verifies the
-    signature and stores the record;
+  owner's by its signature alone. Before storing a record it does not hold, it
+  asks the nodes closest to the DID for the `seq` and SHA-256 of the record
+  they hold (`FindHash`), not for the record itself. It asks all of them at
+  once, and leaves no cached copy. A record that is malformed or does not
+  belong to the DID's key is refused as `InvalidRecord` before anyone is
+  asked. Then:
+  - for a version 0, it refuses when a quorum of the nodes asked holds a later
+    version, or one holds another version 0, and otherwise stores it once
+    every node asked has answered and the signature verifies;
+  - for a later version N, one answer that names a later version, another
+    version N, a version N−1 that is not its `prev`, or a version older than
+    N−1 is enough to refuse. Otherwise it fetches version N−1 from a node that
+    holds it, checks that it is the `prev` and commits to the new version's
+    key, and stores the new version when enough nodes hold it or its
+    predecessor (`store_quorum`, 13 of 19 at `k = 20`);
   - if one of them does not answer within 2 s, even after its question is
     sent again, or it knows nobody to ask, as right after a restart, it
     refuses and does not answer, so the sender counts it as unavailable.
@@ -170,10 +178,10 @@ the default `alpha = 3`, a strict **2-of-3 majority**.
   A hash answer takes one datagram, against about 6 KB and 5 fragments for a
   whole record, so the check costs little bandwidth, and a burst of requests
   cannot make the replica drop answers that arrive in pieces. A hash cannot be
-  verified, so a node can block a STORE by answering with another hash, as it
-  can by not answering; it cannot make the replica accept a record. Nodes that
-  do not know `FindHash` do not answer it, so every node of a network must run
-  a version that does.
+  verified, so a node can block a STORE by claiming a later version, as it
+  can by not answering; to get a forged record accepted it needs a quorum of
+  the nodes asked. Nodes that do not know `FindHash` do not answer it, so every
+  node of a network must run a version that does.
 
   Refusing on silence is the fail-safe default of Saltzer and Schroeder (1975),
   "base access decisions on permission rather than exclusion". Accepting on
@@ -188,12 +196,12 @@ the default `alpha = 3`, a strict **2-of-3 majority**.
   write without consensus. Databases that need a strict "insert if absent"
   across replicas run a consensus round instead, such as Cassandra's
   lightweight transactions (`INSERT ... IF NOT EXISTS`, Paxos). It does not
-  help when the network holds no copy yet, as at a first publication, nor
-  against an attacker who controls every node close to the DID.
-  Known gap: while a replica still holds the old version of a rotated record,
-  an empty replica refuses the new version sent as STORE.
-- **Lost datagrams:** a request with no answer after a few round trips of its
-  peer is sent again, at most twice, doubling the wait (round trips estimated
+  help against an attacker who controls a quorum of the nodes close to the DID,
+  and one node that claims a later version can keep an empty replica from
+  being repaired (`EXPERIMENTS.md`, A4).
+- **Lost datagrams:** every request carries a message id drawn at random, so
+  an answer under a guessed id is discarded. A request with no answer after a
+  few round trips of its peer is sent again, with the same id, at most twice, doubling the wait (round trips estimated
   per peer as in RFC 6298, measured only on requests sent once). A request
   that carries a record gets a receipt as soon as it arrives, so the sender
   does not resend a 6 KB record while an empty replica runs its check; a copy
@@ -544,110 +552,62 @@ authkademlia-rs = { git = "https://github.com/fratrung/auth-kademlia-rs" }
 
 ## Example
 
+Version 0 of a new DID: the device generates its current key pair and the
+next one, from a 32-byte seed it keeps (ADR 0005), builds the draft of the
+first document with its own DID written as `did:iiot:self`, and lets
+`derive_did` compute the DID and put it in place. `examples/publish_did.rs`
+is the complete program.
+
 ```rust
-use std::sync::Arc;
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use auth_kademlia_rs::auth_handler::did::{canonical_bytes, derive_did, PLACEHOLDER};
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
-use auth_kademlia_rs::network::Server;
-
 use auth_kademlia_rs::crypto::mldsa::{self, MlDsa65KeyPair};
+use auth_kademlia_rs::network::Server;
+use auth_kademlia_rs::utils::digest_bytes;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
-use uuid::Uuid;
 
-/// Encode a raw public key as base64url (no padding).
-fn base64url_encode(pk: &[u8]) -> String {
-    URL_SAFE_NO_PAD.encode(pk)
-}
-
-/// Serialize a DID Document to canonical JSON bytes (sorted keys, no spaces).
-fn encode_did_document(doc: &Value) -> Vec<u8> {
-    // serde_json does not guarantee key order on serialization of arbitrary
-    // Value objects, so we convert to a BTreeMap-backed Value first.
-    let canonical = sort_json_keys(doc);
-    serde_json::to_vec(&canonical).expect("DID Document serialization failed")
-}
-
-/// Recursively sort all object keys so serialization is deterministic.
-fn sort_json_keys(v: &Value) -> Value {
-    match v {
-        Value::Object(map) => {
-            let sorted: serde_json::Map<String, Value> = map
-                .iter()
-                .collect::<std::collections::BTreeMap<_, _>>()
-                .into_iter()
-                .map(|(k, v)| (k.clone(), sort_json_keys(v)))
-                .collect();
-            Value::Object(sorted)
-        }
-        Value::Array(arr) => Value::Array(arr.iter().map(sort_json_keys).collect()),
-        other => other.clone(),
-    }
-}
-
-/// Build the signed record:
-///
-/// ```text
-/// | algorithm (12 bytes, null-padded) | ML-DSA-65 signature | DID Document (JSON) |
-/// ```
-fn build_signed_record(
-    doc: &Value,
-    key_pair: &MlDsa65KeyPair,
-    algorithm: &str,
-) -> Vec<u8> {
-    let doc_bytes = encode_did_document(doc);
-
-    // Pack algorithm into exactly 12 bytes (UTF-8, null-padded on the right).
-    let mut alg_field = [0u8; 12];
-    let alg_bytes = algorithm.as_bytes();
-    let copy_len = alg_bytes.len().min(12);
-    alg_field[..copy_len].copy_from_slice(&alg_bytes[..copy_len]);
-
-    // ML-DSA-65 (aws-lc-rs) signature over the document, empty context.
-    let signature = key_pair.sign(&doc_bytes).expect("ML-DSA-65 signing");
-
-    // Concatenate: alg_field || signature || doc_bytes
-    let mut record = Vec::with_capacity(12 + signature.len() + doc_bytes.len());
-    record.extend_from_slice(&alg_field);
-    record.extend_from_slice(&signature);
-    record.extend_from_slice(&doc_bytes);
-    record
-}
-
-/// Generate a `did:iiot` URI using a random UUID v4.
-fn generate_did_iiot() -> String {
-    format!("did:iiot:{}", Uuid::new_v4())
-}
-
-/// Build a minimal `did:iiot` DID Document with its ML-DSA-65 key, as an
-/// RFC 9964 JWK. It has no key agreement key (ADR 0003).
-fn build_did_document(did: &str, signing_pk: &[u8]) -> Value {
+/// The draft of version 0: an ML-DSA-65 key as an RFC 9964 JWK, no key
+/// agreement key (ADR 0003), its own DID written as the placeholder, no `id`,
+/// `seq` 0 and the hash of the next public key.
+fn version_zero_draft(signing_pk: &[u8], next_pk: &[u8]) -> Value {
+    let did = PLACEHOLDER;
     json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
-        "id": did,
-        "verificationMethod": [
-            {
-                "id": format!("{}#k0", did),
-                "type": "JsonWebKey2020",
-                "controller": did,
-                "publicKeyJwk": {
-                    "kty": "AKP",
-                    "alg": "ML-DSA-65",
-                    "pub": base64url_encode(signing_pk)
-                }
+        "verificationMethod": [{
+            "id": format!("{did}#k0"),
+            "type": "JsonWebKey2020",
+            "controller": did,
+            "publicKeyJwk": {
+                "kty": "AKP",
+                "alg": "ML-DSA-65",
+                "pub": URL_SAFE_NO_PAD.encode(signing_pk)
             }
-        ],
-        "authentication": [ format!("{}#k0", did) ],
-        "service": [
-            {
-                "id": format!("{}#device", did),
-                "type": "DeviceAgent",
-                "serviceEndpoint": "http://example.com/device"
-            }
-        ]
+        }],
+        "authentication": [format!("{did}#k0")],
+        "service": [{
+            "id": format!("{did}#device"),
+            "type": "DeviceAgent",
+            "serviceEndpoint": "http://example.com/device"
+        }],
+        "seq": 0,
+        "nextKeyHash": URL_SAFE_NO_PAD.encode(digest_bytes(next_pk)),
     })
+}
+
+/// `| algorithm (12 bytes, null-padded) | ML-DSA-65 signature | DID Document |`,
+/// the document in canonical JSON.
+fn build_signed_record(doc: &Value, key_pair: &MlDsa65KeyPair) -> Vec<u8> {
+    let doc_bytes = canonical_bytes(doc).expect("a DID Document in canonical form");
+    let mut record = vec![0u8; 12];
+    record[..9].copy_from_slice(b"ML-DSA-65");
+    record.extend_from_slice(&key_pair.sign(&doc_bytes).expect("ML-DSA-65 signing"));
+    record.extend_from_slice(&doc_bytes);
+    record
 }
 
 async fn start_node(port: u16) -> Server {
@@ -675,21 +635,27 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let node_1 = start_node(5678).await;
     let node_2 = start_node(5679).await;
-
     node_2.bootstrap(vec![("127.0.0.1".to_string(), 5678)]).await;
 
+    // The current key signs version 0; the next one, kept as its seed, alone
+    // may sign version 1.
     let key_pair = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
-    let did = generate_did_iiot();
-    let did_doc = build_did_document(&did, key_pair.public_key());
-    let dht_key = did.split(':').next_back().expect("invalid DID").to_string();
-    let signed_record = build_signed_record(&did_doc, &key_pair, "ML-DSA-65");
+    let next_seed: [u8; MlDsa65KeyPair::SEED_LEN] = rand::random();
+    let next_key = MlDsa65KeyPair::from_seed(&next_seed).expect("ML-DSA-65 key from seed");
 
-    match node_2.set(&dht_key, signed_record).await {
-        Some(true) => println!("Record published under key {}", dht_key),
-        _ => { eprintln!("Failed to publish record"); return Ok(()); }
+    let draft = version_zero_draft(key_pair.public_key(), next_key.public_key());
+    let (did, did_doc) = derive_did(&draft).expect("version 0 gives its DID");
+    let signed_record = build_signed_record(&did_doc, &key_pair);
+
+    match node_2.set(&did, signed_record).await {
+        Some(true) => println!("Record published under {did}"),
+        _ => {
+            eprintln!("Failed to publish record");
+            return Ok(());
+        }
     }
 
-    match node_1.get(&dht_key).await {
+    match node_1.get(&did).await {
         Some(record) => {
             let doc_start = 12 + mldsa::signature_len();
             if let Ok(doc) = serde_json::from_slice::<Value>(&record[doc_start..]) {
@@ -701,7 +667,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-
 ```
 
 ## Tokio runtime configuration
@@ -765,7 +730,7 @@ function is still available but is no longer required.
 import asyncio
 import authkademlia_py
 
-async def run_node(signed_record: bytes) -> None:
+async def run_node(did: str, version_0: bytes, version_1: bytes, next_seed: bytes) -> None:
     node = authkademlia_py.Server(
         ksize=20,
         alpha=3,
@@ -774,21 +739,33 @@ async def run_node(signed_record: bytes) -> None:
     )
     await node.listen(5678, "127.0.0.1")
 
-    outcome = await node.set_detailed("did-uuid", signed_record)
+    # Version 0 under its DID: did:iiot: and the base64url of the SHA-256 of
+    # the first document, with its own DID written as did:iiot:self.
+    outcome = await node.set_detailed(did, version_0)
     if outcome["status"] != "complete":
-        print(outcome)
+        print(outcome)  # report: stale_rejections, newer_claimed, ...
+
+    # Version 1, signed by the key whose hash version 0 committed to, rebuilt
+    # from the seed the device kept. Resend the same saved bytes on a retry.
+    keys = authkademlia_py.MlDsaKeyManager("keys")
+    public_key, private_key = keys.keypair_from_seed(next_seed)
+    confirmed = await node.update(did, version_1, [version_0])
 
     stats = await node.stats()
     print(stats["storage_bytes"], stats["available_storage_bytes"])
     await node.stop()
 
-asyncio.run(run_node(signed_record_bytes))
+asyncio.run(run_node(did, version_0, version_1, next_seed))
 ```
 
 `set()` remains available for compatibility and returns `True` for a complete
 publication, `False` for a degraded or unavailable publication, and `None` for
 an invalid or conflicting record. Prefer `set_detailed()` when replication and
-capacity outcomes affect application behaviour.
+capacity outcomes affect application behaviour. Both publish only a version 0;
+`update(did, version, earlier)` publishes a later one, with the owner's saved
+earlier versions, which it uses only to replay the chain to replicas that miss
+versions. The application keeps every version it published, and calls
+`update` again with the saved bytes at least once every 24 hours.
 
 `MlKemKeyManager` gives one ephemeral ML-KEM-768 key pair per handshake
 between devices (ADR 0003). Private keys never leave the extension: a pair
