@@ -1,0 +1,20 @@
+sequenceDiagram
+    autonumber
+    participant H as Holder of version N
+    participant E as Replica that restarted empty
+    participant C as Nodes closest to the DID
+    participant O as Owner
+    Note over H: hourly republication of records older than an hour
+    H->>E: STORE(version N)
+    E->>C: FindHash(key)
+    C-->>E: seq and hash of their record
+    alt a quorum holds version N or confirms N-1
+        Note over E: R5 accepts
+        E-->>H: Stored
+    else fewer than the quorum
+        Note over E: too few votes: refuse, no answer
+        Note over O: at least every 24 hours, or when it comes back
+        O->>E: STORE(version 0), then UPDATE(1) to UPDATE(N)
+        Note over E: version 0 needs no votes,<br/>each next version is checked against the one before
+        E-->>O: Stored, then Updated
+    end

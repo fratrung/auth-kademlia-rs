@@ -3,7 +3,7 @@ sequenceDiagram
     participant O as Owner
     participant N as Nodes on the path
     participant R as Replicas (k closest to the DID)
-    Note over O: record = algorithm | signature | DID Document<br/>key = SHA-1(UUID of the DID)
+    Note over O: record = version 0 = algorithm | signature | DID Document<br/>key = the SHA-256 of version 0 in hashed form, the DID's suffix
     O->>N: FIND_VALUE(key), iterative, alpha at a time
     N-->>O: closer nodes, no record
     Note over O: no record found, so the k closest are the replicas

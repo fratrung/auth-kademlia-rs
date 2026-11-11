@@ -139,7 +139,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `testbed/node.rs` | Testbed node (`testbed_node` binary): one DHT node per container, driven through a control socket inside the container; keeps its DID's chain of versions |
 | `testbed/testbed.py` | Testbed driver: generates the Docker network, applies `tc netem` profiles, sends commands to nodes |
 | `testbed/attack.py` | Testbed attack mode: starts the attacker (`race`, `burst`, `successor`, `spoof`, `persist`) and runs the `race` and `restart` scenarios on a running network |
-| `testbed/measure.py` | Testbed measurement mode: publication time and availability (`publish`), rotations with restarted replicas and liars (`update`), copies over time under churn (`churn`) |
+| `testbed/measure.py` | Testbed measurement mode: publication time and availability (`publish`), rotations with restarted replicas and liars (`update`), copies over time under churn (`churn`), replicas lost while the owner is offline (`outage`) |
 | `testbed/attacker.rs` | Testbed attacker (`testbed_attacker` binary): sniffs the host's packets, sends forged versions as STOREs and spoofed `FindHash` answers |
 | `testbed/did.rs` | DID records shared by the two testbed binaries: version 0, the versions after it, forged versions |
 
@@ -475,7 +475,7 @@ N nodes in Docker with configurable `k`, `alpha`, seeds and `tc netem` profiles
 (LAN, WAN Europe, WAN Trans-Atlantic, from Verizon's published latencies).
 ```
 testbed/testbed.py up --nodes 10 --k 3 --profile wan-eu
-testbed/testbed.py ctl node-3 publish        # also: update, republish, get, lie on|off, storage, routing
+testbed/testbed.py ctl node-3 publish        # also: update, republish, push, get, lie on|off, storage, routing
 testbed/testbed.py get node-3 --from node-5
 testbed/testbed.py pause node-10             # also: netem, stop, start, logs
 testbed/testbed.py down
@@ -501,12 +501,15 @@ control, under the ids read on the wire). `testbed/measure.py publish`
 measures publication time and when other nodes can read the record (`ctl
 <node> new`, `ctl <node> watch`); `update` measures rotations, with replicas
 restarted empty (`--restart`) and liars near the key (`--liars`); `churn`
-counts the copies of a record over time while nodes crash, with liars. See
+counts the copies of a record over time while nodes crash, with liars;
+`outage` freezes the owner, empties several replicas at once and counts what
+the holders' republication (`ctl <node> push`) and the owner's return
+restore. See
 `testbed/README.md`. With `--counters` they also read every node's counters
 (`ctl <node> counters`) before and after each operation.
 
 `EXPERIMENTS.md` holds the experiments that validate the current code
-(latency, traffic, check, rotation, attacks, liars, churn) with their setup
+(latency, traffic, check, rotation, attacks, liars, churn, owner offline, readers under attack) with their setup
 and results, and `experiments/<date>-<topic>/` the raw data of each campaign
 with the script that ran it; rerun and update them when a change affects
 them. `testbed/README.md` keeps the commands and the measurements that led to
@@ -540,6 +543,13 @@ DURATION_SECS=300 CONCURRENCY=40 docker compose up --build   # custom intensity
 Node A (victim) pre-seeds 5 records; Node B (attacker) floods with valid/invalid
 SETs and GETs. Final report shows timeout rate and security verdict.
 See `resilience/README.md` for full details.
+
+## Changelog and integration guide
+Add every change a user of the library can notice to `CHANGELOG.md`, under
+"Unreleased", and mark a change of the wire format or of the API as breaking.
+`docs/integration.md` tells applications how to build, publish, rotate and
+read records: update it with any change to the Python API, the record format
+or the owner's duties.
 
 ## Diagrams (`docs/design/`)
 `DESIGN.md` shows each diagram as a PNG next to its Mermaid source (`*.mmd`),

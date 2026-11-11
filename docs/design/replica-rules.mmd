@@ -1,0 +1,34 @@
+flowchart TD
+    IN["STORE or UPDATE of version N of a DID"]
+    FORM{"Canonical form, bound<br/>to the key?"}
+    HOLDS{"Does the replica<br/>hold a version?"}
+    CHECK["Network check<br/>(empty replica diagram)"]
+    UPD["UPDATE: MissingPrevious<br/>the owner replays its chain"]
+    SAME{"Same bytes?"}
+    NEXT{"N = held + 1?"}
+    OK{"prev = hash of the held record,<br/>key hashes to its nextKeyHash,<br/>signature verifies?"}
+    OLDER{"N below the held version?"}
+    EQ{"N = held version?"}
+    INV["InvalidRecord"]
+    AS["AlreadyStored"]
+    REP["Replace (compare and swap):<br/>Stored or Updated"]
+    CON["Conflict"]
+    STALE["Stale"]
+    DUP["Conflict, logged as duplicity<br/>when the same key signed both"]
+    MISS["MissingPrevious<br/>nothing is asked"]
+    IN --> FORM
+    FORM -- no --> INV
+    FORM -- yes --> HOLDS
+    HOLDS -- "no, STORE" --> CHECK
+    HOLDS -- "no, UPDATE" --> UPD
+    HOLDS -- yes --> SAME
+    SAME -- yes --> AS
+    SAME -- no --> NEXT
+    NEXT -- yes --> OK
+    OK -- yes --> REP
+    OK -- no --> CON
+    NEXT -- no --> OLDER
+    OLDER -- yes --> STALE
+    OLDER -- no --> EQ
+    EQ -- yes --> DUP
+    EQ -- "no, further ahead" --> MISS

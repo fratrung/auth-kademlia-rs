@@ -1,0 +1,16 @@
+sequenceDiagram
+    autonumber
+    participant S as Sender
+    participant R as Receiver
+    Note over S: random message id, never one a pending request holds
+    S->>R: request in 5 fragments of at most 1400 bytes
+    Note over R: reassembled (bounded per peer and in all)
+    R-->>S: Received (a receipt, at once)
+    Note over S: no resend of the record while it waits
+    Note over R: handles the request,<br/>for an empty replica its network check
+    R--xS: answer, lost
+    Note over S: no answer after a few round trips of this peer
+    S->>R: the same request again, same message id
+    Note over R: already handled: answers at once,<br/>without a second check
+    R-->>S: answer
+    Note over S: accepted only if the id is pending<br/>for the address it comes from

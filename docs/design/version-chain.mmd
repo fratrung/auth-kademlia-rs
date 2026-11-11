@@ -1,0 +1,8 @@
+flowchart LR
+    V0["Version 0<br/>seq 0<br/>signed by k0<br/>nextKeyHash = H(k1)"]
+    V1["Version 1<br/>seq 1<br/>signed by k1<br/>prev = H(version 0)<br/>nextKeyHash = H(k2)"]
+    V2["Version 2<br/>seq 2<br/>signed by k2<br/>prev = H(version 1)<br/>nextKeyHash = H(k3)"]
+    V0 -- "prev" --- V1
+    V1 -- "prev" --- V2
+    V0 -. "commits to k1" .-> V1
+    V1 -. "commits to k2" .-> V2

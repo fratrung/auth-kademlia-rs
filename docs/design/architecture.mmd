@@ -1,0 +1,23 @@
+flowchart TB
+    APP["Application, in Python or Rust<br/>provisioning, REST APIs, orchestration"]
+    PY["Python binding (PyO3)<br/>releases the GIL"]
+    subgraph NODE["AuthKademlia-RS node"]
+        direction TB
+        API["Network API<br/>publish, rotate, read, Status List,<br/>republication, maintenance"]
+        PROTO["Protocol<br/>RPC handlers, record rules,<br/>network check of empty replicas"]
+        LOOKUP["Lookups and routing<br/>k-buckets, iterative crawls"]
+        TRANS["Transport<br/>UDP, fragments, receipts, resends"]
+        CRYPTO["Crypto<br/>ML-DSA-65, ephemeral ML-KEM-768"]
+        STORE["Storage<br/>TTL store, byte budget,<br/>signature cache"]
+    end
+    NET(("Other nodes"))
+    APP --> PY --> API
+    APP -. "Rust API" .-> API
+    API --> PROTO
+    API --> LOOKUP
+    PROTO --> LOOKUP
+    PROTO --> CRYPTO
+    PROTO --> STORE
+    LOOKUP --> TRANS
+    PROTO --> TRANS
+    TRANS <--> NET

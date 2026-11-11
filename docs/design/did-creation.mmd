@@ -1,0 +1,10 @@
+flowchart TB
+    K["Generate the current key pair k0<br/>and the seed of the next key k1"]
+    D["Draft of version 0<br/>public key of k0, seq 0,<br/>nextKeyHash = SHA-256 of the public key of k1,<br/>own DID written as did:iiot:self, no id"]
+    C["Canonical JSON<br/>printable ASCII, sorted keys, no whitespace"]
+    H["SHA-256 of the draft"]
+    DID["DID = did:iiot: + base64url of the hash<br/>DHT key = the hash"]
+    F["Write the DID in place of did:iiot:self,<br/>add id"]
+    S["Sign with k0 (ML-DSA-65)"]
+    R["Version 0: algorithm, signature, document<br/>published under the DHT key"]
+    K --> D --> C --> H --> DID --> F --> S --> R

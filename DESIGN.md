@@ -9,9 +9,9 @@ not drawn, as in the GitHub mobile app.
 
 ## Contents
 
-1. [Purpose](#1-purpose)
-2. [Threat model](#2-threat-model)
-3. [Identifiers and records](#3-identifiers-and-records)
+1. [Purpose and architecture](#1-purpose-and-architecture)
+2. [Threat model and security properties](#2-threat-model-and-security-properties)
+3. [Identifiers, records and the chain of versions](#3-identifiers-records-and-the-chain-of-versions)
 4. [Transport](#4-transport)
 5. [Routing](#5-routing)
 6. [Publication (SET)](#6-publication-set)
@@ -25,7 +25,7 @@ not drawn, as in the GitHub mobile app.
 14. [How behaviour is measured](#14-how-behaviour-is-measured)
 15. [References](#15-references)
 
-## 1. Purpose
+## 1. Purpose and architecture
 
 AuthKademlia is the Verifiable Data Registry (VDR) of the `did:iiot` method
 [Trungadi 2025]. It stores two kinds of records: DID Documents, which hold a
@@ -37,7 +37,29 @@ else: **a node stores a value only if it is an authenticated record**, a DID
 Document signed by the key it contains, or the Status List signed by the
 issuer.
 
-## 2. Threat model
+### Architecture
+
+![Components of a node: network API, protocol, lookups and routing, transport, crypto and storage, under a Python or Rust application](docs/design/architecture.png)
+
+*Source: [`docs/design/architecture.mmd`](docs/design/architecture.mmd).*
+
+A node is one Rust process; the application above it, in Python through the
+PyO3 binding or in Rust, decides what to publish and when.
+
+| Component | Role | Section |
+|---|---|---|
+| Network API | Publication of version 0, rotation, reads, the Status List; hourly refresh and republication, maintenance of contacts | 6, 8, 9, 10, 11 |
+| Protocol | The RPC handlers; the rules a replica applies to a record; the network check of an empty replica | 7, 9 |
+| Lookups and routing | Kademlia's k-buckets and iterative lookups | 5 |
+| Transport | UDP datagrams, fragments of large records, receipts and resends | 4 |
+| Crypto | ML-DSA-65 signatures of records; ephemeral ML-KEM-768 key pairs for the application | 3 |
+| Storage | Records with a 14-day TTL and a byte budget; a cache of signature verifications | 3, 12 |
+
+The Python binding releases the GIL before entering Rust, so signature
+verifications, which are CPU-bound, run on every core while the application
+stays in Python.
+
+## 2. Threat model and security properties
 
 The DHT must hold up against:
 
@@ -69,7 +91,27 @@ with a key-derived one. Each version names the hash of the next key, so the
 chain of versions carries the authority to rotate, as in KERI's pre-rotation
 [KERI].
 
-## 3. Identifiers and records
+### Security properties
+
+Each property, the mechanism that provides it, and what it rests on:
+
+| Property | Mechanism | Holds while | Section |
+|---|---|---|---|
+| **Authenticity** of a record: its document was signed by the key it declares | ML-DSA-65 signature, verified by every node before storing or returning a record | ML-DSA-65 is unbroken | 3 |
+| **Binding** of a DID: nobody can store a first document under another device's DID | The DID is the SHA-256 of the first document in hashed form | SHA-256 resists collisions and second preimages | 3 |
+| **Control** of a DID: only its owner can publish the next version | Each version commits to the hash of the only key that may sign the next one; the next key is kept as a seed until it is used | The next seed is better guarded than the current key | 3, 9 |
+| **Order** of versions: an old version is not taken for the current one | `seq` and `prev` at a replica that holds the DID; the network check at an empty one | At an empty replica, fewer than a quorum of the nodes it asks collude | 7, 9 |
+| **No forged record** at an empty replica | The network check, which refuses on any doubt and on silence | Fewer than a quorum of colluders among the nodes asked, and one honest holder refuses | 7 |
+| **Answers** come from the nodes asked | Message ids drawn at random, matched with the source address | The attacker cannot read the traffic | 4 |
+| **Availability** of a record | `k` replicas; republication by the holders and by the owner | A quorum of holders, or the owner, is online, and no neighbour lies | 11, 13 |
+| **Bounded resources** under load | Storage budget, bounded reassembly, bounded queues and lookups | | 4, 12 |
+| **Post-quantum** security | ML-DSA-65 for records; key agreement by ephemeral ML-KEM-768, outside the DHT | | 3 |
+
+Not provided: that a record read is the current one, or that it belongs to
+the device. The application compares the public key with the hash in the
+Verifiable Credential (section 8).
+
+## 3. Identifiers, records and the chain of versions
 
 | Item | Definition |
 |---|---|
@@ -115,12 +157,40 @@ A record is accepted for a key only if:
 A verification result can be cached under the SHA-256 of the record (one hour,
 4096 entries). A cache miss is a full verification, never a bypass.
 
+### Creating a DID
+
+![Creation of a DID: the keys, the draft of version 0 with the placeholder, its canonical JSON and SHA-256, the DID put in place, the signature](docs/design/did-creation.png)
+
+*Source: [`docs/design/did-creation.mmd`](docs/design/did-creation.mmd).*
+
+A device creates its DID once, before publishing anything: it generates its
+current key pair and the seed of its next key, writes the draft of version 0
+with `did:iiot:self` in place of its own DID, and hashes it. The hash is both
+the DID and the DHT key. It then writes the DID into the document, signs it,
+and publishes it with SET (section 6).
+
+### The chain of versions
+
+![Chain of versions: each version names the hash of the one before in prev, and the hash of the key that signs the next one in nextKeyHash](docs/design/version-chain.png)
+
+*Source: [`docs/design/version-chain.mmd`](docs/design/version-chain.mmd).*
+
+Every later version names the record before it (`prev`) and is signed by the
+key whose hash the version before committed to (`nextKeyHash`), so each update
+rotates the key. A replica that holds version N−1 checks version N on its own:
+one SHA-256 of the stored record, one of the new key, one signature
+verification. The device keeps every version it published, from version 0, to
+replay the chain to replicas that miss versions (section 9).
+
 ## 4. Transport
 
 Nodes talk over UDP. A message is a `bincode` envelope
 `(message id, is request, message)`. Requests and answers are matched by
 message id and by the peer's address, and an answer of the wrong type is
-discarded.
+discarded. Each request draws its message id at random, never one a pending
+request holds, so a node that does not read the traffic cannot answer in
+another node's place: an answer counts only if its id is pending for the
+address it comes from.
 
 Post-quantum records are about 6.5 KB, more than one datagram, so every message
 is split into fragments of at most 1400 bytes with a 12-byte header (`KADF`,
@@ -134,9 +204,9 @@ once drops some: section 7 explains why the STORE check avoids large answers.
 | `Ping` | `Pong` | Liveness and discovery |
 | `FindNode` | `FindNodeResult` | The closest nodes to a key |
 | `FindValue` | `FindValueHit` or `FindValueNodes` | A record, or closer nodes |
-| `FindHash` | `FindHashHit` or `FindValueNodes` | The SHA-256 of the record a node holds (section 7) |
-| `Store` | `Received`, then `StoreResult` | Store a record if absent |
-| `Update` | `Received`, then `UpdateResult` | Key rotation (section 9) |
+| `FindHash` | `FindHashHit` or `FindValueNodes` | The `seq` and SHA-256 of the record a node holds (section 7) |
+| `Store` | `Received`, then `StoreResult` | Store a version: after the network check if the node holds none, or as the verified successor of the one it holds (section 7) |
+| `Update` | `Received`, then `UpdateResult` | The next version of a DID, the record only (section 9) |
 | `UpdateStatusList` | `Received`, then `UpdateStatusListResult` | New Status List from the issuer |
 | `Leave` | none | Graceful departure |
 
@@ -160,6 +230,10 @@ same bytes) and gets the receipt again, without a second check. This is the
 classic scheme of remote procedure calls over datagrams (Birrell and Nelson,
 1984): retransmission, acknowledgement of long calls, suppression of
 duplicates.
+
+![Sequence diagram of a request carrying a record: fragments, an immediate receipt, a lost answer, the resend under the same id, and the answer accepted only for the pending id](docs/design/transport.png)
+
+*Source: [`docs/design/transport.mmd`](docs/design/transport.mmd).*
 
 Without resends a single lost datagram cost the whole 2.5 s timeout, and in
 the STORE check it also made the replica refuse (section 7). Measured with
@@ -235,6 +309,10 @@ what it holds (ADR 0005, section 3):
   signed two versions, which is logged as duplicity (R4).
 - **A version further ahead:** `MissingPrevious`, and nothing is asked: the
   owner's replay brings the versions in between.
+
+![Decision of a replica that receives version N of a DID: form and binding, then by what it holds: the network check, AlreadyStored, the verified successor, Stale, Conflict or MissingPrevious](docs/design/replica-rules.png)
+
+*Source: [`docs/design/replica-rules.mmd`](docs/design/replica-rules.mmd).*
 
 An empty replica has a problem: it cannot check a later version against the
 one before it, which it does not hold. "First writer wins" would protect
@@ -412,12 +490,25 @@ exempt from the STORE check of section 7, which is about self-signed records.
   one at a time (section 12). A node beyond the queue's bound is still added
   to the routing table and gets its records from the next republication.
 - **Returning nodes**, silent for at least 2.5 s, are treated as new and
-  refilled the same way.
+  refilled the same way. A node that crashes and restarts within about a second
+  is not noticed by its neighbours, and stays empty until a republication
+  (`EXPERIMENTS.md`, A2).
 - **Republication:** every hour each node sends records older than an hour to
   the `k` closest nodes, which also refills replicas that came back empty.
   These STOREs pass the check of section 7 only while a quorum of the nodes
-  asked hold the record; below it, the owner's replay restores the copies
-  (section 9).
+  asked hold the record.
+- **The owner's republication:** at least every 24 hours, and whenever it comes
+  back online, the owner sends its current version again with the saved bytes,
+  replaying its chain to every replica that is empty or behind. Version 0 needs
+  no votes and each later version is checked against the one before, so the
+  owner restores copies below the quorum, where the holders cannot
+  (`EXPERIMENTS.md`, L2: with the owner offline, the holders refilled the
+  empty replicas while 13 of 20 remained and none below; the owner's return
+  restored them all).
+
+![Sequence diagram of the repair of a replica that restarted empty: a holder's republication accepted with a quorum, or refused below it and then the owner's replay of its chain](docs/design/repair.png)
+
+*Source: [`docs/design/repair.mmd`](docs/design/repair.mmd).*
 - **Expiry:** records expire 14 days after they were written. There is no
   delete. An application that needs a record to stay must publish or update it
   before then.
