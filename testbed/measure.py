@@ -502,6 +502,20 @@ def cmd_churn(args):
     print(f"  details: {out}")
 
 
+def read_everywhere(readers, did, label):
+    """Every reader reads `did` once: what it got, by version, and the readers
+    that did not reply to the command (`error`)."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:
+        replies = list(pool.map(lambda n: ctl(n, "get", did, check=False), readers))
+    keys = [(reply.get("record") or {}).get("signing_key") for reply in replies if reply is not None]
+    counts = tally([label(key) for key in keys])
+    counts["error"] = sum(1 for reply in replies if reply is None)
+    # The signing keys themselves, so that a record counted as `other` can be
+    # matched with the forged key the attacker logs for this DID.
+    counts["keys"] = {str(key): keys.count(key) for key in sorted(set(keys), key=str)}
+    return counts
+
+
 def cmd_outage(args):
     """The owner goes offline, frozen so that it keeps its versions, and
     `--lost` replicas holding the record restart empty at once, as in a power
@@ -510,11 +524,28 @@ def cmd_outage(args):
     does, one after the other, and the script counts what the replicas hold.
     With `--owner-returns` the owner then comes back, sends its current version
     again (`ctl <node> republish`, images built since ADR 0005), and the
-    replicas are counted once more. Replicas are the k nodes closest to the
-    key, the owner left out."""
+    replicas are counted once more. With `--reads` every node but the owner
+    reads the DID once while the owner is offline, after the holders'
+    republication, and again after the owner's return: what a reader gets, the
+    current version, an older one, another record (forged) or nothing; the
+    current version is the owner's newest signed one, also when its rotation
+    did not reach a majority. With
+    `--joiners N` the last N nodes of the network are kept out of it (stopped,
+    so they send `Leave`) and join it at that moment, with an empty routing
+    table: each reads the DID once its bootstrap is done, then leaves again.
+    Run it with an attacker (`attack.py start --mode persist`) to see what a
+    reader gets while forged versions are sent. Replicas are the k nodes
+    closest to the key, the owner and the joiners left out."""
     config = load_config()
     check_node(args.owner, config)
-    nodes = [f"node-{i}" for i in range(1, config["nodes"] + 1)]
+    everyone = [f"node-{i}" for i in range(1, config["nodes"] + 1)]
+    joiners = everyone[len(everyone) - args.joiners:] if args.joiners else []
+    nodes = [n for n in everyone if n not in joiners]
+    if args.owner in joiners:
+        fail(f"{args.owner} is one of the joiners")
+    if joiners:
+        # They leave now, and join the network only at the worst moment of each round.
+        run(["docker", "stop", *[container(n) for n in joiners]], capture=True)
     k = config["k"]
     quorum = store_quorum(k)
     rounds = []
@@ -524,18 +555,31 @@ def cmd_outage(args):
         f"profile {config['profile']}, image {config.get('image', IMAGE)}"
     )
     print(f"{'lost':>4} {'round':>5}  {'before':<9} {'after loss':<11} {'after push':<11} "
-          f"{'owner back':<11} push answers")
+          f"{'owner back':<11} "
+          + (f"{'reads, owner off':<17} {'reads, owner back':<17} " if args.reads else "")
+          + (f"{'joiners read':<13} " if joiners else "")
+          + "push answers")
+    if args.reads or joiners:
+        print("reads: current/older/other/none (other: a record signed by a key of no version of the DID)")
+    if joiners:
+        print(f"joiners: {', '.join(joiners)}, outside the network until the worst moment of each round")
     fmt = lambda t: f"{t['current']}/{t['older']}/{t['none']}" + (f"+{t['other']}" if t["other"] else "")
+    fmt_reads = lambda t: f"{t['current']}/{t['older']}/{t['other']}/{t['none']}" if t else "-"
+    readers = [n for n in nodes if n != args.owner]
     for lost in args.lost:
         for number in range(1, args.rounds + 1):
             did = ctl(args.owner, "new")["did"]
             replicas = [n for n in closest(nodes, dht_key(did), k) if n != args.owner]
             published = ctl(args.owner, "publish")
             versions = [published["record"]["signing_key"]]
+            rotations = []
             for _ in range(args.rotations):
                 time.sleep(args.settle)
                 update = ctl(args.owner, "update")
-                if update.get("outcome") == "confirmed" and update.get("to_key"):
+                rotations.append(update.get("outcome"))
+                # The owner signed this version whether or not a majority took
+                # it: a node holding it holds the owner's record, not a forgery.
+                if update.get("to_key"):
                     versions.append(update["to_key"])
             time.sleep(args.settle)
             label = version_label(versions)
@@ -564,22 +608,45 @@ def cmd_outage(args):
                 time.sleep(args.wait)
                 held = keys_of(replicas, did)
                 after_push = tally([label(held[n]) for n in replicas])
+                reads_offline = read_everywhere(readers, did, label) if args.reads else None
+                joiner_reads = None
+                if joiners:
+                    # They join now: an empty routing table, a bootstrap from the
+                    # seeds, then one read each, as an application does.
+                    joined_at = time.monotonic()
+                    run(["docker", "start", *[container(n) for n in joiners]], capture=True)
+                    for joiner in joiners:
+                        if not wait_answering(joiner):
+                            fail(f"{joiner} did not come back")
+                    joiner_reads = read_everywhere(joiners, did, label)
+                    joiner_reads["seconds"] = round(time.monotonic() - joined_at, 1)
+                    run(["docker", "stop", *[container(n) for n in joiners]], capture=True)
             finally:
                 run(["docker", "unpause", container(args.owner)], capture=True)
             entry = {
                 "did": did, "lost": lost, "replicas": len(replicas), "victims": victims,
+                "publication": published.get("outcome"), "rotations": rotations,
                 "versions": versions, "before": before, "after_loss": after_loss,
                 "after_push": after_push, "push_answers": answers,
             }
+            if args.reads:
+                entry["reads_owner_offline"] = reads_offline
+            if joiners:
+                entry["joiner_reads"] = joiner_reads
             if args.owner_returns:
                 again = ctl(args.owner, "republish", check=False) or {}
                 entry["owner_republish"] = again.get("outcome", again.get("error"))
                 time.sleep(args.wait)
                 held = keys_of(replicas, did)
                 entry["after_owner"] = tally([label(held[n]) for n in replicas])
+                if args.reads:
+                    entry["reads_owner_back"] = read_everywhere(readers, did, label)
             rounds.append(entry)
             print(f"{lost:>4} {number:>5}  {fmt(before):<9} {fmt(after_loss):<11} {fmt(after_push):<11} "
                   f"{fmt(entry['after_owner']) if 'after_owner' in entry else '-':<11} "
+                  + (f"{fmt_reads(entry.get('reads_owner_offline')):<17} "
+                     f"{fmt_reads(entry.get('reads_owner_back')):<17} " if args.reads else "")
+                  + (f"{fmt_reads(entry.get('joiner_reads')):<13} " if joiners else "")
                   + ", ".join(f"{a} {n}" for a, n in sorted(answers.items())))
 
     print("\nsummary (copies of the current version on the replicas, owner left out)")
@@ -593,6 +660,14 @@ def cmd_outage(args):
                      f"{summary_counts([r['after_owner']['current'] for r in group])}, fully restored "
                      f"{sum(1 for r in group if r['after_owner']['current'] == r['replicas'])}/{len(group)}")
         print(line)
+        for when, field in (("owner offline", "reads_owner_offline"), ("owner back", "reads_owner_back"),
+                            ("nodes joining with the owner offline", "joiner_reads")):
+            totals = [r[field] for r in group if r.get(field)]
+            if totals:
+                total = {name: sum(t[name] for t in totals) for name in ("current", "older", "other", "none", "error")}
+                print(f"      reads, {when}: current {total['current']}, older {total['older']}, "
+                      f"other {total['other']}, none {total['none']}, no reply {total['error']} "
+                      f"(of {sum(total.values())})")
     GENERATED.mkdir(exist_ok=True)
     out = GENERATED / f"outage-{config['profile']}-{time.strftime('%Y%m%d-%H%M%S')}.json"
     out.write_text(json.dumps({"config": config, "args": vars(args) | {"func": None}, "rounds": rounds},
@@ -652,6 +727,10 @@ def main():
     ou.add_argument("--rotations", type=int, default=1, help="rotations after the publication")
     ou.add_argument("--owner-returns", action="store_true",
                     help="the owner then comes back and republishes (images built since ADR 0005)")
+    ou.add_argument("--reads", action="store_true",
+                    help="every node but the owner reads the DID with the owner offline, and after its return")
+    ou.add_argument("--joiners", type=int, default=0,
+                    help="the last N nodes stay out of the network and join it with the owner offline, then read")
     ou.add_argument("--settle", type=float, default=0.3, help="seconds after the publication and each rotation")
     ou.add_argument("--wait", type=float, default=1.0, help="seconds after the republications before counting")
     ou.set_defaults(func=cmd_outage)
