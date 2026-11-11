@@ -154,6 +154,7 @@ default; Y.1541 bounds delay variation at 50 ms for classes 0 and 1.
 | `ctl NODE update` | Rotate the ML-DSA-65 key: the next version, signed by the key the current one committed to and committing to a new one, sent with the earlier versions (ADR 0005) |
 | `ctl NODE republish` | Send the current version again with the saved bytes, as the owner does at least every 24 hours |
 | `ctl NODE discard` | Drop a rotation that was not confirmed; the next `update` signs another version with the same key, which replicas that took the first refuse |
+| `ctl NODE push DID` | Send the record this node holds for a DID to the `k` nodes closest to its key, as the hourly republication does, and count the answers |
 | `ctl NODE lie on` / `lie off` | Answer every `FindHash` with a made-up version far ahead, or stop (testbed builds only) |
 | `ctl NODE get DID` | Read a DID; `get TARGET --from NODE` also takes a node name |
 | `ctl NODE storage` | Records this node holds, with their signing key |
@@ -384,6 +385,22 @@ than the owner and the liars crashes and comes back empty; every
 `--republish-every` seconds (60) the owner sends its current version again;
 every `--sample-every` seconds (5) it prints what the replicas hold, and at the
 end how often fewer than the quorum held the current version.
+
+```
+testbed/measure.py outage --lost 4 8 12 --rounds 5 [--owner-returns]
+```
+
+`measure.py outage` measures how the replicas recover when several lose their
+copy at once while the owner is offline. Each round the owner publishes a new
+DID and rotates `--rotations` times (1), then is frozen (`docker pause`): it
+keeps its versions and does not answer. `M` replicas holding the current
+version, for each `M` of `--lost`, crash and come back empty at once; each
+replica that still holds the record then sends it to the `k` closest nodes
+(`ctl <node> push`), as the hourly republication does. It prints what the
+replicas hold before the loss, after it and after the holders' republication,
+and the answers to their STOREs. With `--owner-returns` the owner then comes
+back, sends its current version again (`republish`, images since ADR 0005),
+and the replicas are counted once more.
 
 The results below come before two changes to the check: the DID binding is
 checked before asking the network (`e383d17`), and a replica asks all the

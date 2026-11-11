@@ -16,8 +16,8 @@
 //! RUST_LOG    log filter (default `warn,testbed_node=info`)
 //!
 //! Commands: `info`, `new`, `publish`, `update`, `republish`, `discard`,
-//! `forget`, `get <did>`, `watch <did> <ms>`, `lie on|off`, `stats`,
-//! `storage`, `routing`. A DID may be given as its suffix, without
+//! `forget`, `get <did>`, `watch <did> <ms>`, `push <did>`, `lie on|off`,
+//! `stats`, `storage`, `routing`. A DID may be given as its suffix, without
 //! `did:iiot:`.
 //! Each answers with one JSON line. Times named `*_unix_ms` are wall-clock
 //! milliseconds: containers share the host clock, so they compare across
@@ -32,6 +32,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use auth_kademlia_rs::auth_handler::did::{key_of_did, DID_PREFIX};
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
+use auth_kademlia_rs::crawling::NodeSpiderCrawl;
 use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
 use auth_kademlia_rs::network::{Server, SetOutcome};
 use auth_kademlia_rs::storage::IStorage;
@@ -125,6 +126,10 @@ async fn handle(node: &Node, line: &str) -> Value {
             (Some(target), Some(ms)) => watch(node, target, ms).await,
             _ => json!({ "error": "usage: watch <did> <ms>" }),
         },
+        "push" => match words.next() {
+            Some(target) => push(node, target).await,
+            None => json!({ "error": "usage: push <did>" }),
+        },
         "lie" => match words.next() {
             Some("on") => lie(node, true).await,
             Some("off") => lie(node, false).await,
@@ -137,7 +142,8 @@ async fn handle(node: &Node, line: &str) -> Value {
         other => json!({
             "error": format!("unknown command '{other}'"),
             "commands": ["info", "new", "publish", "update", "republish", "discard", "forget",
-                         "get <did>", "watch <did> <ms>", "lie on|off", "stats", "counters",
+                         "get <did>", "watch <did> <ms>", "push <did>", "lie on|off", "stats",
+                         "counters",
                          "storage", "routing"],
         }),
     }
@@ -343,6 +349,60 @@ async fn republish(node: &Node) -> Value {
         "outcome": outcome,
         "ms": ms,
     })
+}
+
+/// Send the record this node holds for a DID to the `k` nodes closest to it,
+/// as the hourly republication does with every record older than an hour,
+/// but at once, so that a measurement need not wait for the timer. Each
+/// replica decides by its own rules; the answers say what it did.
+async fn push(node: &Node, target: &str) -> Value {
+    let did = did_of_target(target);
+    let Some(key) = key_of_did(&did) else {
+        return json!({ "error": format!("{did} is not a DID") });
+    };
+    let server = node.server.read().await;
+    let Some(record) = server.storage.get(&key) else {
+        return json!({ "did": did, "held": false });
+    };
+    let Some(protocol) = server.protocol.clone() else {
+        return json!({ "error": "the node is not listening" });
+    };
+    let started = Instant::now();
+    let target_node = auth_kademlia_rs::node::Node::from_id(key);
+    let neighbours = protocol
+        .router
+        .read()
+        .await
+        .find_neighbors(&target_node, None);
+    let replicas = NodeSpiderCrawl::new(
+        Arc::clone(&protocol),
+        target_node,
+        neighbours,
+        server.ksize,
+        server.alpha,
+    )
+    .find()
+    .await;
+    let answers = futures::future::join_all(
+        replicas
+            .iter()
+            .map(|replica| protocol.call_store_rpc(replica, key, record.clone())),
+    )
+    .await;
+    let mut tally = std::collections::BTreeMap::<String, usize>::new();
+    for answer in &answers {
+        let name = match answer {
+            Some(status) => format!("{status:?}"),
+            None => "no answer".to_string(),
+        };
+        *tally.entry(name).or_default() += 1;
+    }
+    let ms = elapsed_ms(started);
+    log::info!(
+        "push {did} to {} replicas: {tally:?} ({ms} ms)",
+        answers.len()
+    );
+    json!({ "did": did, "held": true, "sent": answers.len(), "answers": tally, "ms": ms })
 }
 
 /// Testbed only: make this node answer every `FindHash` with a made-up

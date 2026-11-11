@@ -11,6 +11,7 @@ Built on testbed.py: start a network with it first.
     testbed/measure.py update --rounds 20 --rotations 2 --restart 1  # a replica restarted before the second
     testbed/measure.py update --rounds 20 --restart 1 --liars 1      # one replica lies in FindHash
     testbed/measure.py churn --duration 600 --liars 1                # copies over time while nodes crash
+    testbed/measure.py outage --lost 4 8 12 --rounds 5               # owner offline, replicas lost at once
 
 See testbed/README.md, section "Measurement mode".
 """
@@ -501,6 +502,104 @@ def cmd_churn(args):
     print(f"  details: {out}")
 
 
+def cmd_outage(args):
+    """The owner goes offline, frozen so that it keeps its versions, and
+    `--lost` replicas holding the record restart empty at once, as in a power
+    cut at one site. Then every replica that still holds it sends it to the k
+    nodes closest to the key (`ctl <node> push`), as the hourly republication
+    does, one after the other, and the script counts what the replicas hold.
+    With `--owner-returns` the owner then comes back, sends its current version
+    again (`ctl <node> republish`, images built since ADR 0005), and the
+    replicas are counted once more. Replicas are the k nodes closest to the
+    key, the owner left out."""
+    config = load_config()
+    check_node(args.owner, config)
+    nodes = [f"node-{i}" for i in range(1, config["nodes"] + 1)]
+    k = config["k"]
+    quorum = store_quorum(k)
+    rounds = []
+    print(
+        f"outage: replicas lost {args.lost}, {args.rounds} rounds each, owner {args.owner} offline"
+        f"{', then back' if args.owner_returns else ''}, {config['nodes']} nodes, k={k} (quorum {quorum}), "
+        f"profile {config['profile']}, image {config.get('image', IMAGE)}"
+    )
+    print(f"{'lost':>4} {'round':>5}  {'before':<9} {'after loss':<11} {'after push':<11} "
+          f"{'owner back':<11} push answers")
+    fmt = lambda t: f"{t['current']}/{t['older']}/{t['none']}" + (f"+{t['other']}" if t["other"] else "")
+    for lost in args.lost:
+        for number in range(1, args.rounds + 1):
+            did = ctl(args.owner, "new")["did"]
+            replicas = [n for n in closest(nodes, dht_key(did), k) if n != args.owner]
+            published = ctl(args.owner, "publish")
+            versions = [published["record"]["signing_key"]]
+            for _ in range(args.rotations):
+                time.sleep(args.settle)
+                update = ctl(args.owner, "update")
+                if update.get("outcome") == "confirmed" and update.get("to_key"):
+                    versions.append(update["to_key"])
+            time.sleep(args.settle)
+            label = version_label(versions)
+            held = keys_of(replicas, did)
+            before = tally([label(held[n]) for n in replicas])
+            holders = [n for n in replicas if held[n] == versions[-1]]
+            begin = ((number - 1) * lost) % max(1, len(holders))
+            victims = (holders[begin:] + holders[:begin])[:lost]
+            run(["docker", "pause", container(args.owner)], capture=True)
+            try:
+                # A crash: no Leave, and the node comes back with its id and no records.
+                for victim in victims:
+                    run(["docker", "kill", container(victim)], capture=True)
+                for victim in victims:
+                    run(["docker", "start", container(victim)], capture=True)
+                for victim in victims:
+                    if not wait_answering(victim):
+                        fail(f"{victim} did not come back")
+                held = keys_of(replicas, did)
+                after_loss = tally([label(held[n]) for n in replicas])
+                answers = {}
+                for holder in [n for n in replicas if held[n] == versions[-1]]:
+                    reply = ctl(holder, "push", did, check=False) or {}
+                    for answer, count in reply.get("answers", {}).items():
+                        answers[answer] = answers.get(answer, 0) + count
+                time.sleep(args.wait)
+                held = keys_of(replicas, did)
+                after_push = tally([label(held[n]) for n in replicas])
+            finally:
+                run(["docker", "unpause", container(args.owner)], capture=True)
+            entry = {
+                "did": did, "lost": lost, "replicas": len(replicas), "victims": victims,
+                "versions": versions, "before": before, "after_loss": after_loss,
+                "after_push": after_push, "push_answers": answers,
+            }
+            if args.owner_returns:
+                again = ctl(args.owner, "republish", check=False) or {}
+                entry["owner_republish"] = again.get("outcome", again.get("error"))
+                time.sleep(args.wait)
+                held = keys_of(replicas, did)
+                entry["after_owner"] = tally([label(held[n]) for n in replicas])
+            rounds.append(entry)
+            print(f"{lost:>4} {number:>5}  {fmt(before):<9} {fmt(after_loss):<11} {fmt(after_push):<11} "
+                  f"{fmt(entry['after_owner']) if 'after_owner' in entry else '-':<11} "
+                  + ", ".join(f"{a} {n}" for a, n in sorted(answers.items())))
+
+    print("\nsummary (copies of the current version on the replicas, owner left out)")
+    for lost in args.lost:
+        group = [r for r in rounds if r["lost"] == lost]
+        line = (f"  {lost:>2} lost: after the loss {summary_counts([r['after_loss']['current'] for r in group])}; "
+                f"after the holders' republication {summary_counts([r['after_push']['current'] for r in group])}; "
+                f"fully restored {sum(1 for r in group if r['after_push']['current'] == r['replicas'])}/{len(group)}")
+        if args.owner_returns:
+            line += (f"; after the owner's return "
+                     f"{summary_counts([r['after_owner']['current'] for r in group])}, fully restored "
+                     f"{sum(1 for r in group if r['after_owner']['current'] == r['replicas'])}/{len(group)}")
+        print(line)
+    GENERATED.mkdir(exist_ok=True)
+    out = GENERATED / f"outage-{config['profile']}-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    out.write_text(json.dumps({"config": config, "args": vars(args) | {"func": None}, "rounds": rounds},
+                              indent=2) + "\n")
+    print(f"  details: {out}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -545,6 +644,17 @@ def main():
     ch.add_argument("--settle", type=float, default=0.3, help="seconds after the publication and each rotation")
     ch.add_argument("--seed", type=int, default=1, help="seed of the choice of the nodes that crash")
     ch.set_defaults(func=cmd_churn)
+    ou = sub.add_parser("outage", help="owner offline, replicas lost at once, then the holders' republication")
+    ou.add_argument("--owner", default="node-1")
+    ou.add_argument("--lost", type=int, nargs="+", default=[4, 7, 8, 12, 16],
+                    help="replicas holding the record that restart empty at once")
+    ou.add_argument("--rounds", type=int, default=5, help="rounds per value of --lost")
+    ou.add_argument("--rotations", type=int, default=1, help="rotations after the publication")
+    ou.add_argument("--owner-returns", action="store_true",
+                    help="the owner then comes back and republishes (images built since ADR 0005)")
+    ou.add_argument("--settle", type=float, default=0.3, help="seconds after the publication and each rotation")
+    ou.add_argument("--wait", type=float, default=1.0, help="seconds after the republications before counting")
+    ou.set_defaults(func=cmd_outage)
     args = parser.parse_args()
     args.func(args)
 
