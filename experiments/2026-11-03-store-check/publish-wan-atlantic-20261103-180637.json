@@ -1,0 +1,504 @@
+{
+  "config": {
+    "nodes": 10,
+    "k": 3,
+    "alpha": 3,
+    "seeds": 3,
+    "subnet": "10.213",
+    "profile": "wan-atlantic",
+    "delay_ms": 35.2,
+    "jitter_ms": 0.0,
+    "loss_pct": 0.0,
+    "cpus": null,
+    "image": "auth-kademlia-testbed:latest"
+  },
+  "rounds": [
+    {
+      "did": "did:iiot:cbd1fbeb-4a7e-4c93-86cf-4486215b2c4c",
+      "outcome": "complete",
+      "publish_ms": 215.4,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        110.2041015625,
+        110.2041015625,
+        110.820068359375
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        71.5,
+        72.0,
+        72.0,
+        71.8,
+        71.7,
+        72.1,
+        71.6
+      ]
+    },
+    {
+      "did": "did:iiot:0355b8b5-1e43-44bc-9608-cc111926ccd7",
+      "outcome": "complete",
+      "publish_ms": 214.5,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        118.050048828125,
+        180.757080078125,
+        180.89599609375
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        71.6,
+        71.9,
+        71.6,
+        71.5,
+        71.6,
+        72.0,
+        72.0
+      ]
+    },
+    {
+      "did": "did:iiot:98440fdc-6e8b-4ec7-876a-f6a0fed54530",
+      "outcome": "complete",
+      "publish_ms": 215.1,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        251.712890625,
+        263.01904296875,
+        263.1689453125
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        71.8,
+        71.5,
+        71.3,
+        71.5,
+        72.4,
+        72.3
+      ]
+    },
+    {
+      "did": "did:iiot:4db5567a-9f4d-49ef-873d-4f177b36c812",
+      "outcome": "complete",
+      "publish_ms": 214.3,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        167.678955078125,
+        180.22998046875,
+        183.712890625
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        71.9,
+        71.8,
+        71.5,
+        71.6,
+        71.7,
+        71.8,
+        71.5
+      ]
+    },
+    {
+      "did": "did:iiot:2eb241ff-f803-4446-bf33-49251dd41526",
+      "outcome": "complete",
+      "publish_ms": 213.8,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        110.60595703125,
+        175.591064453125,
+        182.285888671875
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        71.5,
+        71.2,
+        71.3,
+        71.2,
+        71.4,
+        71.3,
+        71.2
+      ]
+    },
+    {
+      "did": "did:iiot:ee560ece-1e5f-4b4b-8612-d344c82b174c",
+      "outcome": "complete",
+      "publish_ms": 213.8,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        164.965087890625,
+        165.43798828125,
+        178.708984375
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        71.6,
+        71.4,
+        71.8,
+        71.5,
+        71.5,
+        71.8,
+        71.6
+      ]
+    },
+    {
+      "did": "did:iiot:0ca0e5c1-c2e9-4025-a7ac-8900374b1b64",
+      "outcome": "complete",
+      "publish_ms": 215.1,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        183.340087890625,
+        255.18212890625,
+        255.26611328125
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        71.6,
+        71.7,
+        71.7,
+        71.4,
+        71.5,
+        71.5
+      ]
+    },
+    {
+      "did": "did:iiot:826cdf6d-f8aa-4e94-a259-98db707c56fd",
+      "outcome": "complete",
+      "publish_ms": 214.6,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        199.760009765625,
+        252.4970703125,
+        272.072998046875
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        71.6,
+        71.6,
+        71.7,
+        71.3,
+        71.6,
+        71.4
+      ]
+    },
+    {
+      "did": "did:iiot:7ae5902b-d8d0-4792-9229-5960be1640fb",
+      "outcome": "complete",
+      "publish_ms": 215.5,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        111.598876953125,
+        114.0849609375,
+        114.94091796875
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        72.2,
+        71.7,
+        71.4,
+        71.8,
+        71.9,
+        72.1,
+        72.1
+      ]
+    },
+    {
+      "did": "did:iiot:5a8ecdc5-e3b9-48ff-b8c1-c13505bc683c",
+      "outcome": "complete",
+      "publish_ms": 215.6,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        192.43701171875,
+        263.8369140625,
+        263.967041015625
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        71.7,
+        71.6,
+        71.8,
+        71.7,
+        71.5,
+        71.8
+      ]
+    },
+    {
+      "did": "did:iiot:665efb17-4518-4a83-9eaa-04f7d4550fc3",
+      "outcome": "complete",
+      "publish_ms": 214.8,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        191.945068359375,
+        250.501953125,
+        263.22314453125
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        71.7,
+        71.6,
+        71.8,
+        72.4,
+        71.8,
+        71.6
+      ]
+    },
+    {
+      "did": "did:iiot:f189b3bf-a9c0-4b66-855d-8f6c324f72ee",
+      "outcome": "complete",
+      "publish_ms": 214.9,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        181.909912109375,
+        253.4560546875,
+        253.54296875
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        72.1,
+        71.7,
+        71.5,
+        71.8,
+        71.9,
+        71.5
+      ]
+    },
+    {
+      "did": "did:iiot:e7e22fd9-d545-47da-8a13-e843cd5a1de9",
+      "outcome": "complete",
+      "publish_ms": 215.1,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        191.49609375,
+        262.761962890625,
+        262.85009765625
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        71.7,
+        71.6,
+        72.4,
+        71.7,
+        71.5,
+        71.4
+      ]
+    },
+    {
+      "did": "did:iiot:a1066e84-de69-4cdb-bf44-ae94ea185c95",
+      "outcome": "complete",
+      "publish_ms": 214.9,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        191.85986328125,
+        263.27587890625,
+        263.27587890625
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        71.5,
+        71.7,
+        71.7,
+        71.4,
+        71.6,
+        71.7
+      ]
+    },
+    {
+      "did": "did:iiot:ac516794-ddc7-42f8-906b-a2afa5acf074",
+      "outcome": "complete",
+      "publish_ms": 214.5,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        191.9599609375,
+        255.950927734375,
+        267.791015625
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        71.7,
+        71.5,
+        71.5,
+        71.8,
+        71.4,
+        71.5
+      ]
+    },
+    {
+      "did": "did:iiot:f6c3ada8-7ca5-4439-9077-9fc39c3f58db",
+      "outcome": "complete",
+      "publish_ms": 214.1,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        260.55810546875,
+        264.052001953125,
+        264.19921875
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        71.4,
+        71.2,
+        71.6,
+        71.3,
+        71.4,
+        71.5
+      ]
+    },
+    {
+      "did": "did:iiot:3767ea29-c41c-45e1-91b8-48cf950dd4de",
+      "outcome": "complete",
+      "publish_ms": 214.8,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        250.059814453125,
+        250.298828125,
+        250.40087890625
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        71.9,
+        71.3,
+        71.7,
+        71.7,
+        71.7,
+        71.7
+      ]
+    },
+    {
+      "did": "did:iiot:67bcb1b0-9383-4fe3-873c-987fac7b6735",
+      "outcome": "complete",
+      "publish_ms": 215.4,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        245.722900390625,
+        245.755859375,
+        252.093017578125
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        71.6,
+        71.5,
+        72.0,
+        71.4,
+        71.5,
+        71.5
+      ]
+    },
+    {
+      "did": "did:iiot:55471176-efbc-43e0-8608-3041ce53882c",
+      "outcome": "complete",
+      "publish_ms": 214.0,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        201.02783203125,
+        272.341064453125,
+        272.39501953125
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        71.3,
+        71.5,
+        71.3,
+        71.4,
+        71.2,
+        71.4
+      ]
+    },
+    {
+      "did": "did:iiot:be1b40ce-3eba-4289-a1fc-4451a093dd91",
+      "outcome": "complete",
+      "publish_ms": 215.6,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        175.169189453125,
+        175.188232421875,
+        175.218017578125
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        72.2,
+        71.6,
+        71.6,
+        72.2,
+        71.6,
+        72.0,
+        71.6
+      ]
+    }
+  ]
+}

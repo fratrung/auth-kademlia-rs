@@ -1,0 +1,197 @@
+{
+  "config": {
+    "nodes": 10,
+    "k": 3,
+    "alpha": 3,
+    "seeds": 3,
+    "subnet": "10.213",
+    "profile": "wan-eu",
+    "delay_ms": 6.8,
+    "jitter_ms": 0.0,
+    "loss_pct": 0.0,
+    "cpus": null,
+    "image": "auth-kademlia-testbed:before-check"
+  },
+  "rounds": [
+    {
+      "victim": "node-2",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 3,
+      "nodes": 9,
+      "forged_reads": 1,
+      "reads": 3
+    },
+    {
+      "victim": "node-5",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 5,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    },
+    {
+      "victim": "node-10",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 7,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    },
+    {
+      "victim": "node-10",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 8,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    },
+    {
+      "victim": "node-7",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 7,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    },
+    {
+      "victim": "node-8",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 7,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    },
+    {
+      "victim": "node-3",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 8,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    },
+    {
+      "victim": "node-8",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 8,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    },
+    {
+      "victim": "node-9",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 7,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    },
+    {
+      "victim": "node-5",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 8,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    },
+    {
+      "victim": "node-9",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 7,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    },
+    {
+      "victim": "node-9",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 7,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    },
+    {
+      "victim": "node-3",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 8,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    },
+    {
+      "victim": "node-9",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 7,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    },
+    {
+      "victim": "node-8",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 7,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    },
+    {
+      "victim": "node-7",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 8,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    },
+    {
+      "victim": "node-5",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 7,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    },
+    {
+      "victim": "node-10",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 7,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    },
+    {
+      "victim": "node-3",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 7,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    },
+    {
+      "victim": "node-7",
+      "publish": "complete",
+      "after": "attacker",
+      "forged_copies": 8,
+      "nodes": 9,
+      "forged_reads": 3,
+      "reads": 3
+    }
+  ]
+}

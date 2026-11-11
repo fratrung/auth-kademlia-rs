@@ -1,0 +1,126 @@
+[2026-11-11T13:40:45Z INFO  testbed_attacker] attacker (persist) on 10.213.0.1:4999: every 1000 ms, a forged STORE for each DID seen in the last 60 s to every node seen
+[2026-11-11T13:40:47Z INFO  testbed_attacker] persist: learned did:iiot:3d6b1b40-0823-4ff6-b448-82786dcffd8d from a STORE 10.213.0.11 -> 10.213.0.65, forged key d56af71bf83c
+[2026-11-11T13:40:50Z INFO  testbed_attacker] persist: 169 forged STOREs in the last 5 s to 101 nodes for 1 DIDs, answers Conflict=166 no answer=3
+[2026-11-11T13:40:56Z INFO  testbed_attacker] persist: 532 forged STOREs in the last 5 s to 101 nodes for 1 DIDs, answers Conflict=416 no answer=116
+[2026-11-11T13:41:02Z INFO  testbed_attacker] persist: 501 forged STOREs in the last 5 s to 101 nodes for 1 DIDs, answers Conflict=443 no answer=58
+[2026-11-11T13:41:08Z INFO  testbed_attacker] persist: 593 forged STOREs in the last 5 s to 101 nodes for 1 DIDs, answers Conflict=342 no answer=251
+[2026-11-11T13:41:13Z INFO  testbed_attacker] persist: 708 forged STOREs in the last 5 s to 101 nodes for 1 DIDs, answers Conflict=356 no answer=352
+[2026-11-11T13:41:19Z INFO  testbed_attacker] persist: 592 forged STOREs in the last 5 s to 101 nodes for 1 DIDs, answers Conflict=368 no answer=224
+[2026-11-11T13:41:24Z INFO  testbed_attacker] persist: 612 forged STOREs in the last 5 s to 101 nodes for 1 DIDs, answers Conflict=370 no answer=242
+[2026-11-11T13:41:29Z INFO  testbed_attacker] persist: 267 forged STOREs in the last 5 s to 101 nodes for 1 DIDs, answers Conflict=156 no answer=111
+[2026-11-11T13:41:35Z INFO  testbed_attacker] persist: 832 forged STOREs in the last 5 s to 130 nodes for 1 DIDs, answers Conflict=381 no answer=451
+[2026-11-11T13:41:40Z INFO  testbed_attacker] persist: 750 forged STOREs in the last 5 s to 130 nodes for 1 DIDs, answers Conflict=712 no answer=38
+[2026-11-11T13:41:41Z INFO  testbed_attacker] persist: learned did:iiot:760334f4-994b-48af-a097-6b00bb970f25 from a STORE 10.213.0.11 -> 10.213.0.114, forged key 499ac8bc2f69
+[2026-11-11T13:41:46Z INFO  testbed_attacker] persist: 1167 forged STOREs in the last 5 s to 130 nodes for 2 DIDs, answers Conflict=1143 no answer=24
+[2026-11-11T13:41:52Z INFO  testbed_attacker] persist: 447 forged STOREs in the last 5 s to 130 nodes for 1 DIDs, answers Conflict=260 no answer=187
+[2026-11-11T13:41:58Z WARN  auth_kademlia_rs::protocol::store_check] rpc_store: not every node answered about 3d0a39d2f1bbc0cfabbbdd3adbc41e89c106c3a9bd4cec68dc324b3be1082788, record from 10.213.0.65 refused
+[2026-11-11T13:41:58Z INFO  testbed_attacker] persist: 1408 forged STOREs in the last 5 s to 130 nodes for 1 DIDs, answers AlreadyStored=253 Conflict=2 Stored=17 no answer=1136
+[2026-11-11T13:42:04Z INFO  testbed_attacker] persist: learned did:iiot:bc00d752-a1ba-4e45-b0a9-ba3a96567948 from a STORE 10.213.0.11 -> 10.213.0.47, forged key 2e46de330388
+[2026-11-11T13:42:04Z INFO  testbed_attacker] persist: 875 forged STOREs in the last 5 s to 130 nodes for 2 DIDs, answers AlreadyStored=829 Conflict=24 Stored=3 no answer=19
+[2026-11-11T13:42:09Z INFO  testbed_attacker] persist: 1030 forged STOREs in the last 5 s to 130 nodes for 2 DIDs, answers AlreadyStored=570 Conflict=12 Stored=128 no answer=320
+[2026-11-11T13:42:14Z INFO  testbed_attacker] persist: learned did:iiot:a167730d-d552-48fe-8c29-cd6594d7207e from a STORE 10.213.0.11 -> 10.213.0.103, forged key 67ae545f3ebc
+[2026-11-11T13:42:15Z INFO  testbed_attacker] persist: 1955 forged STOREs in the last 5 s to 130 nodes for 3 DIDs, answers AlreadyStored=1745 Conflict=148 Stored=4 no answer=58
+[2026-11-11T13:42:21Z INFO  testbed_attacker] persist: 1930 forged STOREs in the last 5 s to 130 nodes for 3 DIDs, answers AlreadyStored=1189 Conflict=622 Stored=14 no answer=105
+[2026-11-11T13:42:27Z INFO  testbed_attacker] persist: 2753 forged STOREs in the last 5 s to 130 nodes for 3 DIDs, answers AlreadyStored=1030 Conflict=617 Stored=5 no answer=1101
+[2026-11-11T13:42:29Z INFO  testbed_attacker] persist: learned did:iiot:93967f92-70bd-40a6-a277-65483da17a2d from a STORE 10.213.0.11 -> 10.213.0.31, forged key b5ace747b2f7
+[2026-11-11T13:42:32Z INFO  testbed_attacker] persist: 2274 forged STOREs in the last 5 s to 130 nodes for 4 DIDs, answers AlreadyStored=1231 Conflict=1007 Stored=1 no answer=35
+[2026-11-11T13:42:38Z INFO  testbed_attacker] persist: 1791 forged STOREs in the last 5 s to 130 nodes for 4 DIDs, answers AlreadyStored=815 Conflict=843 Stored=15 no answer=118
+[2026-11-11T13:42:43Z INFO  testbed_attacker] persist: learned did:iiot:760334f4-994b-48af-a097-6b00bb970f25 from a STORE 10.213.0.140 -> 10.213.0.121, forged key 8bf1139ce8b3
+[2026-11-11T13:42:44Z INFO  testbed_attacker] persist: 4248 forged STOREs in the last 5 s to 130 nodes for 4 DIDs, answers AlreadyStored=1099 Conflict=1613 Stored=3 no answer=1533
+[2026-11-11T13:42:46Z INFO  testbed_attacker] persist: learned did:iiot:1920867d-043a-434a-a2bc-1fb8000ea80a from a STORE 10.213.0.11 -> 10.213.0.71, forged key af0537f1cd78
+[2026-11-11T13:42:49Z INFO  testbed_attacker] persist: 2842 forged STOREs in the last 5 s to 130 nodes for 5 DIDs, answers AlreadyStored=720 Conflict=1913 Stored=75 no answer=134
+[2026-11-11T13:42:55Z INFO  testbed_attacker] persist: 4047 forged STOREs in the last 5 s to 130 nodes for 5 DIDs, answers AlreadyStored=967 Conflict=1623 Stored=33 no answer=1424
+[2026-11-11T13:42:56Z INFO  testbed_attacker] persist: learned did:iiot:3d6b1b40-0823-4ff6-b448-82786dcffd8d from a STORE 10.213.0.65 -> 10.213.0.11, forged key 6c79ae048f21
+[2026-11-11T13:42:56Z INFO  testbed_attacker] persist: learned did:iiot:7505ac43-6de6-4926-b837-7fadce34049e from a STORE 10.213.0.11 -> 10.213.0.14, forged key 9ed83beac502
+[2026-11-11T13:42:58Z WARN  auth_kademlia_rs::protocol::store_check] rpc_store: not every node answered about 3f97e86281f12e5f29cb82dad9bfb717eecd4efa4f35b9b59a9a4a589f4b2ef9, record from 10.213.0.11 refused
+[2026-11-11T13:43:00Z INFO  testbed_attacker] persist: 4004 forged STOREs in the last 5 s to 130 nodes for 7 DIDs, answers AlreadyStored=1264 Conflict=2683 Stored=1 no answer=56
+[2026-11-11T13:43:05Z INFO  testbed_attacker] persist: 1097 forged STOREs in the last 5 s to 130 nodes for 6 DIDs, answers AlreadyStored=323 Conflict=625 no answer=149
+[2026-11-11T13:43:11Z INFO  testbed_attacker] persist: 491 forged STOREs in the last 5 s to 130 nodes for 6 DIDs, answers no answer=491
+[2026-11-11T13:43:16Z INFO  testbed_attacker] persist: 133 forged STOREs in the last 5 s to 130 nodes for 5 DIDs, answers no answer=133
+[2026-11-11T13:43:22Z INFO  testbed_attacker] persist: 697 forged STOREs in the last 5 s to 130 nodes for 5 DIDs, answers no answer=697
+[2026-11-11T13:43:27Z INFO  testbed_attacker] persist: 842 forged STOREs in the last 5 s to 130 nodes for 5 DIDs, answers no answer=842
+[2026-11-11T13:43:33Z INFO  testbed_attacker] persist: 1162 forged STOREs in the last 5 s to 130 nodes for 4 DIDs, answers AlreadyStored=3 Conflict=3 no answer=1156
+[2026-11-11T13:43:38Z INFO  testbed_attacker] persist: 963 forged STOREs in the last 5 s to 130 nodes for 4 DIDs, answers AlreadyStored=1 Conflict=5 no answer=957
+[2026-11-11T13:43:44Z INFO  testbed_attacker] persist: 1210 forged STOREs in the last 5 s to 130 nodes for 3 DIDs, answers AlreadyStored=1 Conflict=2 no answer=1207
+[2026-11-11T13:43:47Z INFO  testbed_attacker] persist: learned did:iiot:1920867d-043a-434a-a2bc-1fb8000ea80a from a STORE 10.213.0.138 -> 10.213.0.116, forged key 40099448b0db
+[2026-11-11T13:43:48Z INFO  testbed_attacker] persist: learned did:iiot:bc00d752-a1ba-4e45-b0a9-ba3a96567948 from a STORE 10.213.0.47 -> 10.213.0.139, forged key cd743626432b
+[2026-11-11T13:43:49Z INFO  testbed_attacker] persist: learned did:iiot:760334f4-994b-48af-a097-6b00bb970f25 from a STORE 10.213.0.114 -> 10.213.0.140, forged key 995b95551e9d
+[2026-11-11T13:43:49Z INFO  testbed_attacker] persist: learned did:iiot:abe640eb-0b81-425f-a372-4bc4d15e57ec from a STORE 10.213.0.11 -> 10.213.0.60, forged key 748c55ab8326
+[2026-11-11T13:43:50Z INFO  testbed_attacker] persist: 24577 forged STOREs in the last 5 s to 130 nodes for 6 DIDs, answers AlreadyStored=60 Conflict=1207 no answer=23310
+[2026-11-11T13:43:56Z INFO  testbed_attacker] persist: 3967 forged STOREs in the last 5 s to 130 nodes for 6 DIDs, answers Conflict=3236 no answer=731
+[2026-11-11T13:44:02Z INFO  testbed_attacker] persist: 301 forged STOREs in the last 5 s to 130 nodes for 4 DIDs, answers Conflict=114 no answer=187
+[2026-11-11T13:44:07Z INFO  testbed_attacker] persist: learned did:iiot:f73bf8a7-fd45-4b50-9561-78e6e0bca256 from a STORE 10.213.0.11 -> 10.213.0.123, forged key bc1b1e1f9809
+[2026-11-11T13:44:08Z INFO  testbed_attacker] persist: 7024 forged STOREs in the last 5 s to 130 nodes for 5 DIDs, answers Conflict=2791 Stored=30 no answer=4203
+[2026-11-11T13:44:14Z INFO  testbed_attacker] persist: 3897 forged STOREs in the last 5 s to 130 nodes for 5 DIDs, answers AlreadyStored=394 Conflict=2746 Stored=93 no answer=664
+[2026-11-11T13:44:19Z INFO  testbed_attacker] persist: 3441 forged STOREs in the last 5 s to 130 nodes for 5 DIDs, answers AlreadyStored=647 Conflict=2600 Stored=7 no answer=187
+[2026-11-11T13:44:20Z INFO  testbed_attacker] persist: learned did:iiot:e020c48c-7325-40f8-b89d-33e7f78d6714 from a STORE 10.213.0.11 -> 10.213.0.37, forged key 38b766ebcfa2
+[2026-11-11T13:44:25Z INFO  testbed_attacker] persist: 2695 forged STOREs in the last 5 s to 130 nodes for 6 DIDs, answers AlreadyStored=437 Conflict=1986 Stored=73 no answer=199
+[2026-11-11T13:44:31Z INFO  testbed_attacker] persist: 6547 forged STOREs in the last 5 s to 130 nodes for 6 DIDs, answers AlreadyStored=1636 Conflict=3291 Stored=12 no answer=1608
+[2026-11-11T13:44:33Z INFO  testbed_attacker] persist: learned did:iiot:4df8a25a-fabb-46b5-a460-af9b6c4322fd from a STORE 10.213.0.11 -> 10.213.0.74, forged key 7f1144f0bf7d
+[2026-11-11T13:44:37Z INFO  testbed_attacker] persist: 3364 forged STOREs in the last 5 s to 130 nodes for 7 DIDs, answers AlreadyStored=1016 Conflict=2270 no answer=78
+[2026-11-11T13:44:42Z INFO  testbed_attacker] persist: 468 forged STOREs in the last 5 s to 130 nodes for 7 DIDs, answers AlreadyStored=108 Conflict=187 Stored=1 no answer=172
+[2026-11-11T13:44:48Z INFO  testbed_attacker] persist: 359 forged STOREs in the last 5 s to 130 nodes for 6 DIDs, answers AlreadyStored=65 Conflict=155 Stored=6 no answer=133
+[2026-11-11T13:44:52Z INFO  testbed_attacker] persist: learned did:iiot:760334f4-994b-48af-a097-6b00bb970f25 from a STORE 10.213.0.114 -> 10.213.0.140, forged key db6307c9e0e0
+[2026-11-11T13:44:53Z INFO  testbed_attacker] persist: learned did:iiot:1920867d-043a-434a-a2bc-1fb8000ea80a from a STORE 10.213.0.71 -> 10.213.0.139, forged key 481ea09de40c
+[2026-11-11T13:44:53Z INFO  testbed_attacker] persist: learned did:iiot:bc00d752-a1ba-4e45-b0a9-ba3a96567948 from a STORE 10.213.0.47 -> 10.213.0.139, forged key 51c2a2e0d344
+[2026-11-11T13:44:53Z INFO  testbed_attacker] persist: 13150 forged STOREs in the last 5 s to 130 nodes for 6 DIDs, answers AlreadyStored=437 Conflict=348 Stored=1 no answer=12364
+[2026-11-11T13:44:54Z INFO  testbed_attacker] persist: learned did:iiot:7bfb7201-7c67-4735-9ef7-4bec44e1bad0 from a STORE 10.213.0.11 -> 10.213.0.44, forged key 44957b7a1d4e
+[2026-11-11T13:44:59Z INFO  testbed_attacker] persist: 4836 forged STOREs in the last 5 s to 130 nodes for 7 DIDs, answers AlreadyStored=1095 Conflict=2424 Stored=3 no answer=1314
+[2026-11-11T13:45:04Z INFO  testbed_attacker] persist: 1031 forged STOREs in the last 5 s to 130 nodes for 7 DIDs, answers AlreadyStored=88 Conflict=220 Stored=9 no answer=714
+[2026-11-11T13:45:09Z INFO  testbed_attacker] persist: 389 forged STOREs in the last 5 s to 130 nodes for 6 DIDs, answers AlreadyStored=27 Conflict=145 Stored=1 no answer=216
+[2026-11-11T13:45:12Z INFO  testbed_attacker] persist: learned did:iiot:f73bf8a7-fd45-4b50-9561-78e6e0bca256 from a STORE 10.213.0.138 -> 10.213.0.53, forged key 49494a4f43fa
+[2026-11-11T13:45:15Z INFO  testbed_attacker] persist: 13120 forged STOREs in the last 5 s to 130 nodes for 7 DIDs, answers AlreadyStored=639 Conflict=3615 no answer=8866
+[2026-11-11T13:45:17Z INFO  testbed_attacker] persist: learned did:iiot:779dc4a4-7c65-4f83-9f26-d7f97babc496 from a STORE 10.213.0.11 -> 10.213.0.52, forged key 8842226ee73a
+[2026-11-11T13:45:21Z INFO  testbed_attacker] persist: 3726 forged STOREs in the last 5 s to 130 nodes for 7 DIDs, answers AlreadyStored=495 Conflict=2878 Stored=4 no answer=349
+[2026-11-11T13:45:26Z INFO  testbed_attacker] persist: 6380 forged STOREs in the last 5 s to 130 nodes for 7 DIDs, answers AlreadyStored=288 Conflict=1843 Stored=32 no answer=4217
+[2026-11-11T13:45:28Z INFO  testbed_attacker] persist: learned did:iiot:84015f69-0c28-4d60-b3ad-295e7467c7ed from a STORE 10.213.0.11 -> 10.213.0.127, forged key 031467908f7b
+[2026-11-11T13:45:31Z INFO  testbed_attacker] persist: 5059 forged STOREs in the last 5 s to 130 nodes for 8 DIDs, answers AlreadyStored=577 Conflict=3803 no answer=679
+[2026-11-11T13:45:37Z INFO  testbed_attacker] persist: 2218 forged STOREs in the last 5 s to 130 nodes for 7 DIDs, answers AlreadyStored=239 Conflict=1497 Stored=2 no answer=480
+[2026-11-11T13:45:42Z INFO  testbed_attacker] persist: 325 forged STOREs in the last 5 s to 130 nodes for 7 DIDs, answers no answer=325
+[2026-11-11T13:45:47Z INFO  testbed_attacker] persist: 285 forged STOREs in the last 5 s to 130 nodes for 7 DIDs, answers no answer=285
+[2026-11-11T13:45:53Z INFO  testbed_attacker] persist: 390 forged STOREs in the last 5 s to 130 nodes for 4 DIDs, answers no answer=390
+[2026-11-11T13:45:59Z INFO  testbed_attacker] persist: 420 forged STOREs in the last 5 s to 130 nodes for 3 DIDs, answers no answer=420
+[2026-11-11T13:46:04Z INFO  testbed_attacker] persist: 1840 forged STOREs in the last 5 s to 130 nodes for 3 DIDs, answers no answer=1840
+[2026-11-11T13:46:06Z INFO  testbed_attacker] persist: learned did:iiot:e020c48c-7325-40f8-b89d-33e7f78d6714 from a STORE 10.213.0.80 -> 10.213.0.138, forged key 5fc6510ab508
+[2026-11-11T13:46:07Z INFO  testbed_attacker] persist: learned did:iiot:760334f4-994b-48af-a097-6b00bb970f25 from a STORE 10.213.0.114 -> 10.213.0.140, forged key cd667adc0336
+[2026-11-11T13:46:07Z INFO  testbed_attacker] persist: learned did:iiot:4df8a25a-fabb-46b5-a460-af9b6c4322fd from a STORE 10.213.0.53 -> 10.213.0.140, forged key 18f14c6d070c
+[2026-11-11T13:46:08Z INFO  testbed_attacker] persist: learned did:iiot:7d38e309-7f4c-4738-84df-412179db2629 from a STORE 10.213.0.11 -> 10.213.0.36, forged key 5929c933393b
+[2026-11-11T13:46:10Z INFO  testbed_attacker] persist: 22345 forged STOREs in the last 5 s to 130 nodes for 7 DIDs, answers AlreadyStored=304 Conflict=1330 no answer=20711
+[2026-11-11T13:46:16Z INFO  testbed_attacker] persist: 2832 forged STOREs in the last 5 s to 130 nodes for 6 DIDs, answers AlreadyStored=225 Conflict=1086 no answer=1521
+[2026-11-11T13:46:22Z INFO  testbed_attacker] persist: 6089 forged STOREs in the last 5 s to 130 nodes for 5 DIDs, answers AlreadyStored=2 Conflict=340 no answer=5747
+[2026-11-11T13:46:24Z INFO  testbed_attacker] persist: learned did:iiot:779dc4a4-7c65-4f83-9f26-d7f97babc496 from a STORE 10.213.0.52 -> 10.213.0.138, forged key cde336f67c43
+[2026-11-11T13:46:24Z INFO  testbed_attacker] persist: learned did:iiot:1920867d-043a-434a-a2bc-1fb8000ea80a from a STORE 10.213.0.71 -> 10.213.0.139, forged key 7f277c57ba8c
+[2026-11-11T13:46:24Z INFO  testbed_attacker] persist: learned did:iiot:f73bf8a7-fd45-4b50-9561-78e6e0bca256 from a STORE 10.213.0.92 -> 10.213.0.139, forged key 1ecef8815002
+[2026-11-11T13:46:24Z INFO  testbed_attacker] persist: learned did:iiot:bc00d752-a1ba-4e45-b0a9-ba3a96567948 from a STORE 10.213.0.47 -> 10.213.0.139, forged key 40613ffd7104
+[2026-11-11T13:46:27Z INFO  testbed_attacker] persist: 5230 forged STOREs in the last 5 s to 130 nodes for 9 DIDs, answers Conflict=4407 no answer=823
+[2026-11-11T13:46:28Z INFO  testbed_attacker] persist: learned did:iiot:f1de5ba8-9819-4fa1-8308-b84b64cbc735 from a STORE 10.213.0.11 -> 10.213.0.119, forged key e55ad7dee81b
+[2026-11-11T13:46:33Z INFO  testbed_attacker] persist: 3904 forged STOREs in the last 5 s to 130 nodes for 9 DIDs, answers AlreadyStored=4 Conflict=2698 Stored=7 no answer=1195
+[2026-11-11T13:46:39Z INFO  testbed_attacker] persist: 663 forged STOREs in the last 5 s to 130 nodes for 9 DIDs, answers AlreadyStored=2 Conflict=254 Stored=9 no answer=398
+[2026-11-11T13:46:43Z INFO  testbed_attacker] persist: learned did:iiot:0b09ff7d-ac31-4a24-b0e4-84a32c9192c9 from a STORE 10.213.0.11 -> 10.213.0.17, forged key 698a2dd3771d
+[2026-11-11T13:46:45Z INFO  testbed_attacker] persist: 16780 forged STOREs in the last 5 s to 130 nodes for 10 DIDs, answers AlreadyStored=624 Conflict=5271 Stored=5 no answer=10880
+[2026-11-11T13:46:51Z INFO  testbed_attacker] persist: 4058 forged STOREs in the last 5 s to 130 nodes for 10 DIDs, answers AlreadyStored=288 Conflict=2684 Stored=1 no answer=1085
+[2026-11-11T13:46:56Z INFO  testbed_attacker] persist: 113 forged STOREs in the last 5 s to 130 nodes for 10 DIDs, answers AlreadyStored=4 Conflict=48 Stored=3 no answer=58
+[2026-11-11T13:47:01Z INFO  testbed_attacker] persist: 288 forged STOREs in the last 5 s to 130 nodes for 10 DIDs, answers AlreadyStored=9 Conflict=34 Stored=4 no answer=241
+[2026-11-11T13:47:06Z INFO  testbed_attacker] persist: learned did:iiot:3756baef-c776-42e2-84ee-cf48904721cf from a STORE 10.213.0.11 -> 10.213.0.100, forged key 71f3e3ffdeb4
+[2026-11-11T13:47:06Z INFO  testbed_attacker] persist: 21579 forged STOREs in the last 5 s to 130 nodes for 11 DIDs, answers AlreadyStored=522 Conflict=2089 Stored=8 no answer=18960
+[2026-11-11T13:47:12Z INFO  testbed_attacker] persist: 6635 forged STOREs in the last 5 s to 130 nodes for 7 DIDs, answers AlreadyStored=969 Conflict=2183 Stored=47 no answer=3436
+[2026-11-11T13:47:18Z INFO  testbed_attacker] persist: 499 forged STOREs in the last 5 s to 130 nodes for 7 DIDs, answers AlreadyStored=95 Conflict=105 Stored=10 no answer=289
+[2026-11-11T13:47:22Z INFO  testbed_attacker] persist: learned did:iiot:e020c48c-7325-40f8-b89d-33e7f78d6714 from a STORE 10.213.0.80 -> 10.213.0.138, forged key 1edb44d93a2e
+[2026-11-11T13:47:23Z INFO  testbed_attacker] persist: learned did:iiot:760334f4-994b-48af-a097-6b00bb970f25 from a STORE 10.213.0.114 -> 10.213.0.140, forged key 0609ba8f84b1
+[2026-11-11T13:47:23Z INFO  testbed_attacker] persist: learned did:iiot:4df8a25a-fabb-46b5-a460-af9b6c4322fd from a STORE 10.213.0.53 -> 10.213.0.140, forged key 0e9a8609dad8
+[2026-11-11T13:47:23Z INFO  testbed_attacker] persist: 10305 forged STOREs in the last 5 s to 130 nodes for 10 DIDs, answers AlreadyStored=1178 Conflict=1848 Stored=12 no answer=7267
+[2026-11-11T13:47:24Z INFO  testbed_attacker] persist: learned did:iiot:84791a9f-c7a2-4030-8d00-644b1886dc45 from a STORE 10.213.0.11 -> 10.213.0.12, forged key 19c396cdc53c
+[2026-11-11T13:47:29Z INFO  testbed_attacker] persist: 5330 forged STOREs in the last 5 s to 130 nodes for 6 DIDs, answers AlreadyStored=1417 Conflict=2230 Stored=3 no answer=1680
+[2026-11-11T13:47:34Z INFO  testbed_attacker] persist: 540 forged STOREs in the last 5 s to 130 nodes for 6 DIDs, answers AlreadyStored=42 Conflict=79 Stored=5 no answer=414
+[2026-11-11T13:47:39Z INFO  testbed_attacker] persist: learned did:iiot:f1de5ba8-9819-4fa1-8308-b84b64cbc735 from a STORE 10.213.0.119 -> 10.213.0.140, forged key 3ae4a910cce5
+[2026-11-11T13:47:39Z INFO  testbed_attacker] persist: 2470 forged STOREs in the last 5 s to 130 nodes for 7 DIDs, answers AlreadyStored=5 Conflict=9 Stored=1 no answer=2455
+[2026-11-11T13:47:41Z INFO  testbed_attacker] persist: learned did:iiot:779dc4a4-7c65-4f83-9f26-d7f97babc496 from a STORE 10.213.0.52 -> 10.213.0.138, forged key ba7df114726c
+[2026-11-11T13:47:41Z INFO  testbed_attacker] persist: learned did:iiot:1920867d-043a-434a-a2bc-1fb8000ea80a from a STORE 10.213.0.71 -> 10.213.0.139, forged key e8f9145c2673
+[2026-11-11T13:47:42Z INFO  testbed_attacker] persist: learned did:iiot:d870382d-7595-49e9-95b8-92fc1664834e from a STORE 10.213.0.11 -> 10.213.0.94, forged key 5fbd20e78aa8
+[2026-11-11T13:47:45Z INFO  testbed_attacker] persist: 12083 forged STOREs in the last 5 s to 130 nodes for 9 DIDs, answers AlreadyStored=2207 Conflict=4707 no answer=5169
+[2026-11-11T13:47:51Z INFO  testbed_attacker] persist: 2460 forged STOREs in the last 5 s to 130 nodes for 9 DIDs, answers AlreadyStored=431 Conflict=1444 Stored=1 no answer=584
+[2026-11-11T13:47:56Z INFO  testbed_attacker] persist: 23 forged STOREs in the last 5 s to 130 nodes for 9 DIDs, answers no answer=23
+[2026-11-11T13:48:01Z INFO  testbed_attacker] persist: 15594 forged STOREs in the last 5 s to 130 nodes for 9 DIDs, answers AlreadyStored=545 Conflict=1067 Stored=15 no answer=13967
+[2026-11-11T13:48:02Z INFO  testbed_attacker] persist: learned did:iiot:f73bf8a7-fd45-4b50-9561-78e6e0bca256 from a STORE 10.213.0.92 -> 10.213.0.139, forged key 9f01e704be36
+[2026-11-11T13:48:02Z INFO  testbed_attacker] persist: learned did:iiot:bc00d752-a1ba-4e45-b0a9-ba3a96567948 from a STORE 10.213.0.47 -> 10.213.0.139, forged key 02251f21d485
+[filtered for the archive: 175103 warning lines "no response from <node>:4000", one per forged STORE left unanswered, removed; the answers are totalled in the persist lines above]

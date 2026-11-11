@@ -9,7 +9,8 @@ repeated here.
 
 Each experiment states the question it answers, how it is run, what is
 measured, the results and how to read them. The raw data of every run is in
-`experiments/2026-11-11-adr0005/` (section 1).
+`experiments/2026-11-11-adr0005/` (section 1), and that of L2 and L3 in
+`experiments/2026-11-11-owner-outage/`.
 
 ## Contents
 
@@ -25,8 +26,10 @@ measured, the results and how to read them. The raw data of every run is in
 10. [A4. Nodes that lie in `FindHash`](#10-a4-nodes-that-lie-in-findhash)
 11. [A5. Spoofed answers under guessed message ids](#11-a5-spoofed-answers-under-guessed-message-ids)
 12. [L1. Copies over time with churn and liars](#12-l1-copies-over-time-with-churn-and-liars)
-13. [Summary](#13-summary)
-14. [How to reproduce](#14-how-to-reproduce)
+13. [L2. Replicas lost while the owner is offline](#13-l2-replicas-lost-while-the-owner-is-offline)
+14. [L3. What readers get in the worst case](#14-l3-what-readers-get-in-the-worst-case)
+15. [Summary](#15-summary)
+16. [How to reproduce](#16-how-to-reproduce)
 
 ## 1. Environment
 
@@ -528,7 +531,158 @@ samples. Copies of the current version on the replicas other than the owner
   What the runs show is the shape: with a liar the copies depend on the
   owner's republication.
 
-## 13. Summary
+## 13. L2. Replicas lost while the owner is offline
+
+**Question.** With ADR 0005, an empty replica accepts a later version from
+the holders' republication only when a quorum of the nodes it asks hold it,
+and the owner is the one who restores copies below the quorum (ADR 0005,
+Consequences). How does the record recover when several replicas lose their
+copy at once, for example in a power cut at one site, while the owner is
+offline? `main` has no quorum: an empty replica takes a record that no node
+contradicts.
+
+**Setup.** The owner publishes a new DID and rotates once, then is frozen
+(`docker pause`, so that it keeps its versions and does not answer). M of the
+replicas holding the current version crash and come back empty at once, with
+M = 4, 7, 8, 12 and 16. Each replica that still holds the record then sends it
+to the `k` nodes closest to the key, one after the other, as the hourly
+republication does (testbed command `push`), and the script counts what the
+replicas hold. On the branch the owner then comes back and sends its current
+version again with the saved bytes (`republish`), and the replicas are
+counted once more. 5 rounds per M, a new DID each, 127 nodes, `k` = 20, WAN
+Europe. The `main` image adds only the testbed's `push` command to `424b76f`
+(`main-push.patch`). No host drops. Data in
+`experiments/2026-11-11-owner-outage/`.
+
+**Results.** Rounds in which every replica held the current version again,
+and copies of the current version after the holders' republication (median
+of 5; 20 replicas, or 19 when the owner is one of the `k` closest):
+
+| Replicas lost | Holders left | `main`: restored by the holders | Branch: restored by the holders | Branch: after the owner's return |
+|---|---|---|---|---|
+| 4 | 15–16 | 5/5 (20) | 5/5 (20) | 5/5 |
+| 7 | 12–13 | 5/5 (20) | 4/5 (20) | 5/5 |
+| 8 | 11–12 | 5/5 (20) | 0/5 (12) | 5/5 |
+| 12 | 7–8 | 5/5 (20) | 0/5 (8) | 5/5 |
+| 16 | 3–4 | 5/5 (20) | 0/5 (4) | 5/5 |
+
+**Reading.**
+- On `main` the holders refill every empty replica, down to 3 holders left:
+  each empty replica takes the record from the first holder that sends it.
+- On the branch the threshold is exactly the quorum. With 13 holders or more
+  the first STORE fills each empty replica; with 12 or fewer every STORE to an
+  empty replica goes unanswered (its check finds too few votes) and the
+  copies stay where the loss left them. The one round of 7 lost that was not
+  restored had 19 replicas, so 12 holders.
+- When the owner comes back, its republication restores every replica in
+  every round, down to 3 holders left: version 0 needs no votes and each
+  later version is checked against the one before.
+- This is the price of the quorum: a later version cannot be checked by an
+  empty replica on its own, so the branch accepts it only on the word of a
+  quorum, and fewer than a quorum of colluding nodes cannot vouch for a forged
+  version. `main` accepts on the absence of contradiction, which also accepts
+  a forged record when no holder answers.
+- The time scale is compressed. Below the quorum, the copies of a DID wait
+  for the owner, who republishes at least once every 24 hours and when it
+  comes back online; meanwhile the remaining holders keep the record readable
+  and refresh each other's expiry. A record whose owner is offline for more
+  than 14 days and that falls below the quorum cannot be restored by the
+  network.
+
+## 14. L3. What readers get in the worst case
+
+**Question.** In the situation of L2 below the quorum, with the owner offline
+and empty replicas that the holders cannot refill, and with an attacker that
+keeps sending forged versions to every node: does a reader get the owner's
+record, a forgery, or nothing? Two readers: a node that has been in the
+network all along, and a node that joins at that moment, with an empty routing
+table.
+
+**Setup.** As L2: 127 nodes, `k` = 20, WAN Europe, the owner frozen after one
+rotation, M = 8, 12, 16 or 20 replicas holding the current version restarted
+empty at once, 5 rounds each, then the holders' republication. In addition:
+- a persistent attacker (`attack.py start --mode persist --period 1000
+  --did-ttl 60`): for 60 s after it sees a DID it sends every node, every
+  second, a forged version of it, with the owner's DID and `prev` and a key of
+  its own;
+- after the holders' republication, with the owner still offline, every node
+  but the owner reads the DID once (126 readers), and 3 nodes kept outside the
+  network (130 in all) join it, bootstrap from the seeds and read it once;
+- on the branch the owner then comes back and republishes, and the 126 nodes
+  read again.
+
+A read is classified by the key that signed what it got: one of the owner's
+versions (signed, whether or not its rotation reached a majority), the forged
+key that the attacker logged for that DID, or nothing. No read got a record
+signed by any other key. The host dropped 4,089 datagrams during the `main`
+run and 1,931 during the branch run: the attacker's load costs availability
+on this host, which the results show; it cannot make a node accept a record.
+Data in `experiments/2026-11-11-owner-outage/reads/`.
+
+**Results.** All 20 rounds of each image; reads written owner's / forged /
+nothing:
+
+| | `main` | Branch |
+|---|---|---|
+| Forged STOREs the nodes stored | 29,865 | **0** |
+| Reads by the nodes in the network | 1,172 / 1,228 / 120 | 1,328 / **0** / 1,192 |
+| Reads by the nodes that joined | 27 / 32 / 1 | 24 / **0** / 36 |
+| Reads after the owner's return | | 2,097 / 0 / 423 |
+| First publications complete / degraded / failed | 11 / 4 / 5 | 10 / 6 / 4 |
+
+The rounds whose first publication reached every replica, so that only the
+loss and the attack differ:
+
+| Replicas lost | `main`: rounds, reads in the network, reads by joiners | Branch: rounds, reads in the network, reads by joiners | Branch, after the owner's return |
+|---|---|---|---|
+| 8 | 3: 378 / 0 / 0, 9 / 0 / 0 | 3: 378 / 0 / 0, 9 / 0 / 0 | all replicas restored, 378 / 0 / 0 |
+| 12 | 1: 126 / 0 / 0, 3 / 0 / 0 | 2: 252 / 0 / 0, 6 / 0 / 0 | all restored, 252 / 0 / 0 |
+| 16 | 1: 126 / 0 / 0, 3 / 0 / 0 | 2: 252 / 0 / 0, 6 / 0 / 0 | all restored, 252 / 0 / 0 |
+| 20 | 2: 0 / **252** / 0, 0 / **6** / 0 | 3: 0 / 0 / 378, 0 / 0 / 9 | all restored, 378 / 0 / 0 |
+
+**Reading.**
+- **On the branch no node stored a forged version and no reader got one**, in
+  any round, in the network or just joined. A holder refuses a forged
+  version as a second version with the same number, or because its key is
+  not the one the version before committed to; an empty node refuses it
+  because its check finds the genuine version, or too few votes.
+- **Below the quorum, while one holder remains, every reader gets the owner's
+  record**: with 8, 12 or 16 replicas lost, every read of the rounds whose
+  publication reached every replica, also on `main`. The empty replicas that the holders cannot refill hold nothing, so
+  they give a reader no wrong record, and its lookup goes on to a holder.
+- **With every replica lost**, the branch's readers get nothing until the
+  owner returns, and then every read gets its record. `main`'s readers get the
+  attacker's forgery: an empty replica on `main` takes a record that no node
+  contradicts, and with no holder left nothing does.
+- **`main` is also exposed at the first publication.** In the rounds where its
+  publication did not reach every replica, the forgery reached replicas and
+  readers; on the branch those rounds left replicas empty, and readers got the
+  owner's record or nothing.
+- **The attacker costs availability on both images**: half of the first
+  publications did not reach every replica, because the checks of empty
+  replicas, flooded with forged STOREs, did not hear from every node they
+  asked in time and refused, as they must on silence. In those rounds many
+  branch readers found nothing, and the owner's return restored most reads
+  (2,097 of 2,520 in all rounds), not always the replicas. The attacker can
+  deny service; it cannot get a record accepted.
+- **A node that joins at that moment gets the same kinds of answer** as the
+  nodes in the network: the owner's record where copies remained, a forgery
+  only on `main`. Where copies were scarce it found the record somewhat less
+  often (branch: 24 of 60 reads, against 1,328 of 2,520).
+- These readers make plain reads, which take the first record that verifies.
+  This attacker does not answer reads; one that reads the traffic could answer
+  a lookup for the nodes asked with a self-signed forgery, which a read would
+  return. The application compares the key with the one bound in the
+  credential (`DESIGN.md`, section 8).
+
+**First run, discarded.** A first run with a heavier attacker (every 500 ms,
+120 s per DID) made the host drop 12,368 datagrams during the branch run, and
+counted the owner's version 1 as another record when its rotation did not
+reach a majority. It is kept in `reads/discarded-first-run/` and not used. Its
+attacker logs agree with the results above: on the branch no forged STORE was
+stored (`Stored` 0, `AlreadyStored` 0), on `main` 322 were.
+
+## 15. Summary
 
 Validated on the code of ADR 0005:
 - **Publication and availability.** 100 first publications in a network of 127
@@ -560,11 +714,22 @@ Measured costs and limits:
   republication, on `main` as with ADR 0005: its neighbours do not notice a
   node that comes back within a second. Under churn the copies of a record
   younger than an hour come back only through the owner's republication (L1).
+- **Replicas lost while the owner is offline.** With 13 holders or more the
+  holders' republication refills the empty replicas, as on `main`; with 12 or
+  fewer it refills none, where `main` refills all, and the copies wait for the
+  owner, whose return restores them all (L2).
+- **Readers in the worst case**, with the owner offline, replicas lost and a
+  persistent attacker: on the branch no reader, in the network or just
+  joined, got a forged record, and no node stored one; while a holder remains
+  readers get the owner's record, with none left they get nothing until the
+  owner returns. On `main`, with no holder left, every reader got the
+  attacker's forgery (L3). The attacker's flood still costs availability on
+  both: half of the first publications did not reach every replica.
 - **Traffic of a first publication**: about 630 KiB at `k` = 20, 73% of it in
   the answers to the replicas' checks.
 - **Tail under loss**: publications of 0.5 to 1.1 s under 0.5% loss.
 
-## 14. How to reproduce
+## 16. How to reproduce
 
 Host limits, once per boot:
 
@@ -573,16 +738,40 @@ sudo sysctl -w net.ipv4.neigh.default.gc_thresh1=4096 net.ipv4.neigh.default.gc_
 sudo sysctl -w net.core.netdev_max_backlog=16384
 ```
 
-The two images (the `main` one from a worktree of `424b76f`):
+The two images: the branch from commit `f4a9a2a`, `main` from a worktree of
+`424b76f`:
 
 ```bash
 testbed/testbed.py build --tag auth-kademlia-testbed:adr0005-final
+git worktree add ../main-424b76f 424b76f
+testbed/testbed.py build --tag auth-kademlia-testbed:main-424b76f --context ../main-424b76f
 ```
 
 Every experiment, one network at a time, as run on 2026-11-11:
 
 ```bash
 experiments/2026-11-11-adr0005/run_experiments.sh all   # or: compare, attacks
+```
+
+L2 runs on two images with the testbed's `push` command: the branch from
+commit `01451e0`, `main` from the worktree of `424b76f` with
+`experiments/2026-11-11-owner-outage/main-push.patch` applied:
+
+```bash
+testbed/testbed.py build --tag auth-kademlia-testbed:adr0005-push
+git -C ../main-424b76f apply "$PWD/experiments/2026-11-11-owner-outage/main-push.patch"
+testbed/testbed.py build --tag auth-kademlia-testbed:main-424b76f-push --context ../main-424b76f
+experiments/2026-11-11-owner-outage/run_outage.sh
+```
+
+L3 runs on the same two images, with `testbed/measure.py` as committed with
+`--reads` and `--joiners`, and is analysed with the two scripts beside its
+data:
+
+```bash
+experiments/2026-11-11-owner-outage/reads/run_outage_reads.sh
+python3 experiments/2026-11-11-owner-outage/reads/check_forged.py <run>.json <side>-attacker-log.txt
+python3 experiments/2026-11-11-owner-outage/reads/digest_reads.py <run>.json
 ```
 
 One step by hand, for example E1 on WAN Europe:

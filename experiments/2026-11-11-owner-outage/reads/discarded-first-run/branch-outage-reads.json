@@ -1,0 +1,1383 @@
+{
+  "config": {
+    "nodes": 130,
+    "k": 20,
+    "alpha": 3,
+    "seeds": 3,
+    "subnet": "10.213",
+    "profile": "wan-eu",
+    "delay_ms": 6.8,
+    "jitter_ms": 0.0,
+    "loss_pct": 0.0,
+    "cpus": null,
+    "image": "auth-kademlia-testbed:adr0005-push"
+  },
+  "args": {
+    "command": "outage",
+    "owner": "node-1",
+    "lost": [
+      8,
+      12,
+      16,
+      20
+    ],
+    "rounds": 5,
+    "rotations": 1,
+    "owner_returns": true,
+    "reads": true,
+    "joiners": 3,
+    "settle": 0.3,
+    "wait": 1.0,
+    "func": null
+  },
+  "rounds": [
+    {
+      "did": "did:iiot:MaiZ5pn9DrfaAWZKaxu5b2_9lkaWj8Vqc6FduS-uMu8",
+      "lost": 8,
+      "replicas": 19,
+      "victims": [
+        "node-75",
+        "node-32",
+        "node-48",
+        "node-116",
+        "node-124",
+        "node-120",
+        "node-98",
+        "node-55"
+      ],
+      "versions": [
+        "7cf711d18dfd",
+        "7062d703fab0"
+      ],
+      "before": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 11,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "after_push": {
+        "current": 11,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "push_answers": {
+        "AlreadyStored": 110,
+        "no answer": 110
+      },
+      "reads_owner_offline": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "seconds": 3.7
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:AiWsLGC4FsggWjgZpOZmsH1HDDLqnOwrjlzAbHxcye0",
+      "lost": 8,
+      "replicas": 20,
+      "victims": [
+        "node-99",
+        "node-56",
+        "node-121",
+        "node-126",
+        "node-84",
+        "node-72",
+        "node-49",
+        "node-91"
+      ],
+      "versions": [
+        "e2e219f66a86",
+        "4315f9e6d591"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 12,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "after_push": {
+        "current": 12,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "push_answers": {
+        "AlreadyStored": 132,
+        "no answer": 108
+      },
+      "reads_owner_offline": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "seconds": 4.0
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:Tv3-k0yQLcaMBRuXrEx8_FBgv8oAXXfryEZ2F8w8WII",
+      "lost": 8,
+      "replicas": 20,
+      "victims": [],
+      "versions": [
+        "2a7aef73ce5d"
+      ],
+      "before": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 0,
+        "older": 0,
+        "other": 10,
+        "none": 116,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "seconds": 4.0
+      },
+      "owner_republish": "rejected: ExistingRecord",
+      "after_owner": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "reads_owner_back": {
+        "current": 0,
+        "older": 0,
+        "other": 10,
+        "none": 116,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:cd9xxxuom91uo88W821893wfs6jjqmYUI8o2avu7h9A",
+      "lost": 8,
+      "replicas": 20,
+      "victims": [],
+      "versions": [
+        "e3b99e2f2b97"
+      ],
+      "before": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 0,
+        "older": 0,
+        "other": 32,
+        "none": 94,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "seconds": 4.3
+      },
+      "owner_republish": "rejected: ExistingRecord",
+      "after_owner": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "reads_owner_back": {
+        "current": 0,
+        "older": 0,
+        "other": 48,
+        "none": 78,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:x2pS4Ok0w62n1KXA-9nx7tJqZRkBCXfAefqiVga_aRE",
+      "lost": 8,
+      "replicas": 20,
+      "victims": [
+        "node-100",
+        "node-40",
+        "node-22",
+        "node-112",
+        "node-20",
+        "node-65",
+        "node-53",
+        "node-71"
+      ],
+      "versions": [
+        "073a07136391",
+        "83810aa8f605"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 12,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "after_push": {
+        "current": 12,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "push_answers": {
+        "AlreadyStored": 132,
+        "no answer": 108
+      },
+      "reads_owner_offline": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "seconds": 4.2
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:TWasikFPgda2f0Dv3itFBIZS__FaAf7dcRah9q_Pmd4",
+      "lost": 12,
+      "replicas": 20,
+      "victims": [],
+      "versions": [
+        "8b1217d65aad"
+      ],
+      "before": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 0,
+        "older": 0,
+        "other": 10,
+        "none": 116,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "seconds": 4.2
+      },
+      "owner_republish": "rejected: ExistingRecord",
+      "after_owner": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "reads_owner_back": {
+        "current": 0,
+        "older": 0,
+        "other": 10,
+        "none": 116,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:B4ijHLR35fr8JVza_q2RSw1GCggm2_1DA0eqBE9vsiM",
+      "lost": 12,
+      "replicas": 20,
+      "victims": [
+        "node-91",
+        "node-72",
+        "node-49",
+        "node-84",
+        "node-83",
+        "node-39",
+        "node-103",
+        "node-86",
+        "node-6",
+        "node-74",
+        "node-63",
+        "node-73"
+      ],
+      "versions": [
+        "329ff83080b8",
+        "c095a8062134"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "after_push": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "push_answers": {
+        "AlreadyStored": 56,
+        "no answer": 104
+      },
+      "reads_owner_offline": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "seconds": 3.9
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:HSL44s8cj5AMrJ1LWIVLW94px-bw4EZIRtGRlD2DE74",
+      "lost": 12,
+      "replicas": 20,
+      "victims": [
+        "node-49",
+        "node-56",
+        "node-121",
+        "node-126",
+        "node-99",
+        "node-78",
+        "node-36",
+        "node-101",
+        "node-7",
+        "node-6",
+        "node-74",
+        "node-63"
+      ],
+      "versions": [
+        "5b5349236b4a",
+        "94430156718b"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "after_push": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "push_answers": {
+        "AlreadyStored": 56,
+        "no answer": 104
+      },
+      "reads_owner_offline": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "seconds": 3.9
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:UTn-XwlSbEcsmpF7kg_UBDzi7HpYIlbMVy-pqfbnAu0",
+      "lost": 12,
+      "replicas": 20,
+      "victims": [
+        "node-54"
+      ],
+      "versions": [
+        "13a55294317b",
+        "f6959c271afe"
+      ],
+      "before": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 19
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 39,
+        "older": 0,
+        "other": 0,
+        "none": 87,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "seconds": 4.1
+      },
+      "owner_republish": "not confirmed",
+      "after_owner": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 19
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:Zjwtwn1pwC7ycIH_NOX_21QIypjApkLLUcfNi2cEA2M",
+      "lost": 12,
+      "replicas": 20,
+      "victims": [],
+      "versions": [
+        "76f766f1fa93",
+        "3f9f79e3026f"
+      ],
+      "before": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 18,
+        "older": 0,
+        "other": 0,
+        "none": 108,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "seconds": 3.6
+      },
+      "owner_republish": "not confirmed",
+      "after_owner": {
+        "current": 2,
+        "older": 0,
+        "other": 0,
+        "none": 18
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:XP5L3qcyg3wQdHcud4BZKen8qvQ02ddXCuu7jmAEdmc",
+      "lost": 16,
+      "replicas": 20,
+      "victims": [],
+      "versions": [
+        "01a5f1ae45e5"
+      ],
+      "before": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 0,
+        "older": 0,
+        "other": 6,
+        "none": 120,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "seconds": 5.5
+      },
+      "owner_republish": "rejected: ExistingRecord",
+      "after_owner": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "reads_owner_back": {
+        "current": 0,
+        "older": 0,
+        "other": 6,
+        "none": 120,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:Bx5LMdIaWNmnq6lfovXgsrbSCTJuZG3Uk8rIvaICnns",
+      "lost": 16,
+      "replicas": 20,
+      "victims": [
+        "node-83",
+        "node-39",
+        "node-103",
+        "node-86",
+        "node-6",
+        "node-74",
+        "node-63",
+        "node-73",
+        "node-101",
+        "node-7",
+        "node-78",
+        "node-126",
+        "node-121",
+        "node-56",
+        "node-99",
+        "node-36"
+      ],
+      "versions": [
+        "1b056167a845",
+        "3d0f2872cba8"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "after_push": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "push_answers": {
+        "AlreadyStored": 12,
+        "no answer": 68
+      },
+      "reads_owner_offline": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "seconds": 4.1
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:v2cSNsO2PxPqx4yR3s9jQhssd-udiUk7s2SgDnSpPZA",
+      "lost": 16,
+      "replicas": 20,
+      "victims": [
+        "node-51",
+        "node-2",
+        "node-97",
+        "node-87",
+        "node-118",
+        "node-5",
+        "node-12",
+        "node-123",
+        "node-17",
+        "node-58",
+        "node-46",
+        "node-60",
+        "node-64",
+        "node-34",
+        "node-57",
+        "node-45"
+      ],
+      "versions": [
+        "9906480e1232",
+        "4a9087c47eef"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "after_push": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "push_answers": {
+        "AlreadyStored": 12,
+        "no answer": 68
+      },
+      "reads_owner_offline": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "seconds": 4.1
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:Ozdsz1vDIJGchzT1MOq2q5hpakSywKm5ud1qv9sESCk",
+      "lost": 16,
+      "replicas": 19,
+      "victims": [
+        "node-23",
+        "node-117",
+        "node-38",
+        "node-86",
+        "node-39",
+        "node-103",
+        "node-91",
+        "node-84",
+        "node-72",
+        "node-98",
+        "node-106",
+        "node-4",
+        "node-55",
+        "node-75",
+        "node-32",
+        "node-48"
+      ],
+      "versions": [
+        "73410f17e44d",
+        "3bbd905cec62"
+      ],
+      "before": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "after_push": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "push_answers": {
+        "AlreadyStored": 6,
+        "no answer": 54
+      },
+      "reads_owner_offline": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "seconds": 3.5
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:Y8RCp7QFce3LWgBqO3_Q637BLbW3aALWLZgu65tCTU8",
+      "lost": 16,
+      "replicas": 20,
+      "victims": [],
+      "versions": [
+        "85feb05d4370"
+      ],
+      "before": {
+        "current": 0,
+        "older": 0,
+        "other": 1,
+        "none": 19
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 1,
+        "none": 19
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 1,
+        "none": 19
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 0,
+        "older": 0,
+        "other": 126,
+        "none": 0,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 3,
+        "none": 0,
+        "error": 0,
+        "seconds": 3.9
+      },
+      "owner_republish": "rejected: ExistingRecord",
+      "after_owner": {
+        "current": 0,
+        "older": 0,
+        "other": 1,
+        "none": 19
+      },
+      "reads_owner_back": {
+        "current": 0,
+        "older": 0,
+        "other": 126,
+        "none": 0,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:oRZG2yj0iqMS6xcV8fNrZeVt2nkkMTlgO5AxbRswm_g",
+      "lost": 20,
+      "replicas": 20,
+      "victims": [
+        "node-87",
+        "node-51",
+        "node-2",
+        "node-97",
+        "node-50",
+        "node-79",
+        "node-13",
+        "node-45",
+        "node-47",
+        "node-57",
+        "node-34",
+        "node-60",
+        "node-64",
+        "node-58",
+        "node-46",
+        "node-17",
+        "node-104",
+        "node-114",
+        "node-11",
+        "node-30"
+      ],
+      "versions": [
+        "dd369aeadcab",
+        "5a6b5171b22f"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 126,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "seconds": 3.7
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:d4qwiWK5tbFIYslhh5lnfp-DP6aROPvaZD41JgzyX1Q",
+      "lost": 20,
+      "replicas": 20,
+      "victims": [
+        "node-66",
+        "node-125",
+        "node-41"
+      ],
+      "versions": [
+        "c5ae23e45648",
+        "9192d94cdb8e"
+      ],
+      "before": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 17
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 33,
+        "older": 0,
+        "other": 0,
+        "none": 93,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "seconds": 4.7
+      },
+      "owner_republish": "not confirmed",
+      "after_owner": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:gutfWIpgNLm0wnyjhe_8AVlJDRiPnbyPL1Ximze-5AI",
+      "lost": 20,
+      "replicas": 20,
+      "victims": [],
+      "versions": [
+        "ab51944ceaa8",
+        "4eaa793b620a"
+      ],
+      "before": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 39,
+        "older": 0,
+        "other": 0,
+        "none": 87,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "seconds": 5.5
+      },
+      "owner_republish": "not confirmed",
+      "after_owner": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "reads_owner_back": {
+        "current": 39,
+        "older": 0,
+        "other": 0,
+        "none": 87,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:s3Y-xyU075gtuDPUc2ZHRQ9XDoS20ZBye3H_yNypf0c",
+      "lost": 20,
+      "replicas": 20,
+      "victims": [
+        "node-45",
+        "node-47",
+        "node-13",
+        "node-57",
+        "node-34",
+        "node-60",
+        "node-64",
+        "node-17",
+        "node-58",
+        "node-46",
+        "node-51",
+        "node-2",
+        "node-97",
+        "node-87",
+        "node-79",
+        "node-50"
+      ],
+      "versions": [
+        "0d9d425ac37d",
+        "6d8fb5d201d3"
+      ],
+      "before": {
+        "current": 16,
+        "older": 0,
+        "other": 0,
+        "none": 4
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 122,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "seconds": 4.2
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 18,
+        "older": 0,
+        "other": 0,
+        "none": 2
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      }
+    },
+    {
+      "did": "did:iiot:6X59OCw8yuZPDiA62kuPelkNdTqNwKSrkYWa-Jh1GbA",
+      "lost": 20,
+      "replicas": 20,
+      "victims": [
+        "node-21",
+        "node-67",
+        "node-76",
+        "node-65",
+        "node-53",
+        "node-71",
+        "node-20",
+        "node-68",
+        "node-127",
+        "node-102",
+        "node-93",
+        "node-26",
+        "node-122",
+        "node-85",
+        "node-115",
+        "node-89",
+        "node-59",
+        "node-9",
+        "node-8",
+        "node-95"
+      ],
+      "versions": [
+        "7d149cfd5e57",
+        "13fd4efdb48e"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 126,
+        "error": 0
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "seconds": 3.9
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0
+      }
+    }
+  ]
+}

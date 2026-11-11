@@ -1,0 +1,107 @@
+{
+  "config": {
+    "nodes": 10,
+    "k": 3,
+    "alpha": 3,
+    "seeds": 3,
+    "subnet": "10.213",
+    "profile": "wan-eu",
+    "delay_ms": 6.8,
+    "jitter_ms": 0.0,
+    "loss_pct": 0.0,
+    "cpus": null,
+    "image": "auth-kademlia-testbed:latest"
+  },
+  "rounds": [
+    {
+      "victim": "node-7",
+      "publish": "complete",
+      "after": "empty",
+      "forged_copies": 0,
+      "nodes": 9,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-6",
+      "publish": "complete",
+      "after": "empty",
+      "forged_copies": 0,
+      "nodes": 9,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-8",
+      "publish": "complete",
+      "after": "empty",
+      "forged_copies": 0,
+      "nodes": 9,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-5",
+      "publish": "complete",
+      "after": "empty",
+      "forged_copies": 0,
+      "nodes": 9,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-4",
+      "publish": "complete",
+      "after": "empty",
+      "forged_copies": 0,
+      "nodes": 9,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-8",
+      "publish": "complete",
+      "after": "empty",
+      "forged_copies": 0,
+      "nodes": 9,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-3",
+      "publish": "complete",
+      "after": "empty",
+      "forged_copies": 0,
+      "nodes": 9,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-6",
+      "publish": "complete",
+      "after": "empty",
+      "forged_copies": 0,
+      "nodes": 9,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-7",
+      "publish": "complete",
+      "after": "empty",
+      "forged_copies": 0,
+      "nodes": 9,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-4",
+      "publish": "complete",
+      "after": "empty",
+      "forged_copies": 0,
+      "nodes": 9,
+      "forged_reads": 0,
+      "reads": 3
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+=== 2026-11-11 14:18:18 main-up: testbed/testbed.py up --nodes 130 --k 20 --alpha 3 --profile wan-eu --image auth-kademlia-testbed:main-424b76f-push --no-build
+=== 2026-11-11 14:18:39 main-up: exit 0, host drops 0
+=== 2026-11-11 14:18:39 main-attacker-start: testbed/attack.py start --mode persist --period 500 --did-ttl 120
+=== 2026-11-11 14:18:40 main-attacker-start: exit 0, host drops 0
+=== 2026-11-11 14:18:40 main-outage-reads: testbed/measure.py outage --lost 8 12 16 20 --rounds 5 --reads --joiners 3
+=== 2026-11-11 14:25:43 main-outage-reads: exit 0, host drops 0
+=== 2026-11-11 14:25:43 main-attacker-log: testbed/attack.py logs
+=== 2026-11-11 14:25:46 main-attacker-log: exit 0, host drops 0
+=== 2026-11-11 14:25:46 main-attacker-stop: testbed/attack.py stop
+=== 2026-11-11 14:25:47 main-attacker-stop: exit 0, host drops 0
+=== 2026-11-11 14:25:47 main-down: testbed/testbed.py down
+=== 2026-11-11 14:25:55 main-down: exit 0, host drops 0
+=== 2026-11-11 14:25:55 branch-up: testbed/testbed.py up --nodes 130 --k 20 --alpha 3 --profile wan-eu --image auth-kademlia-testbed:adr0005-push --no-build
+=== 2026-11-11 14:26:17 branch-up: exit 0, host drops 0
+=== 2026-11-11 14:26:17 branch-attacker-start: testbed/attack.py start --mode persist --period 500 --did-ttl 120
+=== 2026-11-11 14:26:18 branch-attacker-start: exit 0, host drops 0
+=== 2026-11-11 14:26:18 branch-outage-reads: testbed/measure.py outage --lost 8 12 16 20 --rounds 5 --reads --joiners 3 --owner-returns
+=== 2026-11-11 14:38:38 branch-outage-reads: exit 0, host drops 12368
+=== 2026-11-11 14:38:38 branch-attacker-log: testbed/attack.py logs
+=== 2026-11-11 14:38:41 branch-attacker-log: exit 0, host drops 0
+=== 2026-11-11 14:38:41 branch-attacker-stop: testbed/attack.py stop
+=== 2026-11-11 14:38:42 branch-attacker-stop: exit 0, host drops 0
+=== 2026-11-11 14:38:42 branch-down: testbed/testbed.py down
+=== 2026-11-11 14:38:50 branch-down: exit 0, host drops 0
+=== 2026-11-11 14:38:50 done

@@ -1,0 +1,1689 @@
+{
+  "config": {
+    "nodes": 130,
+    "k": 20,
+    "alpha": 3,
+    "seeds": 3,
+    "subnet": "10.213",
+    "profile": "wan-eu",
+    "delay_ms": 6.8,
+    "jitter_ms": 0.0,
+    "loss_pct": 0.0,
+    "cpus": null,
+    "image": "auth-kademlia-testbed:adr0005-push"
+  },
+  "args": {
+    "command": "outage",
+    "owner": "node-1",
+    "lost": [
+      8,
+      12,
+      16,
+      20
+    ],
+    "rounds": 5,
+    "rotations": 1,
+    "owner_returns": true,
+    "reads": true,
+    "joiners": 3,
+    "settle": 0.3,
+    "wait": 1.0,
+    "func": null
+  },
+  "rounds": [
+    {
+      "did": "did:iiot:NpoZD8wXDHViToHhpO4vInTI4lFQO4n4bE8BXGNQ1DI",
+      "lost": 8,
+      "replicas": 19,
+      "victims": [
+        "node-116",
+        "node-124",
+        "node-120",
+        "node-48",
+        "node-32",
+        "node-75",
+        "node-4",
+        "node-106"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "confirmed"
+      ],
+      "versions": [
+        "1e5084b39d44",
+        "13598edf5eb5"
+      ],
+      "before": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 11,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "after_push": {
+        "current": 11,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "push_answers": {
+        "AlreadyStored": 110,
+        "no answer": 110
+      },
+      "reads_owner_offline": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "13598edf5eb5": 126
+        }
+      },
+      "joiner_reads": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "13598edf5eb5": 3
+        },
+        "seconds": 3.5
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "13598edf5eb5": 126
+        }
+      }
+    },
+    {
+      "did": "did:iiot:VsNjtLUgkKa6vCvSOVf_KlqbgfKzEduKDjqnFHK6lHw",
+      "lost": 8,
+      "replicas": 20,
+      "victims": [
+        "node-54"
+      ],
+      "publication": "rejected: Unavailable",
+      "rotations": [
+        "not confirmed"
+      ],
+      "versions": [
+        "9263309bd281",
+        "e45be2cf53ee"
+      ],
+      "before": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 19
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 21,
+        "older": 0,
+        "other": 0,
+        "none": 105,
+        "error": 0,
+        "keys": {
+          "None": 105,
+          "e45be2cf53ee": 21
+        }
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "keys": {
+          "None": 3
+        },
+        "seconds": 4.1
+      },
+      "owner_republish": "rejected: ExistingRecord",
+      "after_owner": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "reads_owner_back": {
+        "current": 21,
+        "older": 0,
+        "other": 0,
+        "none": 105,
+        "error": 0,
+        "keys": {
+          "None": 105,
+          "e45be2cf53ee": 21
+        }
+      }
+    },
+    {
+      "did": "did:iiot:Da2C1Z6lBL4xPgJopX9CLrqj8ua4FdOksa7PRuA_4XA",
+      "lost": 8,
+      "replicas": 19,
+      "victims": [
+        "node-36",
+        "node-117",
+        "node-23",
+        "node-101",
+        "node-7",
+        "node-6",
+        "node-74",
+        "node-63"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "confirmed"
+      ],
+      "versions": [
+        "e594d80069bc",
+        "d62e3bdbb05b"
+      ],
+      "before": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 11,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "after_push": {
+        "current": 11,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "push_answers": {
+        "AlreadyStored": 110,
+        "no answer": 110
+      },
+      "reads_owner_offline": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "d62e3bdbb05b": 126
+        }
+      },
+      "joiner_reads": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "d62e3bdbb05b": 3
+        },
+        "seconds": 3.7
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "d62e3bdbb05b": 126
+        }
+      }
+    },
+    {
+      "did": "did:iiot:M4K5VyCbd4P01x_IQZO4lHxMh29MOnhEWUJEgD140U8",
+      "lost": 8,
+      "replicas": 19,
+      "victims": [
+        "node-120",
+        "node-98",
+        "node-4",
+        "node-106",
+        "node-55",
+        "node-86",
+        "node-38",
+        "node-39"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "confirmed"
+      ],
+      "versions": [
+        "7b2d70d6696d",
+        "c60e21dfe6b4"
+      ],
+      "before": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 11,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "after_push": {
+        "current": 11,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "push_answers": {
+        "AlreadyStored": 110,
+        "no answer": 110
+      },
+      "reads_owner_offline": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "c60e21dfe6b4": 126
+        }
+      },
+      "joiner_reads": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "c60e21dfe6b4": 3
+        },
+        "seconds": 4.0
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "c60e21dfe6b4": 126
+        }
+      }
+    },
+    {
+      "did": "did:iiot:UNSF7y6rL8g3FyEhEt-OSoqUFymkFNccAhzjDDLBAPs",
+      "lost": 8,
+      "replicas": 20,
+      "victims": [],
+      "publication": "rejected: Unavailable",
+      "rotations": [
+        "confirmed"
+      ],
+      "versions": [
+        "af8d7b3d8928",
+        "16651d0f6ee2"
+      ],
+      "before": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 107,
+        "error": 0,
+        "keys": {
+          "16651d0f6ee2": 19,
+          "None": 107
+        }
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "keys": {
+          "None": 3
+        },
+        "seconds": 4.2
+      },
+      "owner_republish": "not confirmed",
+      "after_owner": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 19
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "16651d0f6ee2": 126
+        }
+      }
+    },
+    {
+      "did": "did:iiot:k8x0ThFDybofECER6GJQMgZEG8nqYt3TwKSQLdCz8u4",
+      "lost": 12,
+      "replicas": 20,
+      "victims": [
+        "node-90",
+        "node-109",
+        "node-44",
+        "node-81",
+        "node-28",
+        "node-43",
+        "node-118",
+        "node-12",
+        "node-123",
+        "node-5",
+        "node-14",
+        "node-114"
+      ],
+      "publication": "degraded",
+      "rotations": [
+        "confirmed"
+      ],
+      "versions": [
+        "caf07c595198",
+        "e6d7c5091201"
+      ],
+      "before": {
+        "current": 15,
+        "older": 0,
+        "other": 0,
+        "none": 5
+      },
+      "after_loss": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 17
+      },
+      "after_push": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 17
+      },
+      "push_answers": {
+        "AlreadyStored": 9,
+        "no answer": 51
+      },
+      "reads_owner_offline": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "e6d7c5091201": 126
+        }
+      },
+      "joiner_reads": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "e6d7c5091201": 3
+        },
+        "seconds": 3.8
+      },
+      "owner_republish": "not confirmed",
+      "after_owner": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "e6d7c5091201": 126
+        }
+      }
+    },
+    {
+      "did": "did:iiot:DJ_S00fKkwtJlIMdIDfvEktHm-hxRbD5SbygEBsVwZs",
+      "lost": 12,
+      "replicas": 19,
+      "victims": [
+        "node-126",
+        "node-121",
+        "node-56",
+        "node-78",
+        "node-36",
+        "node-117",
+        "node-23",
+        "node-101",
+        "node-7",
+        "node-74",
+        "node-6",
+        "node-73"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "confirmed"
+      ],
+      "versions": [
+        "a8cc1b41eabc",
+        "eb27dc30157e"
+      ],
+      "before": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 7,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "after_push": {
+        "current": 7,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "push_answers": {
+        "AlreadyStored": 42,
+        "no answer": 98
+      },
+      "reads_owner_offline": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "eb27dc30157e": 126
+        }
+      },
+      "joiner_reads": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "eb27dc30157e": 3
+        },
+        "seconds": 3.9
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "eb27dc30157e": 126
+        }
+      }
+    },
+    {
+      "did": "did:iiot:hxNTh0n3v5opcxsbWlRUn_PXpo4tDc9RCfdvzkj_E_k",
+      "lost": 12,
+      "replicas": 20,
+      "victims": [
+        "node-79"
+      ],
+      "publication": "degraded",
+      "rotations": [
+        "not confirmed"
+      ],
+      "versions": [
+        "b073e3d9b3b6",
+        "9051bd8361b8"
+      ],
+      "before": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 19
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 126,
+        "error": 0,
+        "keys": {
+          "None": 126
+        }
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "keys": {
+          "None": 3
+        },
+        "seconds": 4.2
+      },
+      "owner_republish": "degraded",
+      "after_owner": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "reads_owner_back": {
+        "current": 0,
+        "older": 27,
+        "other": 0,
+        "none": 99,
+        "error": 0,
+        "keys": {
+          "None": 99,
+          "b073e3d9b3b6": 27
+        }
+      }
+    },
+    {
+      "did": "did:iiot:RKhFroDR9XM-c52ri_kS3I31Vz0XWOQXWf9Zs1YVHbk",
+      "lost": 12,
+      "replicas": 20,
+      "victims": [
+        "node-31",
+        "node-92",
+        "node-82"
+      ],
+      "publication": "degraded",
+      "rotations": [
+        "confirmed"
+      ],
+      "versions": [
+        "e22a4d7a74a1",
+        "bf1b9b39c1b8"
+      ],
+      "before": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 17
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 31,
+        "older": 0,
+        "other": 0,
+        "none": 95,
+        "error": 0,
+        "keys": {
+          "None": 95,
+          "bf1b9b39c1b8": 31
+        }
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "keys": {
+          "None": 3
+        },
+        "seconds": 4.5
+      },
+      "owner_republish": "not confirmed",
+      "after_owner": {
+        "current": 6,
+        "older": 0,
+        "other": 0,
+        "none": 14
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "bf1b9b39c1b8": 126
+        }
+      }
+    },
+    {
+      "did": "did:iiot:2WnpLKDXfjeUdtMr20z1oqlpuPWMJwpaEPWqPja5T9I",
+      "lost": 12,
+      "replicas": 20,
+      "victims": [
+        "node-122",
+        "node-85",
+        "node-115",
+        "node-89",
+        "node-59",
+        "node-9",
+        "node-8",
+        "node-95",
+        "node-68",
+        "node-127",
+        "node-102",
+        "node-93"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "confirmed"
+      ],
+      "versions": [
+        "1a2db3718cf8",
+        "4939ab77ace8"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "after_push": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "push_answers": {
+        "AlreadyStored": 56,
+        "no answer": 104
+      },
+      "reads_owner_offline": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "4939ab77ace8": 126
+        }
+      },
+      "joiner_reads": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "4939ab77ace8": 3
+        },
+        "seconds": 4.1
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "4939ab77ace8": 126
+        }
+      }
+    },
+    {
+      "did": "did:iiot:_0KzNE73fqpfXNSg1JWoU33dj-OKMekX_UDNv33PVHM",
+      "lost": 16,
+      "replicas": 20,
+      "victims": [
+        "node-102",
+        "node-68",
+        "node-127",
+        "node-26",
+        "node-93",
+        "node-67",
+        "node-76",
+        "node-21",
+        "node-20",
+        "node-65",
+        "node-53",
+        "node-71",
+        "node-100",
+        "node-40",
+        "node-22",
+        "node-112"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "confirmed"
+      ],
+      "versions": [
+        "48fb2086df4c",
+        "7ace765dfa73"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "after_push": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "push_answers": {
+        "AlreadyStored": 12,
+        "no answer": 68
+      },
+      "reads_owner_offline": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "7ace765dfa73": 126
+        }
+      },
+      "joiner_reads": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "7ace765dfa73": 3
+        },
+        "seconds": 4.1
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "7ace765dfa73": 126
+        }
+      }
+    },
+    {
+      "did": "did:iiot:tIbR9FR91IEv_LhdXZ5mZSJwmbAh1GhznEwERff2mRw",
+      "lost": 16,
+      "replicas": 20,
+      "victims": [
+        "node-109",
+        "node-90",
+        "node-14",
+        "node-123",
+        "node-34",
+        "node-46",
+        "node-58",
+        "node-17",
+        "node-64",
+        "node-60",
+        "node-50",
+        "node-79",
+        "node-87",
+        "node-97",
+        "node-2",
+        "node-51"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "confirmed"
+      ],
+      "versions": [
+        "1298d8c77e0b",
+        "a0cb75e24980"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "after_push": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "push_answers": {
+        "AlreadyStored": 12,
+        "no answer": 68
+      },
+      "reads_owner_offline": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "a0cb75e24980": 126
+        }
+      },
+      "joiner_reads": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "a0cb75e24980": 3
+        },
+        "seconds": 4.1
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "a0cb75e24980": 126
+        }
+      }
+    },
+    {
+      "did": "did:iiot:ku7QDM84A_RFQY61Q-nrudiotFBy9UASK03QCfodlNo",
+      "lost": 16,
+      "replicas": 20,
+      "victims": [
+        "node-34"
+      ],
+      "publication": "rejected: Unavailable",
+      "rotations": [
+        "not confirmed"
+      ],
+      "versions": [
+        "e0ff27253779",
+        "c69b1de50f9b"
+      ],
+      "before": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 19
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 113,
+        "older": 0,
+        "other": 0,
+        "none": 13,
+        "error": 0,
+        "keys": {
+          "None": 13,
+          "c69b1de50f9b": 113
+        }
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "keys": {
+          "None": 3
+        },
+        "seconds": 4.1
+      },
+      "owner_republish": "rejected: ExistingRecord",
+      "after_owner": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "reads_owner_back": {
+        "current": 23,
+        "older": 0,
+        "other": 0,
+        "none": 103,
+        "error": 0,
+        "keys": {
+          "None": 103,
+          "c69b1de50f9b": 23
+        }
+      }
+    },
+    {
+      "did": "did:iiot:iM9SrLgRb4-uCOYQymS7-Y9KDqNvBNHZF9mzC1nTmsY",
+      "lost": 16,
+      "replicas": 20,
+      "victims": [
+        "node-123",
+        "node-13",
+        "node-30",
+        "node-11",
+        "node-28"
+      ],
+      "publication": "degraded",
+      "rotations": [
+        "confirmed"
+      ],
+      "versions": [
+        "0b8865588302",
+        "7e64e0ef79b0"
+      ],
+      "before": {
+        "current": 5,
+        "older": 0,
+        "other": 0,
+        "none": 15
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 39,
+        "older": 0,
+        "other": 0,
+        "none": 87,
+        "error": 0,
+        "keys": {
+          "7e64e0ef79b0": 39,
+          "None": 87
+        }
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "keys": {
+          "None": 3
+        },
+        "seconds": 3.8
+      },
+      "owner_republish": "not confirmed",
+      "after_owner": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 19
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "7e64e0ef79b0": 126
+        }
+      }
+    },
+    {
+      "did": "did:iiot:rB0RLmEq8RQutMLL4LVbnwF5pDy6qkbQZd7pz430y8A",
+      "lost": 16,
+      "replicas": 20,
+      "victims": [
+        "node-79",
+        "node-87",
+        "node-97",
+        "node-51",
+        "node-2",
+        "node-58",
+        "node-46",
+        "node-17",
+        "node-60",
+        "node-64",
+        "node-34",
+        "node-13",
+        "node-47",
+        "node-45",
+        "node-50"
+      ],
+      "publication": "degraded",
+      "rotations": [
+        "confirmed"
+      ],
+      "versions": [
+        "e0719081c49d",
+        "e9094822a794"
+      ],
+      "before": {
+        "current": 15,
+        "older": 0,
+        "other": 0,
+        "none": 5
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 50,
+        "older": 0,
+        "other": 0,
+        "none": 76,
+        "error": 0,
+        "keys": {
+          "None": 76,
+          "e9094822a794": 50
+        }
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "keys": {
+          "None": 3
+        },
+        "seconds": 4.1
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 15,
+        "older": 0,
+        "other": 0,
+        "none": 5
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "e9094822a794": 126
+        }
+      }
+    },
+    {
+      "did": "did:iiot:F6F9ytbuLQnU7RRGuQnJ9uz-xoTevGNnBFuwW0XR43o",
+      "lost": 20,
+      "replicas": 20,
+      "victims": [
+        "node-78",
+        "node-56",
+        "node-121",
+        "node-126",
+        "node-99",
+        "node-36",
+        "node-91",
+        "node-72",
+        "node-49",
+        "node-84",
+        "node-83",
+        "node-6",
+        "node-74",
+        "node-63",
+        "node-73",
+        "node-101",
+        "node-7",
+        "node-32",
+        "node-48",
+        "node-116"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "confirmed"
+      ],
+      "versions": [
+        "1999615ad282",
+        "abcfdc5a4347"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 126,
+        "error": 0,
+        "keys": {
+          "None": 126
+        }
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "keys": {
+          "None": 3
+        },
+        "seconds": 4.4
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "abcfdc5a4347": 126
+        }
+      }
+    },
+    {
+      "did": "did:iiot:T5btcxjN2NQc3JariL1xyjilmO0DQKfkrle8K7-KrwE",
+      "lost": 20,
+      "replicas": 20,
+      "victims": [],
+      "publication": "rejected: Unavailable",
+      "rotations": [
+        "not confirmed"
+      ],
+      "versions": [
+        "18cd3fb466fb",
+        "02948296032d"
+      ],
+      "before": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 10,
+        "older": 0,
+        "other": 0,
+        "none": 116,
+        "error": 0,
+        "keys": {
+          "02948296032d": 10,
+          "None": 116
+        }
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "keys": {
+          "None": 3
+        },
+        "seconds": 4.8
+      },
+      "owner_republish": "rejected: Unavailable",
+      "after_owner": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "reads_owner_back": {
+        "current": 10,
+        "older": 0,
+        "other": 0,
+        "none": 116,
+        "error": 0,
+        "keys": {
+          "02948296032d": 10,
+          "None": 116
+        }
+      }
+    },
+    {
+      "did": "did:iiot:31d0FJ0j9LNv43XnbtpbKwb4hD4UQk-9nM-Q0CX3VIk",
+      "lost": 20,
+      "replicas": 20,
+      "victims": [
+        "node-100",
+        "node-40",
+        "node-22",
+        "node-112",
+        "node-35",
+        "node-62",
+        "node-18",
+        "node-15",
+        "node-89",
+        "node-115",
+        "node-85",
+        "node-122",
+        "node-95",
+        "node-8",
+        "node-59",
+        "node-9",
+        "node-102",
+        "node-68",
+        "node-127",
+        "node-26"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "confirmed"
+      ],
+      "versions": [
+        "7c57da23d0f2",
+        "df4ff759ae04"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 126,
+        "error": 0,
+        "keys": {
+          "None": 126
+        }
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "keys": {
+          "None": 3
+        },
+        "seconds": 4.2
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "df4ff759ae04": 126
+        }
+      }
+    },
+    {
+      "did": "did:iiot:B4GopS3EgxjOVVEz96mNIaQWQTomBl5F2c1ANimVV34",
+      "lost": 20,
+      "replicas": 20,
+      "victims": [
+        "node-6",
+        "node-74",
+        "node-63",
+        "node-73",
+        "node-101",
+        "node-7",
+        "node-78",
+        "node-126",
+        "node-56",
+        "node-121",
+        "node-99",
+        "node-36",
+        "node-91",
+        "node-72",
+        "node-49",
+        "node-84",
+        "node-83",
+        "node-39",
+        "node-103",
+        "node-38"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "confirmed"
+      ],
+      "versions": [
+        "d25fa191f1db",
+        "9a4367ec388c"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 126,
+        "error": 0,
+        "keys": {
+          "None": 126
+        }
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "keys": {
+          "None": 3
+        },
+        "seconds": 3.8
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "9a4367ec388c": 126
+        }
+      }
+    },
+    {
+      "did": "did:iiot:ZLvUFASCjNW1RyRlZw-MCV9BLNP17gQ0Jc1nRHn0Ves",
+      "lost": 20,
+      "replicas": 20,
+      "victims": [
+        "node-119",
+        "node-42"
+      ],
+      "publication": "degraded",
+      "rotations": [
+        "confirmed"
+      ],
+      "versions": [
+        "2ac472791afc",
+        "858c250a2a95"
+      ],
+      "before": {
+        "current": 2,
+        "older": 0,
+        "other": 0,
+        "none": 18
+      },
+      "after_loss": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "after_push": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 20
+      },
+      "push_answers": {},
+      "reads_owner_offline": {
+        "current": 37,
+        "older": 0,
+        "other": 0,
+        "none": 89,
+        "error": 0,
+        "keys": {
+          "858c250a2a95": 37,
+          "None": 89
+        }
+      },
+      "joiner_reads": {
+        "current": 0,
+        "older": 0,
+        "other": 0,
+        "none": 3,
+        "error": 0,
+        "keys": {
+          "None": 3
+        },
+        "seconds": 4.3
+      },
+      "owner_republish": "not confirmed",
+      "after_owner": {
+        "current": 2,
+        "older": 0,
+        "other": 0,
+        "none": 18
+      },
+      "reads_owner_back": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0,
+        "error": 0,
+        "keys": {
+          "858c250a2a95": 126
+        }
+      }
+    }
+  ]
+}

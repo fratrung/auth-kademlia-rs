@@ -1,0 +1,89 @@
+{
+  "config": {
+    "nodes": 10,
+    "k": 3,
+    "alpha": 3,
+    "seeds": 3,
+    "subnet": "10.213",
+    "profile": "wan-eu",
+    "delay_ms": 6.8,
+    "jitter_ms": 0.0,
+    "loss_pct": 0.0,
+    "cpus": null,
+    "image": "auth-kademlia-testbed:latest"
+  },
+  "rounds": [
+    {
+      "did": "did:iiot:2cce5fda-48b0-4f86-a597-0ea78f13e76a",
+      "outcome": "complete",
+      "publish_ms": 44.0,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        37.31298828125,
+        50.947021484375,
+        52.258056640625
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        15.2,
+        15.2,
+        15.4,
+        14.8,
+        29.5,
+        14.5
+      ]
+    },
+    {
+      "did": "did:iiot:692e357f-da15-4287-993a-a7d513def690",
+      "outcome": "complete",
+      "publish_ms": 43.2,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        45.678955078125,
+        52.296875,
+        52.468017578125
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        15.0,
+        14.9,
+        15.0,
+        15.0,
+        14.8,
+        14.9
+      ]
+    },
+    {
+      "did": "did:iiot:ec0f4c36-dc0f-4ae7-a535-abba4d743995",
+      "outcome": "complete",
+      "publish_ms": 43.4,
+      "stored": 3,
+      "expected": 3,
+      "readable_after_ms": [
+        48.0849609375,
+        48.30810546875,
+        55.35400390625
+      ],
+      "watchers_found": 3,
+      "watchers": 3,
+      "reads_found": 9,
+      "reads": 9,
+      "remote_read_ms": [
+        14.6,
+        15.4,
+        14.7,
+        14.9,
+        15.0,
+        14.8
+      ]
+    }
+  ]
+}

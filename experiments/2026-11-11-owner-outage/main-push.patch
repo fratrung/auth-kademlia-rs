@@ -1,0 +1,74 @@
+diff --git a/testbed/node.rs b/testbed/node.rs
+index 7012a8c..0de40e1 100644
+--- a/testbed/node.rs
++++ b/testbed/node.rs
+@@ -29,6 +29,7 @@ use std::sync::Arc;
+ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+ 
+ use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
++use auth_kademlia_rs::crawling::NodeSpiderCrawl;
+ use auth_kademlia_rs::network::{Server, SetOutcome};
+ use auth_kademlia_rs::storage::IStorage;
+ use auth_kademlia_rs::utils::digest;
+@@ -104,6 +105,10 @@ async fn handle(node: &Node, line: &str) -> Value {
+             (Some(target), Some(ms)) => watch(node, target, ms).await,
+             _ => json!({ "error": "usage: watch <did|uuid> <ms>" }),
+         },
++        "push" => match words.next() {
++            Some(target) => push(node, target).await,
++            None => json!({ "error": "usage: push <did|uuid>" }),
++        },
+         "stats" => stats(node).await,
+         "counters" => counters(node).await,
+         "storage" => storage(node).await,
+@@ -289,6 +294,50 @@ async fn forget(node: &Node) -> Value {
+     json!({ "forgotten": dropped })
+ }
+ 
++/// Send the record this node holds for a DID to the `k` nodes closest to it,
++/// as the hourly republication does, but at once (added for a measurement,
++/// not part of `main`).
++async fn push(node: &Node, target: &str) -> Value {
++    let uuid = target.strip_prefix("did:iiot:").unwrap_or(target);
++    let key = digest(uuid);
++    let server = node.server.read().await;
++    let Some(record) = server.storage.get(&key) else {
++        return json!({ "did": format!("did:iiot:{uuid}"), "held": false });
++    };
++    let Some(protocol) = server.protocol.clone() else {
++        return json!({ "error": "the node is not listening" });
++    };
++    let started = Instant::now();
++    let target_node = auth_kademlia_rs::node::Node::from_id(key);
++    let neighbours = protocol.router.read().await.find_neighbors(&target_node, None);
++    let replicas = NodeSpiderCrawl::new(
++        Arc::clone(&protocol),
++        target_node,
++        neighbours,
++        server.ksize,
++        server.alpha,
++    )
++    .find()
++    .await;
++    let answers = futures::future::join_all(
++        replicas
++            .iter()
++            .map(|replica| protocol.call_store_rpc(replica, key, record.clone())),
++    )
++    .await;
++    let mut tally = std::collections::BTreeMap::<String, usize>::new();
++    for answer in &answers {
++        let name = match answer {
++            Some(status) => format!("{status:?}"),
++            None => "no answer".to_string(),
++        };
++        *tally.entry(name).or_default() += 1;
++    }
++    let ms = elapsed_ms(started);
++    log::info!("push did:iiot:{uuid} to {} replicas: {tally:?} ({ms} ms)", answers.len());
++    json!({ "did": format!("did:iiot:{uuid}"), "held": true, "sent": answers.len(), "answers": tally, "ms": ms })
++}
++
+ async fn get(node: &Node, target: &str) -> Value {
+     let uuid = target.strip_prefix("did:iiot:").unwrap_or(target);
+     let server = node.server.read().await;

@@ -12,7 +12,8 @@ Modes:
   answers to the check of an empty replica.
 - **Measurement** (`measure.py`): publication time, and when other nodes can
   read the record; rotations with replicas restarted empty and nodes that lie
-  in `FindHash`; copies of a record over time while nodes crash. With
+  in `FindHash`; copies of a record over time while nodes crash; replicas lost
+  while the owner is offline, and what readers get then. With
   `--counters`, also what every node sent, read from the
   library's counters (`src/counters.rs`, on in the testbed image). The traffic
   tables below were measured from the host, before the counters existed.
@@ -20,6 +21,9 @@ Modes:
 The testbed binaries (`testbed_node`, `testbed_attacker`) are built only with
 `--features testbed`, which the image enables; a normal build of the library
 does not include them.
+
+Every experiment run on this testbed, the case it checks, its result and its
+raw data are listed in [Experiments and results](#experiments-and-results).
 
 ## Requirements
 
@@ -402,6 +406,22 @@ and the answers to their STOREs. With `--owner-returns` the owner then comes
 back, sends its current version again (`republish`, images since ADR 0005),
 and the replicas are counted once more.
 
+```
+testbed/testbed.py up --nodes 130 --k 20 --alpha 3 --profile wan-eu
+testbed/attack.py start --mode persist --period 500 --did-ttl 120
+testbed/measure.py outage --lost 8 12 16 20 --rounds 5 --reads --joiners 3 [--owner-returns]
+```
+
+`--reads` adds what readers get at that moment: every node but the owner
+reads the DID once while the owner is offline, after the holders'
+republication, and once more after the owner's return. `--joiners N` keeps the
+last `N` nodes of the network out of it (stopped, so they send `Leave`) and
+has them join at that same moment, with an empty routing table: each reads
+the DID once its bootstrap from the seeds is done, then leaves again. A read
+is counted as the current version, an older one, another record (signed by a
+key of no version of the DID: a forgery) or nothing. With the persistent
+attacker running, forged versions are sent to every node throughout.
+
 The results below come before two changes to the check: the DID binding is
 checked before asking the network (`e383d17`), and a replica asks all the
 nodes it knows at once instead of three at a time (`fc79016`). They have not
@@ -469,6 +489,38 @@ publications and about 80 remote reads per run, medians:
 - A remote read is one round of three requests (alpha), each holder answering
   with the whole record. A read with a local copy sends nothing. With the
   network idle, nodes sent nothing.
+
+## Experiments and results
+
+Every experiment run on this testbed, the case it checks and what it found.
+`EXPERIMENTS.md` gives the setup, the full results and how to read them for
+the current code; the raw data of every run, with the script that ran it, is
+in `experiments/<date>-<topic>/`, whose README explains the files.
+
+**Current code** (self-certifying DIDs and chains of versions), 127 nodes,
+`k` = 20, `alpha` = 3 unless stated, compared with `main` before that change
+where it applies:
+
+| Experiment | Case it checks | Testbed modes | Result | Details | Raw data |
+|---|---|---|---|---|---|
+| E1. Publication and read latency | How long a first publication takes, and whether every node can read the record right after | `measure.py publish` | Median 9 ms in LAN, 91 ms in WAN Europe, 433 ms across the Atlantic, within 3% of `main` on WAN; 12,600 of 12,600 reads found the record | `EXPERIMENTS.md`, E1 | `experiments/2026-11-11-adr0005/`, `*-e1` |
+| E2. Traffic | What a publication and a read cost the network | `measure.py publish --counters` | About 630 KiB and 980 datagrams per publication, 73% of it answers to the replicas' checks; about 18.6 KiB per remote read; as on `main` | E2 | `*-e2` |
+| E3. The empty-replica check | How checks end, how many lookup rounds they take, and whether the check of a later version, with the fetch of the version before, fits within its 2 s deadline | counters of E2 and E4 | One round, sometimes two; a later version checked within 500 ms across the Atlantic | E3 | `*-e2`, `*-update-counters` |
+| E4. Rotation and a restarted replica | Whether a replica that restarted empty just before a rotation gets the new version | `measure.py update --restart 1` | 120 of 120 rounds, against 86 of 120 on `main`; 31% less traffic per rotation | E4 | `*-update`, `*-update-counters` |
+| A1. Race and burst attacks | An attacker that reads all traffic and races the owner to a restarted replica with forged versions, one at a time or in bursts | `attack.py start --mode race` or `burst`, `attack.py race` | No forged version stored, on `main` or the current code, at 10 and 127 nodes; up to 20,928 forged STOREs in a run, all refused | A1 | `*-race`, `*-burst` |
+| A2. Persistent attacker | An attacker that keeps sending forged records to every node while replicas restart | `attack.py start --mode persist`, `attack.py restart` | No node held a forged record after any round (0 of 2,520 node checks at 127 nodes) | A2 | `*-persist`, `*-restart-control` |
+| A3. Forged successor of a new DID | A forged version 1 sent to each replica right after the owner's version 0 | `attack.py start --mode successor`, `attack.py restart --no-crash` | 367 forged versions 1 at 127 nodes, all refused; none stored or read | A3 | `*-successor` |
+| A4. Liars in the check | How many nodes lying about holding a later version it takes to block the check of an empty replica | `measure.py update --liars N` | One liar keeps a restarted replica empty (0 of 20); 13, a quorum, block a first publication; no forged record accepted, reads unaffected | A4 | `*-liars*` |
+| A5. Spoofed answers | An attacker that answers for the nodes asked, with or without reading the message ids | `attack.py start --mode spoof --spoof-ids guessed` or `observed` | Under random ids no spoofed answer taken (20 of 20 repairs); under the ids read on the wire they are (5 of 20) | A5 | `*-spoof-*` |
+| L1. Churn and liars | How many copies of a record remain over time while replicas crash, with 0, 1 or 13 liars | `measure.py churn` | Without liars never below the quorum; with one, a fifth of the time below it, restored by the owner's republication; with 13, no honest copy | L1 | `*-churn-liars*` |
+| L2. Owner offline, replicas lost | How the record recovers when several replicas lose their copy at once while the owner is offline | `measure.py outage`, `ctl NODE push` | The holders refill the empty replicas while at least 13 of 20 remain (`main`: always); below that, the owner's return restores them in 25 of 25 rounds | L2 | `experiments/2026-11-11-owner-outage/` |
+| L3. Readers in the worst case | What a reader gets, the owner's record, a forgery or nothing, with the owner offline, replicas lost and a persistent attacker; a node in the network all along and a node that joins at that moment | `measure.py outage --reads --joiners 3`, `attack.py start --mode persist` | No forged record stored or read on the current code (`main`: 29,865 stored, 1,260 reads); while a holder remains readers get the owner's record; with none left, nothing until the owner returns (`main`: the forgery) | L3 | `experiments/2026-11-11-owner-outage/reads/` |
+
+**Earlier builds**, 2026-11-03 and 2026-11-04, while the check of empty
+replicas, the resends of lost requests and the futurelock fix were developed:
+the tables of [Attack mode](#attack-mode) and
+[Measurement mode](#measurement-mode) above. Raw data, indexed by build, in
+`experiments/2026-11-03-store-check/`.
 
 ## Limits
 

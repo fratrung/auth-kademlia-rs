@@ -9,7 +9,11 @@ one network at a time, on the Docker testbed (`testbed/`).
 | Tag | Code |
 |---|---|
 | `auth-kademlia-testbed:main-424b76f` | `main` at `424b76f`, before ADR 0005: UUID DIDs, `auth_signature` on updates |
-| `auth-kademlia-testbed:adr0005-final` | branch `feat/self-certifying-did-and-pre-rotation`, ADR 0005 implemented |
+| `auth-kademlia-testbed:adr0005-final` | branch `feat/self-certifying-did-and-pre-rotation`, ADR 0005 implemented: the code of commits `ed1bdcf` (library) and `f4a9a2a` (testbed) |
+
+The branch image was built at 11:08 from the working tree, before the code was
+committed at 13:12; no file of the library or of the testbed binaries changed
+in between, so building the image from `f4a9a2a` gives the same code.
 
 Both sign records with ML-DSA-65 and use 256-bit ids. Host limits raised as
 `testbed/README.md` requires (neighbour table 4096/16384/32768, receive backlog
@@ -61,7 +65,10 @@ is not in the data; the order of the runs gives it.
 
 ## Reproduce
 
-From the repository root, with the two images built:
+From the repository root, with the two images built: `main` from a worktree
+of `424b76f` (`testbed/testbed.py build --tag auth-kademlia-testbed:main-424b76f
+--context <worktree>`), the branch from `f4a9a2a`
+(`testbed/testbed.py build --tag auth-kademlia-testbed:adr0005-final`):
 
 ```bash
 experiments/2026-11-11-adr0005/run_experiments.sh all   # or: compare, attacks

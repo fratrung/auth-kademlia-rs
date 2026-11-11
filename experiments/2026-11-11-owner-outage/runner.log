@@ -1,0 +1,13 @@
+=== 2026-11-11 13:38:54 main-up: testbed/testbed.py up --nodes 127 --k 20 --alpha 3 --profile wan-eu --image auth-kademlia-testbed:main-424b76f-push --no-build
+=== 2026-11-11 13:39:14 main-up: exit 0, host drops 0
+=== 2026-11-11 13:39:14 main-outage: testbed/measure.py outage --lost 4 7 8 12 16 --rounds 5
+=== 2026-11-11 13:44:26 main-outage: exit 0, host drops 0
+=== 2026-11-11 13:44:26 main-down: testbed/testbed.py down
+=== 2026-11-11 13:44:34 main-down: exit 0, host drops 0
+=== 2026-11-11 13:44:34 branch-up: testbed/testbed.py up --nodes 127 --k 20 --alpha 3 --profile wan-eu --image auth-kademlia-testbed:adr0005-push --no-build
+=== 2026-11-11 13:44:55 branch-up: exit 0, host drops 0
+=== 2026-11-11 13:44:55 branch-outage: testbed/measure.py outage --lost 4 7 8 12 16 --rounds 5 --owner-returns
+=== 2026-11-11 13:57:46 branch-outage: exit 0, host drops 0
+=== 2026-11-11 13:57:46 branch-down: testbed/testbed.py down
+=== 2026-11-11 13:57:54 branch-down: exit 0, host drops 0
+=== 2026-11-11 13:57:54 done

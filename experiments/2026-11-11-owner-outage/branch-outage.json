@@ -1,0 +1,1270 @@
+{
+  "config": {
+    "nodes": 127,
+    "k": 20,
+    "alpha": 3,
+    "seeds": 3,
+    "subnet": "10.213",
+    "profile": "wan-eu",
+    "delay_ms": 6.8,
+    "jitter_ms": 0.0,
+    "loss_pct": 0.0,
+    "cpus": null,
+    "image": "auth-kademlia-testbed:adr0005-push"
+  },
+  "args": {
+    "command": "outage",
+    "owner": "node-1",
+    "lost": [
+      4,
+      7,
+      8,
+      12,
+      16
+    ],
+    "rounds": 5,
+    "rotations": 1,
+    "owner_returns": true,
+    "settle": 0.3,
+    "wait": 1.0,
+    "func": null
+  },
+  "rounds": [
+    {
+      "did": "did:iiot:ohCuY_Mvnlblbuz6UMHwrwM070044wKUrA8IJMhKxNs",
+      "lost": 4,
+      "replicas": 20,
+      "victims": [
+        "node-97",
+        "node-51",
+        "node-2",
+        "node-87"
+      ],
+      "versions": [
+        "14cda7ed9ad5",
+        "326884320e9d"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 16,
+        "older": 0,
+        "other": 0,
+        "none": 4
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 315,
+        "Stored": 5
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:XVXNos305QQZ1ZtMyD8UpY6r1lbXit3lfTENacREbV8",
+      "lost": 4,
+      "replicas": 20,
+      "victims": [
+        "node-125",
+        "node-66",
+        "node-41",
+        "node-3"
+      ],
+      "versions": [
+        "040e542967e0",
+        "2081ef99908f"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 16,
+        "older": 0,
+        "other": 0,
+        "none": 4
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 315,
+        "Stored": 5
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:yHPXNb40fV20ogwutO1t30a827IYS1ie-Rg5_Wh5MZk",
+      "lost": 4,
+      "replicas": 20,
+      "victims": [
+        "node-22",
+        "node-112",
+        "node-40",
+        "node-100"
+      ],
+      "versions": [
+        "36759b421e97",
+        "0068d631c70a"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 16,
+        "older": 0,
+        "other": 0,
+        "none": 4
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 315,
+        "Stored": 5
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:gk-yx8z0_ZsOXU8Zgxqml82UWT2VHLedITtdbyDVw8A",
+      "lost": 4,
+      "replicas": 20,
+      "victims": [
+        "node-44",
+        "node-43",
+        "node-118",
+        "node-14"
+      ],
+      "versions": [
+        "b835bf61a5ed",
+        "5217481fa314"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 16,
+        "older": 0,
+        "other": 0,
+        "none": 4
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 315,
+        "Stored": 5
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:L-5BkpWGwcUjm0MwoplTscisWvHkGOdOKkdlAUdl1L4",
+      "lost": 4,
+      "replicas": 19,
+      "victims": [
+        "node-101",
+        "node-7",
+        "node-6",
+        "node-117"
+      ],
+      "versions": [
+        "8da4e434d78a",
+        "f6290b92bafe"
+      ],
+      "before": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 15,
+        "older": 0,
+        "other": 0,
+        "none": 4
+      },
+      "after_push": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 287,
+        "no answer": 10,
+        "Stored": 3
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:aei8CErZJKhNZUMcm3Flb6-yh4JJHAic7HokYu4vbzA",
+      "lost": 7,
+      "replicas": 20,
+      "victims": [
+        "node-110",
+        "node-61",
+        "node-105",
+        "node-82",
+        "node-92",
+        "node-37",
+        "node-16"
+      ],
+      "versions": [
+        "ff21295a3353",
+        "33748ddfacf2"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 13,
+        "older": 0,
+        "other": 0,
+        "none": 7
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 252,
+        "Stored": 8
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:_FgumhWK2MNNPYFWPYktU6N9uDtozMtjq1rjFkyoDmc",
+      "lost": 7,
+      "replicas": 20,
+      "victims": [
+        "node-21",
+        "node-53",
+        "node-71",
+        "node-65",
+        "node-20",
+        "node-100",
+        "node-22"
+      ],
+      "versions": [
+        "98f171973e36",
+        "6d9061fb39d8"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 13,
+        "older": 0,
+        "other": 0,
+        "none": 7
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 252,
+        "Stored": 8
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:rksghVSrXB1ltL7Pg6fO5WnMTMWs4VJARb4q0z18qhg",
+      "lost": 7,
+      "replicas": 20,
+      "victims": [
+        "node-64",
+        "node-34",
+        "node-107",
+        "node-111",
+        "node-94",
+        "node-108",
+        "node-57"
+      ],
+      "versions": [
+        "17de569961c4",
+        "3ffe9c51e584"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 13,
+        "older": 0,
+        "other": 0,
+        "none": 7
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 252,
+        "Stored": 8
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:8wWjau2jFSDpw_5LOO-Lwwc8F3J06dao5LXzPcD--J4",
+      "lost": 7,
+      "replicas": 20,
+      "victims": [
+        "node-26",
+        "node-68",
+        "node-127",
+        "node-102",
+        "node-20",
+        "node-65",
+        "node-53"
+      ],
+      "versions": [
+        "7d38fa2e54b8",
+        "cc5a1b796591"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 13,
+        "older": 0,
+        "other": 0,
+        "none": 7
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 252,
+        "Stored": 8
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:NilBaE7bosE0rpCbxUbE9JxLgQR3kbJcDtQPoGMKMgQ",
+      "lost": 7,
+      "replicas": 19,
+      "victims": [
+        "node-98",
+        "node-39",
+        "node-103",
+        "node-38",
+        "node-86",
+        "node-117",
+        "node-23"
+      ],
+      "versions": [
+        "9a5571aa0d91",
+        "0220b7130cb3"
+      ],
+      "before": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 12,
+        "older": 0,
+        "other": 0,
+        "none": 7
+      },
+      "after_push": {
+        "current": 12,
+        "older": 0,
+        "other": 0,
+        "none": 7
+      },
+      "push_answers": {
+        "AlreadyStored": 132,
+        "no answer": 108
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:kS_NqiDGSdKRu9269zFt0vQPXF-uH2S0YylO9LR1QtY",
+      "lost": 8,
+      "replicas": 20,
+      "victims": [
+        "node-90",
+        "node-109",
+        "node-43",
+        "node-44",
+        "node-28",
+        "node-81",
+        "node-5",
+        "node-123"
+      ],
+      "versions": [
+        "288e52045809",
+        "e8ab1df829f6"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 12,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "after_push": {
+        "current": 12,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "push_answers": {
+        "AlreadyStored": 132,
+        "no answer": 108
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:tCwADgzUtJvh1qRqNKi15K-h9IuOz5vXBdfeiRAKvlk",
+      "lost": 8,
+      "replicas": 20,
+      "victims": [
+        "node-87",
+        "node-97",
+        "node-51",
+        "node-2",
+        "node-57",
+        "node-13",
+        "node-47",
+        "node-45"
+      ],
+      "versions": [
+        "59953227f678",
+        "58555fe4be52"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 12,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "after_push": {
+        "current": 12,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "push_answers": {
+        "AlreadyStored": 132,
+        "no answer": 108
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:tPba2k9d7hDg6M64x6UpJhVUwkyvfm3I-ue_FwPxU5s",
+      "lost": 8,
+      "replicas": 20,
+      "victims": [
+        "node-109",
+        "node-90",
+        "node-14",
+        "node-12",
+        "node-34",
+        "node-46",
+        "node-58",
+        "node-17"
+      ],
+      "versions": [
+        "440ae831251a",
+        "61ff211eb956"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 12,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "after_push": {
+        "current": 12,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "push_answers": {
+        "AlreadyStored": 132,
+        "no answer": 108
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:naiyeOKm-USxxQvea3dYq8Cri_tPD_xzAkGQmyU2Uvk",
+      "lost": 8,
+      "replicas": 20,
+      "victims": [
+        "node-118",
+        "node-43",
+        "node-44",
+        "node-81",
+        "node-28",
+        "node-109",
+        "node-90",
+        "node-111"
+      ],
+      "versions": [
+        "c1588f5a849d",
+        "9812c0f7dd13"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 12,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "after_push": {
+        "current": 12,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "push_answers": {
+        "AlreadyStored": 132,
+        "no answer": 108
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:KHE9Qryu9nx3uVYUR5WDO19JahBcLjyx49QGBgNuJvs",
+      "lost": 8,
+      "replicas": 19,
+      "victims": [
+        "node-116",
+        "node-32",
+        "node-48",
+        "node-7",
+        "node-101",
+        "node-73",
+        "node-23",
+        "node-117"
+      ],
+      "versions": [
+        "8860ccc83c34",
+        "b126a940fe4e"
+      ],
+      "before": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 11,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "after_push": {
+        "current": 11,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "push_answers": {
+        "AlreadyStored": 110,
+        "no answer": 110
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:h5CiNoTWwarh1w64tQLup_aUb4--SAfD2Idz73slF-U",
+      "lost": 12,
+      "replicas": 20,
+      "victims": [
+        "node-11",
+        "node-30",
+        "node-104",
+        "node-114",
+        "node-107",
+        "node-111",
+        "node-108",
+        "node-94",
+        "node-109",
+        "node-90",
+        "node-118",
+        "node-123"
+      ],
+      "versions": [
+        "89c27fa1010c",
+        "6f74134555e7"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "after_push": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "push_answers": {
+        "AlreadyStored": 56,
+        "no answer": 104
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:JmhTv_hNXUFsdKXQxo_ILJfgnpzIg02J71OS7TK_ni8",
+      "lost": 12,
+      "replicas": 19,
+      "victims": [
+        "node-106",
+        "node-4",
+        "node-55",
+        "node-98",
+        "node-74",
+        "node-6",
+        "node-73",
+        "node-39",
+        "node-103",
+        "node-86",
+        "node-38",
+        "node-117"
+      ],
+      "versions": [
+        "ec5b65eae50b",
+        "241f997058be"
+      ],
+      "before": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 7,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "after_push": {
+        "current": 7,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "push_answers": {
+        "AlreadyStored": 42,
+        "no answer": 98
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:g8iqaiVQnh18D9GwlltoDQ79NFuDY3CbnrQ2cLApmXI",
+      "lost": 12,
+      "replicas": 20,
+      "victims": [
+        "node-94",
+        "node-108",
+        "node-107",
+        "node-111",
+        "node-90",
+        "node-109",
+        "node-44",
+        "node-81",
+        "node-28",
+        "node-43",
+        "node-118",
+        "node-12"
+      ],
+      "versions": [
+        "28d4e7b61e7e",
+        "12d3d0b50071"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "after_push": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "push_answers": {
+        "AlreadyStored": 56,
+        "no answer": 104
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:ukcNVabgSMF7i0kJjOr4OkkZcoRBkCkolSt1EI32OEk",
+      "lost": 12,
+      "replicas": 20,
+      "victims": [
+        "node-28",
+        "node-81",
+        "node-44",
+        "node-43",
+        "node-60",
+        "node-64",
+        "node-17",
+        "node-58",
+        "node-46",
+        "node-34",
+        "node-47",
+        "node-45"
+      ],
+      "versions": [
+        "b1b27200a82a",
+        "d86f5a79b547"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "after_push": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "push_answers": {
+        "AlreadyStored": 56,
+        "no answer": 104
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:o3pZp89OSvJ8uZPhagA2kSiwPG6xrierxCZ8h61JfSc",
+      "lost": 12,
+      "replicas": 20,
+      "victims": [
+        "node-13",
+        "node-57",
+        "node-34",
+        "node-60",
+        "node-64",
+        "node-17",
+        "node-58",
+        "node-46",
+        "node-104",
+        "node-114",
+        "node-11",
+        "node-30"
+      ],
+      "versions": [
+        "894f86f9dacb",
+        "d45344e26a38"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "after_push": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "push_answers": {
+        "AlreadyStored": 56,
+        "no answer": 104
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:vhiAv-xWXH7q-7aHSu7T15MemMehq42WjF_ke-Tjbp4",
+      "lost": 16,
+      "replicas": 20,
+      "victims": [
+        "node-17",
+        "node-58",
+        "node-46",
+        "node-60",
+        "node-64",
+        "node-34",
+        "node-57",
+        "node-47",
+        "node-45",
+        "node-13",
+        "node-79",
+        "node-50",
+        "node-97",
+        "node-51",
+        "node-2",
+        "node-87"
+      ],
+      "versions": [
+        "c3e05268be3f",
+        "0c5eddfaf5fa"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "after_push": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "push_answers": {
+        "AlreadyStored": 12,
+        "no answer": 68
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:eWCIxeMP60PyKAEDQVJY5z5Q276xqbMZ50vMhJqIJ80",
+      "lost": 16,
+      "replicas": 20,
+      "victims": [
+        "node-25",
+        "node-70",
+        "node-69",
+        "node-77",
+        "node-33",
+        "node-80",
+        "node-52",
+        "node-88",
+        "node-19",
+        "node-10",
+        "node-54",
+        "node-110",
+        "node-105",
+        "node-61",
+        "node-82",
+        "node-92"
+      ],
+      "versions": [
+        "0154f9e14928",
+        "210a6d103e9f"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "after_push": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "push_answers": {
+        "AlreadyStored": 12,
+        "no answer": 68
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:nHgjjbmeWZh3g2UxhlS2Zn3dJhReCpaLCCdTER7WzCA",
+      "lost": 16,
+      "replicas": 20,
+      "victims": [
+        "node-107",
+        "node-94",
+        "node-108",
+        "node-30",
+        "node-11",
+        "node-114",
+        "node-104",
+        "node-58",
+        "node-14",
+        "node-5",
+        "node-12",
+        "node-123",
+        "node-118",
+        "node-43",
+        "node-28",
+        "node-81"
+      ],
+      "versions": [
+        "4c6c338c214a",
+        "1d8bfc246013"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "after_push": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "push_answers": {
+        "AlreadyStored": 12,
+        "no answer": 68
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:InALrOr3ZZrB6VXdcJrKvEqawoai0wrtMb8GGtd0pxk",
+      "lost": 16,
+      "replicas": 19,
+      "victims": [
+        "node-32",
+        "node-48",
+        "node-98",
+        "node-106",
+        "node-4",
+        "node-55",
+        "node-73",
+        "node-63",
+        "node-74",
+        "node-86",
+        "node-38",
+        "node-39",
+        "node-103",
+        "node-23",
+        "node-117",
+        "node-75"
+      ],
+      "versions": [
+        "fabc08153e82",
+        "3beab944c596"
+      ],
+      "before": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "after_push": {
+        "current": 3,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "push_answers": {
+        "AlreadyStored": 6,
+        "no answer": 54
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:23eCjDvu6ez4t9w3QxMyq3BS7tJbKGLh5gRHDkdo26A",
+      "lost": 16,
+      "replicas": 20,
+      "victims": [
+        "node-18",
+        "node-15",
+        "node-35",
+        "node-62",
+        "node-122",
+        "node-85",
+        "node-89",
+        "node-115",
+        "node-59",
+        "node-9",
+        "node-8",
+        "node-95",
+        "node-68",
+        "node-127",
+        "node-102",
+        "node-93"
+      ],
+      "versions": [
+        "fd3a3d76cf14",
+        "8800b47dd4c5"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "after_push": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "push_answers": {
+        "AlreadyStored": 12,
+        "no answer": 68
+      },
+      "owner_republish": "confirmed",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    }
+  ]
+}

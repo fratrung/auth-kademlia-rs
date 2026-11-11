@@ -1,0 +1,1 @@
+[2026-11-11T13:40:45Z INFO  testbed_attacker] attacker (persist) on 10.213.0.1:4999: every 1000 ms, a forged STORE for each DID seen in the last 60 s to every node seen
