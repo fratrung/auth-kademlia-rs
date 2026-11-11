@@ -3,13 +3,14 @@
 
 use std::sync::Arc;
 
+use crate::auth_handler::did::record_form;
 use crate::crawling::{LookupNodes, NodeSpiderCrawl, ValueSpiderCrawl};
 use crate::node::Node;
 use crate::protocol::StoreStatus;
 use crate::storage::IStorage;
-use crate::utils::{digest, ID_LEN};
+use crate::utils::ID_LEN;
 
-use super::Server;
+use super::{dht_key, Server};
 
 /// Detailed result of a DHT publication attempt.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -24,6 +25,13 @@ pub struct SetReport {
     pub unavailable_nodes: usize,
     pub conflict_rejections: usize,
     pub invalid_rejections: usize,
+    /// Replicas that hold a newer version of the DID, verified (ADR 0005):
+    /// the record sent is old. Apart from `conflict_rejections`, where
+    /// another record competes with it.
+    pub stale_rejections: usize,
+    /// Empty replicas that refused because nodes near the key claim a newer
+    /// version, which they do not prove (ADR 0005).
+    pub newer_claimed: usize,
 }
 
 impl SetReport {
@@ -38,6 +46,11 @@ impl SetReport {
             Some(StoreStatus::CapacityExceeded) => self.capacity_rejections += 1,
             Some(StoreStatus::Conflict) => self.conflict_rejections += 1,
             Some(StoreStatus::InvalidRecord) => self.invalid_rejections += 1,
+            Some(StoreStatus::Stale) => self.stale_rejections += 1,
+            Some(StoreStatus::NewerClaimed) => self.newer_claimed += 1,
+            // A replica answers it only to a version N ≥ 2, which `set` never
+            // sends.
+            Some(StoreStatus::MissingPrevious { .. }) => self.conflict_rejections += 1,
             None => self.unavailable_nodes += 1,
         }
     }
@@ -51,6 +64,12 @@ pub enum SetRejection {
     CapacityExceeded,
     Unavailable,
     NoResponsibleNodes,
+    /// Replicas hold, or claim, a newer version of the DID: publish it with
+    /// `update` (ADR 0005).
+    NewerVersion,
+    /// The record is a version N ≥ 1: `set` creates a DID, `update` publishes
+    /// its later versions (ADR 0005).
+    UseUpdate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +115,12 @@ pub(super) fn select_responsible_nodes(
 }
 
 fn classify_set_report(report: SetReport) -> SetOutcome {
+    if report.stale_rejections > 0 || report.newer_claimed > 0 {
+        return SetOutcome::Rejected {
+            reason: SetRejection::NewerVersion,
+            report,
+        };
+    }
     if report.conflict_rejections > 0 {
         return SetOutcome::Rejected {
             reason: SetRejection::ReplicaConflict,
@@ -133,9 +158,12 @@ fn classify_set_report(report: SetReport) -> SetOutcome {
 impl Server {
     /// Look for an existing value while retaining the closest nodes discovered
     /// on a miss for the subsequent STORE phase.
-    async fn check_publish_state(&self, key: &str, value: &[u8]) -> PublishLookup {
-        let dkey = digest(key);
-
+    async fn check_publish_state(
+        &self,
+        key: &str,
+        dkey: [u8; ID_LEN],
+        value: &[u8],
+    ) -> PublishLookup {
         if let Some(existing) = self.storage.get(&dkey) {
             return if existing == value {
                 PublishLookup::Identical
@@ -201,11 +229,29 @@ impl Server {
             .await
     }
 
-    /// Store value under key and report the exact replica outcome.
+    /// Publish version 0 of the DID `key` and report the exact replica
+    /// outcome (ADR 0005: later versions go through `update`).
     ///
     /// Re-publishing byte-identical data is idempotent and can complete a
-    /// previously degraded publication. A different value remains a conflict.
+    /// previously degraded publication. A different value remains a conflict,
+    /// and replicas holding or claiming a later version refuse it.
     pub async fn set_detailed(&self, key: &str, value: Vec<u8>) -> SetOutcome {
+        let Some(dkey) = dht_key(key) else {
+            log::error!("set({}): not a DID", key);
+            return SetOutcome::Rejected {
+                reason: SetRejection::InvalidRecord,
+                report: SetReport::default(),
+            };
+        };
+        // `set` creates a DID: a later version is published with `update`
+        // (ADR 0005, open point 16), and nothing is sent.
+        if record_form(&dkey, &value).is_ok_and(|form| form.seq >= 1) {
+            log::error!("set({}): a version after 0 is published with update", key);
+            return SetOutcome::Rejected {
+                reason: SetRejection::UseUpdate,
+                report: SetReport::default(),
+            };
+        }
         if !self.verify_value(key, &value).await {
             log::error!("set({}): invalid record or DID-key binding", key);
             return SetOutcome::Rejected {
@@ -221,8 +267,7 @@ impl Server {
             };
         }
 
-        let dkey = digest(key);
-        let lookup = match self.check_publish_state(key, &value).await {
+        let lookup = match self.check_publish_state(key, dkey, &value).await {
             PublishLookup::Missing(lookup) => lookup,
             PublishLookup::Identical => self.discover_publish_nodes(dkey).await,
             PublishLookup::Conflict => {
@@ -250,7 +295,9 @@ impl Server {
             SetOutcome::Rejected { reason, .. } => match reason {
                 SetRejection::ExistingRecord
                 | SetRejection::InvalidRecord
-                | SetRejection::ReplicaConflict => None,
+                | SetRejection::ReplicaConflict
+                | SetRejection::NewerVersion
+                | SetRejection::UseUpdate => None,
                 SetRejection::CapacityExceeded
                 | SetRejection::Unavailable
                 | SetRejection::NoResponsibleNodes => Some(false),

@@ -20,6 +20,37 @@ pub enum StoreStatus {
     Conflict,
     CapacityExceeded,
     InvalidRecord,
+    /// The replica holds a newer version, verified (ADR 0005, R4).
+    Stale,
+    /// A node near the key claims a newer version, which it does not prove
+    /// (ADR 0005, R2 and R5).
+    NewerClaimed,
+    /// The replica holds version `seq`, below the one before the record
+    /// sent: it needs the versions in between first (ADR 0005).
+    MissingPrevious {
+        seq: u64,
+    },
+}
+
+/// Result of an UPDATE (ADR 0005, the UPDATE table): a write conditioned on
+/// the replica holding the version before.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+pub enum UpdateStatus {
+    /// The record follows the stored version, and replaced it.
+    Updated,
+    /// The replica already holds this record.
+    AlreadyStored,
+    /// The replica lacks the version before: it holds version `seq`, or
+    /// nothing. The sender then sends the versions it misses, or a STORE.
+    MissingPrevious {
+        seq: Option<u64>,
+    },
+    /// The replica holds a newer version.
+    Stale,
+    /// Another record at the same place, or a fork of the version before.
+    Conflict,
+    CapacityExceeded,
+    InvalidRecord,
 }
 
 impl From<StorageWriteStatus> for StoreStatus {
@@ -53,10 +84,9 @@ pub enum RpcMessage {
         sender_id: [u8; ID_LEN],
         key: [u8; ID_LEN],
         value: Vec<u8>,
-        auth_signature: Vec<u8>,
     },
     UpdateResult {
-        ok: bool,
+        status: UpdateStatus,
     },
     UpdateStatusList {
         sender_id: [u8; ID_LEN],
@@ -87,14 +117,16 @@ pub enum RpcMessage {
         sender_id: [u8; ID_LEN],
     },
     /// Whether the node holds a record for `key`, asked by an empty replica
-    /// before a STORE. A node that holds one answers with its SHA-256
-    /// (`FindHashHit`), one that does not with closer nodes (`FindValueNodes`).
-    /// The answer fits in one datagram, unlike a whole record.
+    /// before a STORE. A node that holds one answers with its version and its
+    /// SHA-256 (`FindHashHit`), one that does not with closer nodes
+    /// (`FindValueNodes`). The answer fits in one datagram, unlike a whole
+    /// record.
     FindHash {
         sender_id: [u8; ID_LEN],
         key: [u8; ID_LEN],
     },
     FindHashHit {
+        seq: u64,
         hash: [u8; RECORD_HASH_LEN],
     },
     /// Sent at once for a request that carries a record (`Store`, `Update`,

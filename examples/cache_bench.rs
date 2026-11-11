@@ -24,17 +24,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use auth_kademlia_rs::auth_handler::did::{canonical_bytes, derive_did, key_of_did, PLACEHOLDER};
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::Server;
 use auth_kademlia_rs::storage::IStorage;
-use auth_kademlia_rs::utils::digest;
+use auth_kademlia_rs::utils::digest_bytes;
 
 use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use serde_json::{json, Value};
+use serde_json::json;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::time::timeout;
-use uuid::Uuid;
 
 // Clusters run sequentially so ports can be reused between phases,
 // but we keep them distinct from stress_test (15800-15804).
@@ -103,30 +103,14 @@ fn base64url(pk: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(pk)
 }
 
-fn sort_json_keys(v: &Value) -> Value {
-    match v {
-        Value::Object(map) => {
-            let sorted: serde_json::Map<String, Value> = map
-                .iter()
-                .collect::<std::collections::BTreeMap<_, _>>()
-                .into_iter()
-                .map(|(k, v)| (k.clone(), sort_json_keys(v)))
-                .collect();
-            Value::Object(sorted)
-        }
-        Value::Array(arr) => Value::Array(arr.iter().map(sort_json_keys).collect()),
-        other => other.clone(),
-    }
-}
-
+/// Version 0 of a new DID (ADR 0005): the DID and the record.
 fn new_record() -> (String, Vec<u8>) {
     let dsk = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
     let dpk = dsk.public_key().to_vec();
-    let did = format!("did:iiot:{}", Uuid::new_v4());
-    let key = did.split(':').next_back().unwrap().to_string();
-    let doc = json!({
+    let next = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
+    let did = PLACEHOLDER;
+    let draft = json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
-        "id": did,
         "verificationMethod": [
             {
                 "id": format!("{}#k0", did), "type": "JsonWebKey2020", "controller": did,
@@ -135,9 +119,12 @@ fn new_record() -> (String, Vec<u8>) {
         ],
         "authentication": [format!("{}#k0", did)],
         "service": [{ "id": format!("{}#device", did), "type": "DeviceAgent",
-                      "serviceEndpoint": "http://example.com/device" }]
+                      "serviceEndpoint": "http://example.com/device" }],
+        "seq": 0,
+        "nextKeyHash": base64url(&digest_bytes(next.public_key())),
     });
-    let doc_bytes = serde_json::to_vec(&sort_json_keys(&doc)).expect("serialize");
+    let (did, doc) = derive_did(&draft).expect("version 0 gives its DID");
+    let doc_bytes = canonical_bytes(&doc).expect("a DID Document in canonical form");
     let mut alg = [0u8; 12];
     alg[..9].copy_from_slice(b"ML-DSA-65");
     let sig = dsk.sign(&doc_bytes).expect("ML-DSA-65 signing");
@@ -146,7 +133,7 @@ fn new_record() -> (String, Vec<u8>) {
     record.extend_from_slice(&alg);
     record.extend_from_slice(sig_bytes);
     record.extend_from_slice(&doc_bytes);
-    (key, record)
+    (did, record)
 }
 
 async fn start_cluster(seed: u16, peer1: u16, peer2: u16, use_cache: bool) -> Vec<Arc<Server>> {
@@ -254,7 +241,7 @@ async fn run_verify_micro(port: u16, use_cache: bool, n: usize) -> VerifyResults
 
     // Inject records directly into local storage, bypassing the DHT.
     for (key, record) in &records {
-        let dkey = digest(key);
+        let dkey = key_of_did(key).expect("a DID made by new_record");
         node.storage.set(dkey.to_vec(), record.clone());
     }
 

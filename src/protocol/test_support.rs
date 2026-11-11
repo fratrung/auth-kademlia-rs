@@ -63,21 +63,53 @@ impl SignatureVerifierHandler for TestHandler {
         Ok(self.self_signed_result)
     }
 
-    fn handle_update_verification(
-        &self,
-        _value: &[u8],
-        _old_value: &[u8],
-        _auth_signature: &[u8],
-    ) -> Result<bool, AuthHandlerError> {
-        Ok(true)
-    }
-
     fn handle_issuer_node_signature_verification(
         &self,
         _value: &[u8],
     ) -> Result<bool, AuthHandlerError> {
         self.issuer_signed_calls.fetch_add(1, Ordering::Relaxed);
         Ok(self.issuer_signed_result)
+    }
+}
+
+/// The real DID rules, counting the signatures it verifies.
+pub(super) struct CountingDidHandler {
+    inner: crate::auth_handler::DIDSignatureVerifierHandler,
+    pub(super) self_signed_calls: AtomicUsize,
+}
+
+impl CountingDidHandler {
+    pub(super) fn new() -> Self {
+        Self {
+            inner: crate::auth_handler::DIDSignatureVerifierHandler::new("unused"),
+            self_signed_calls: AtomicUsize::new(0),
+        }
+    }
+
+    pub(super) fn verified(&self) -> usize {
+        self.self_signed_calls.load(Ordering::Relaxed)
+    }
+}
+
+impl SignatureVerifierHandler for CountingDidHandler {
+    fn handle_key_binding_verification(
+        &self,
+        key: &[u8; ID_LEN],
+        value: &[u8],
+    ) -> Result<bool, AuthHandlerError> {
+        self.inner.handle_key_binding_verification(key, value)
+    }
+
+    fn handle_signature_verification(&self, value: &[u8]) -> Result<bool, AuthHandlerError> {
+        self.self_signed_calls.fetch_add(1, Ordering::Relaxed);
+        self.inner.handle_signature_verification(value)
+    }
+
+    fn handle_issuer_node_signature_verification(
+        &self,
+        value: &[u8],
+    ) -> Result<bool, AuthHandlerError> {
+        self.inner.handle_issuer_node_signature_verification(value)
     }
 }
 

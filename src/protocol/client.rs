@@ -9,7 +9,7 @@ use async_trait::async_trait;
 
 use crate::crawling::{FindPayload, RawResponse, SpiderProtocol};
 use crate::node::Node;
-use crate::protocol::messages::{Frame, RpcMessage, StoreStatus};
+use crate::protocol::messages::{Frame, RpcMessage, StoreStatus, UpdateStatus, RECORD_HASH_LEN};
 use crate::utils::ID_LEN;
 
 use super::KademliaProtocol;
@@ -52,13 +52,6 @@ impl SpiderProtocol for KademliaProtocol {
             key: target.id,
         };
         self.call_find(peer, request).await
-    }
-
-    async fn call_store(&self, peer: &Node, key: [u8; ID_LEN], value: Vec<u8>) -> bool {
-        matches!(
-            self.call_store_rpc(peer, key, value).await,
-            Some(StoreStatus::Stored | StoreStatus::AlreadyStored)
-        )
     }
 
     async fn failing_among(&self, nodes: &[Node]) -> HashSet<[u8; ID_LEN]> {
@@ -126,27 +119,21 @@ impl KademliaProtocol {
         }
     }
 
-    pub async fn call_update_rpc(
-        &self,
-        peer: &Node,
-        key: [u8; ID_LEN],
-        value: Vec<u8>,
-        auth_signature: Vec<u8>,
-    ) -> bool {
-        self.call_update_rpc_answer(peer, key, value, auth_signature)
-            .await
-            .unwrap_or(false)
+    /// Whether `peer` holds `value` after an UPDATE: it applied it, or held it.
+    pub async fn call_update_rpc(&self, peer: &Node, key: [u8; ID_LEN], value: Vec<u8>) -> bool {
+        matches!(
+            self.call_update_rpc_answer(peer, key, value).await,
+            Some(UpdateStatus::Updated | UpdateStatus::AlreadyStored)
+        )
     }
 
-    /// Like `call_update_rpc`, but tells a refusal (`Some(false)`) from no
-    /// answer (`None`).
+    /// The answer of `peer` to an UPDATE, or `None` when it gave none.
     pub async fn call_update_rpc_answer(
         &self,
         peer: &Node,
         key: [u8; ID_LEN],
         value: Vec<u8>,
-        auth_signature: Vec<u8>,
-    ) -> Option<bool> {
+    ) -> Option<UpdateStatus> {
         let sock_addr = socket_addr_of(peer)?;
         match self
             .call(
@@ -155,14 +142,13 @@ impl KademliaProtocol {
                     sender_id: self.source_node.id,
                     key,
                     value,
-                    auth_signature,
                 },
             )
             .await
         {
-            Some(RpcMessage::UpdateResult { ok }) => {
+            Some(RpcMessage::UpdateResult { status }) => {
                 self.note_alive(peer).await;
-                Some(ok)
+                Some(status)
             }
             _ => {
                 log::warn!("no response from {}", peer);
@@ -221,8 +207,8 @@ impl KademliaProtocol {
     }
 
     /// Ask `peer` whether it holds a record for `target`, receiving its
-    /// SHA-256 (`FindHash`) instead of the record. A hit is returned as
-    /// `FindPayload::Value` holding the hash.
+    /// version and SHA-256 (`FindHash`) instead of the record. A hit is
+    /// returned as `FindPayload::Value` holding both (`hash_hit_bytes`).
     pub(crate) async fn call_find_hash(self: Arc<Self>, peer: Node, target: Node) -> RawResponse {
         let request = RpcMessage::FindHash {
             sender_id: self.source_node.id,
@@ -241,9 +227,9 @@ impl KademliaProtocol {
                 self.schedule_welcome_if_new(peer).await;
                 RawResponse(true, FindPayload::Value(value))
             }
-            Some(RpcMessage::FindHashHit { hash }) => {
+            Some(RpcMessage::FindHashHit { seq, hash }) => {
                 self.schedule_welcome_if_new(peer).await;
-                RawResponse(true, FindPayload::Value(hash.to_vec()))
+                RawResponse(true, FindPayload::Value(hash_hit_bytes(seq, &hash)))
             }
             Some(RpcMessage::FindValueNodes { nodes }) => {
                 self.schedule_welcome_if_new(peer).await;
@@ -260,6 +246,20 @@ impl KademliaProtocol {
             }
         }
     }
+}
+
+/// A `FindHashHit` as a lookup carries it: the version, 8 bytes big-endian,
+/// then the SHA-256 of the record.
+pub(crate) fn hash_hit_bytes(seq: u64, hash: &[u8; RECORD_HASH_LEN]) -> Vec<u8> {
+    let mut bytes = seq.to_be_bytes().to_vec();
+    bytes.extend_from_slice(hash);
+    bytes
+}
+
+/// The version and hash of a `FindHashHit`, from `hash_hit_bytes`.
+pub(crate) fn parse_hash_hit(bytes: &[u8]) -> Option<(u64, [u8; RECORD_HASH_LEN])> {
+    let (seq, hash) = bytes.split_first_chunk::<8>()?;
+    Some((u64::from_be_bytes(*seq), hash.try_into().ok()?))
 }
 
 /// The socket address of `addr`. `None` if its IP does not parse.

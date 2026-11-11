@@ -7,10 +7,12 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::auth_handler::{is_bound_to_key, verify_issuer_signed, verify_record, verify_rotation};
+use crate::auth_handler::did::record_form;
+use crate::auth_handler::rules::{decide_locally, Local, LocalConflict, Request};
+use crate::auth_handler::{is_bound_to_key, verify_issuer_signed, verify_record};
 use crate::node::Node;
-use crate::protocol::messages::{record_hash, RpcMessage, WireNode};
-use crate::storage::{IStorage, StorageWriteStatus};
+use crate::protocol::messages::{record_hash, RpcMessage, UpdateStatus, WireNode};
+use crate::storage::{IStorage, ReplaceStatus, StorageWriteStatus};
 use crate::utils::{digest, ID_LEN, STATUS_LIST_KEY};
 
 use super::KademliaProtocol;
@@ -18,6 +20,41 @@ use super::KademliaProtocol;
 pub enum FindValueResult {
     Nodes(Vec<Node>),
     Value(Vec<u8>),
+}
+
+/// Log why a record was refused at the place of another one (ADR 0005, R3
+/// and R4). Proven duplicity, two documents at one place signed by one key,
+/// is a warning; the same document signed twice is information.
+pub(super) fn log_conflict(
+    key: &[u8; ID_LEN],
+    kind: LocalConflict,
+    stored: Option<&[u8]>,
+    incoming: &[u8],
+) {
+    let (stored_hash, incoming_hash) = (
+        stored
+            .map(|s| hex::encode(record_hash(s)))
+            .unwrap_or_default(),
+        hex::encode(record_hash(incoming)),
+    );
+    match kind {
+        LocalConflict::SignedTwice => log::info!(
+            "{}: the same document signed twice (stored {stored_hash}, sent {incoming_hash})",
+            hex::encode(key)
+        ),
+        LocalConflict::ProvenDuplicity => log::warn!(
+            "{}: proven duplicity, two documents at one place signed by one key (stored {stored_hash}, sent {incoming_hash})",
+            hex::encode(key)
+        ),
+        LocalConflict::OtherKey => log::warn!(
+            "{}: conflict with another key (stored {stored_hash}, sent {incoming_hash})",
+            hex::encode(key)
+        ),
+        LocalConflict::WrongPrev | LocalConflict::UncommittedKey => log::warn!(
+            "{}: fork of the stored version, {kind:?} (stored {stored_hash}, sent {incoming_hash})",
+            hex::encode(key)
+        ),
+    }
 }
 
 impl KademliaProtocol {
@@ -44,13 +81,10 @@ impl KademliaProtocol {
                 sender_id,
                 key,
                 value,
-                auth_signature,
-            } => {
-                let ok = self
-                    .rpc_update(sender_id, sender_addr, key, value, auth_signature)
-                    .await;
-                Some(RpcMessage::UpdateResult { ok })
-            }
+            } => self
+                .rpc_update(sender_id, sender_addr, key, value)
+                .await
+                .map(|status| RpcMessage::UpdateResult { status }),
             RpcMessage::UpdateStatusList {
                 sender_id,
                 key,
@@ -108,56 +142,100 @@ impl KademliaProtocol {
         self.source_node.id
     }
 
+    /// An UPDATE: a write conditioned on this replica holding the version
+    /// before (ADR 0005, the UPDATE table). It applies the same bytes (R1)
+    /// and a verified successor (R3), never asks the network, and otherwise
+    /// says why it refuses. `None` is no answer: the stored record changed
+    /// twice while this one was checked.
     pub async fn rpc_update(
         self: &Arc<Self>,
         sender_id: [u8; ID_LEN],
         sender_addr: (String, u16),
         key: [u8; ID_LEN],
         value: Vec<u8>,
-        auth_signature: Vec<u8>,
-    ) -> bool {
+    ) -> Option<UpdateStatus> {
         if key == digest(STATUS_LIST_KEY) {
             log::warn!("rpc_update: status-list key requires UpdateStatusList");
-            return false;
+            return Some(UpdateStatus::InvalidRecord);
         }
-        let old_value = match self.storage.get(&key) {
-            Some(v) => v,
-            None => {
-                log::error!("rpc_update: record {} not found", hex::encode(key));
-                return false;
-            }
-        };
-        // A retry of an update this replica already applied: there is nothing
-        // to verify or write. The answer means "I hold this record", not that
-        // the signature is valid, so the sender is not added to the routing table.
-        if old_value == value {
-            return true;
+        // The decision is taken again once if the stored record changes while
+        // the signature is verified (optimistic concurrency, open point 14).
+        for _ in 0..2 {
+            let stored = self.storage.get(&key);
+            let status = match decide_locally(Request::Update, &key, stored.as_deref(), &value) {
+                Local::Invalid(error) => {
+                    log::warn!(
+                        "rpc_update: invalid record for {}: {error}",
+                        hex::encode(key)
+                    );
+                    UpdateStatus::InvalidRecord
+                }
+                // A retry of an update this replica already applied: there
+                // is nothing to verify or write. The answer means "I hold
+                // this record", so the sender is not added to the routing
+                // table.
+                Local::AlreadyStored => UpdateStatus::AlreadyStored,
+                Local::AskNetwork(_) | Local::MissingPrevious(None) => {
+                    UpdateStatus::MissingPrevious { seq: None }
+                }
+                Local::MissingPrevious(Some(seq)) => {
+                    UpdateStatus::MissingPrevious { seq: Some(seq) }
+                }
+                Local::Stale { .. } => UpdateStatus::Stale,
+                Local::Conflict(kind) => {
+                    log_conflict(&key, kind, stored.as_deref(), &value);
+                    UpdateStatus::Conflict
+                }
+                Local::VerifyDuplicity => {
+                    if !self.verify_for_key(&key, &value).await {
+                        UpdateStatus::InvalidRecord
+                    } else {
+                        log_conflict(
+                            &key,
+                            LocalConflict::ProvenDuplicity,
+                            stored.as_deref(),
+                            &value,
+                        );
+                        UpdateStatus::Conflict
+                    }
+                }
+                Local::VerifyAndReplace => {
+                    if !self.verify_for_key(&key, &value).await {
+                        log::warn!(
+                            "rpc_update: bad signature on a successor for {}",
+                            hex::encode(key)
+                        );
+                        return Some(UpdateStatus::InvalidRecord);
+                    }
+                    let Some(expected) = stored else {
+                        continue;
+                    };
+                    match self.storage.replace_if(&key, &expected, value.clone()) {
+                        ReplaceStatus::Replaced => {
+                            let source =
+                                Node::new(sender_id, Some(sender_addr.0), Some(sender_addr.1));
+                            self.schedule_welcome_if_new(source).await;
+                            return Some(UpdateStatus::Updated);
+                        }
+                        ReplaceStatus::CapacityExceeded => {
+                            log::warn!(
+                                "rpc_update: storage capacity exceeded for {}",
+                                hex::encode(key)
+                            );
+                            return Some(UpdateStatus::CapacityExceeded);
+                        }
+                        // Changed meanwhile: decide again against the new record.
+                        ReplaceStatus::Changed => continue,
+                    }
+                }
+            };
+            return Some(status);
         }
-        let ok = verify_rotation(
-            &self.signature_handler,
-            &key,
-            &value,
-            &old_value,
-            &auth_signature,
-        )
-        .await;
-        if !ok {
-            log::error!(
-                "rpc_update: invalid or unauthorized update for {}",
-                hex::encode(key)
-            );
-            return false;
-        }
-        let source = Node::new(sender_id, Some(sender_addr.0), Some(sender_addr.1));
-        self.schedule_welcome_if_new(source).await;
-        if self.storage.set(key.to_vec(), value) == StorageWriteStatus::CapacityExceeded {
-            log::warn!(
-                "rpc_update: storage capacity exceeded for {}",
-                hex::encode(key)
-            );
-            return false;
-        }
-        true
+        log::warn!(
+            "rpc_update: the record of {} changed twice, no answer",
+            hex::encode(key)
+        );
+        None
     }
 
     pub async fn rpc_update_status_list(
@@ -241,7 +319,7 @@ impl KademliaProtocol {
         FindValueResult::Nodes(neighbors)
     }
 
-    /// Answer `FindHash`: the SHA-256 of the record held for `key`
+    /// Answer `FindHash`: the version and SHA-256 of the record held for `key`
     /// (`FindHashHit`), or else the nodes closest to it, as `rpc_find_value`
     /// chooses them.
     async fn rpc_find_hash(
@@ -250,8 +328,18 @@ impl KademliaProtocol {
         sender_addr: (String, u16),
         key: [u8; ID_LEN],
     ) -> RpcMessage {
-        match self.rpc_find_value(sender_id, sender_addr, key).await {
+        let found = self.rpc_find_value(sender_id, sender_addr, key).await;
+        #[cfg(feature = "testbed")]
+        if self.is_lying() {
+            return RpcMessage::FindHashHit {
+                seq: crate::auth_handler::did::MAX_INTEGER,
+                hash: rand::random(),
+            };
+        }
+        match found {
+            // The Status List has no version: it answers 0.
             FindValueResult::Value(v) => RpcMessage::FindHashHit {
+                seq: record_form(&key, &v).map_or(0, |form| form.seq),
                 hash: record_hash(&v),
             },
             FindValueResult::Nodes(ns) => RpcMessage::FindValueNodes {
@@ -307,6 +395,24 @@ mod tests {
 
     use super::*;
 
+    /// The testbed switch: a lying node claims a version far ahead for a key
+    /// it does not hold, and answers honestly again once it is switched off.
+    #[cfg(feature = "testbed")]
+    #[tokio::test]
+    async fn a_lying_node_claims_a_version_far_ahead_for_any_key() {
+        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        let ask = || protocol.rpc_find_hash([2; ID_LEN], ("127.0.0.1".into(), 9000), [7; ID_LEN]);
+
+        assert!(matches!(ask().await, RpcMessage::FindValueNodes { .. }));
+        protocol.set_lying(true);
+        assert!(matches!(
+            ask().await,
+            RpcMessage::FindHashHit { seq, .. } if seq == crate::auth_handler::did::MAX_INTEGER
+        ));
+        protocol.set_lying(false);
+        assert!(matches!(ask().await, RpcMessage::FindValueNodes { .. }));
+    }
+
     #[tokio::test]
     async fn update_status_list_cannot_overwrite_a_did_record() {
         let handler = Arc::new(TestHandler::new(true, true));
@@ -344,16 +450,16 @@ mod tests {
         );
         assert_eq!(protocol.storage.get(&status_key), Some(issuer_record));
 
-        assert!(
-            !protocol
+        assert_ne!(
+            protocol
                 .rpc_update(
                     [4; ID_LEN],
                     ("127.0.0.1".into(), 9002),
                     status_key,
                     b"wrong update path".to_vec(),
-                    vec![],
                 )
-                .await
+                .await,
+            Some(UpdateStatus::Updated)
         );
     }
 
@@ -377,14 +483,14 @@ mod tests {
                 peer,
             )
             .await;
-        let Some(RpcMessage::FindHashHit { hash }) = answer else {
+        let Some(RpcMessage::FindHashHit { seq, hash }) = answer else {
             panic!("expected the record's hash, got {answer:?}");
         };
         assert_eq!(hash, record_hash(&record));
         let frame = Frame {
             msg_id: 1,
             is_request: false,
-            message: RpcMessage::FindHashHit { hash },
+            message: RpcMessage::FindHashHit { seq, hash },
         };
         assert!(bincode::serialize(&frame).unwrap().len() <= FRAG_CHUNK_SIZE);
 
@@ -419,16 +525,16 @@ mod tests {
             test_protocol_with_storage(Arc::new(TestHandler::new(true, true)), false, storage)
                 .await;
 
-        assert!(
-            !protocol
+        assert_ne!(
+            protocol
                 .rpc_update(
                     [4; ID_LEN],
                     ("127.0.0.1".to_string(), 9012),
                     key,
                     b"larger".to_vec(),
-                    vec![],
                 )
-                .await
+                .await,
+            Some(UpdateStatus::Updated)
         );
         assert_eq!(protocol.storage.get(&key), Some(old_value));
     }
@@ -442,16 +548,16 @@ mod tests {
         let handler = Arc::new(TestHandler::new(true, true).with_key_binding_result(false));
         let protocol = test_protocol_with_storage(handler, false, storage).await;
 
-        assert!(
-            !protocol
+        assert_ne!(
+            protocol
                 .rpc_update(
                     [17; ID_LEN],
                     ("127.0.0.1".into(), 9014),
                     key,
                     b"valid but mismatched".to_vec(),
-                    vec![],
                 )
-                .await
+                .await,
+            Some(UpdateStatus::Updated)
         );
         assert_eq!(protocol.storage.get(&key), Some(old_value));
     }

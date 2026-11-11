@@ -1,40 +1,42 @@
-//! STORE, and the network check of an empty replica.
+//! STORE, and the network check of a replica that holds nothing (ADR 0005,
+//! section 3).
 //!
-//! A replica that does not hold the key asks the nodes closest to it for the
-//! hash of their record (`FindHash`) before storing (`DESIGN.md` section 7).
-//! It refuses when a node holds another record or does not answer.
+//! A replica decides first with what it holds (`rules::decide_locally`): the
+//! same bytes, a verified successor, an older version, another record at the
+//! same place, or a version too far ahead. A replica that holds nothing asks
+//! the nodes closest to the key for the version and hash of their record
+//! (`FindHash`) and applies R2 to a version 0 and R5 to a later one, fetching
+//! the version before from a node that voted for it when R5 says so. It never
+//! accepts on silence.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::auth_handler::did::RecordForm;
+use crate::auth_handler::rules::{
+    check_fetched, decide_locally, decide_successor, decide_version_zero, Answer, Fetch,
+    FetchCheck, Local, LocalConflict, Refusal, Request, Verdict,
+};
 use crate::counters::CheckEnd;
-use crate::crawling::{ValueSearch, ValueSpiderCrawl};
+use crate::crawling::{RPCFindResponse, SpiderProtocol, ValueSearch, ValueSpiderCrawl};
 use crate::node::Node;
+use crate::protocol::client::parse_hash_hit;
+use crate::protocol::handlers::log_conflict;
 use crate::protocol::messages::{record_hash, StoreStatus};
-use crate::storage::IStorage;
+use crate::storage::{IStorage, ReplaceStatus, StorageWriteStatus};
 use crate::utils::{digest, ID_LEN, STATUS_LIST_KEY};
 
 use super::KademliaProtocol;
 
 /// How long an empty replica asks the network about a record it was sent,
-/// below `RPC_TIMEOUT` so that its answer reaches the sender in time.
+/// the fetch of the version before included, below `RPC_TIMEOUT` so that its
+/// answer reaches the sender in time.
 const STORE_LOOKUP_TIMEOUT: Duration = Duration::from_millis(2000);
 
 /// STOREs waiting for that lookup at once. Beyond this a STORE is dropped
 /// without an answer, as an overloaded node drops datagrams.
 pub(super) const MAX_STORE_LOOKUPS: usize = 256;
-
-/// What an empty replica learns from the network about a record it was sent.
-enum NetworkCopy {
-    /// Every node asked answered: none holds the record, or they hold the
-    /// same one.
-    NoneOrSame,
-    /// A node holds another record: it answered with another hash.
-    Other,
-    /// Some node did not answer, or there was nobody to ask.
-    Unknown,
-}
 
 /// One of the `MAX_STORE_LOOKUPS` places for a STORE waiting for a lookup,
 /// given back when dropped, also if the task never runs.
@@ -56,11 +58,23 @@ impl Drop for StoreLookupSlot {
     }
 }
 
+/// The STORE status of a refusal by the network check.
+fn refused(refusal: Refusal) -> StoreStatus {
+    match refusal {
+        Refusal::NewerClaimed { .. } => StoreStatus::NewerClaimed,
+        Refusal::OtherVersion { .. }
+        | Refusal::NotFollowing { .. }
+        | Refusal::HolderBehind { .. }
+        | Refusal::FetchedDoesNotHold => StoreStatus::Conflict,
+    }
+}
+
 impl KademliaProtocol {
-    /// Store an authenticated record if this node holds none for `key`.
-    /// `None` means no answer: an empty replica had nobody to ask about the
-    /// record or did not hear from every node it asked, so the sender counts
-    /// it as unavailable.
+    /// Store a DID record by the rules of ADR 0005, section 3, or the Status
+    /// List as before. `None` means no answer: the network check had nobody
+    /// to ask, did not hear from every node it asked, found fewer votes than
+    /// the quorum, or the stored record changed twice while this one was
+    /// checked. The sender then counts the replica as unavailable.
     pub async fn rpc_store(
         self: &Arc<Self>,
         sender_id: [u8; ID_LEN],
@@ -68,92 +82,169 @@ impl KademliaProtocol {
         key: [u8; ID_LEN],
         value: Vec<u8>,
     ) -> Option<StoreStatus> {
-        // An empty replica cannot tell a forged record from the owner's: both
-        // are self-signed for the same DID. It asks the network first, and
-        // refuses a record other than the one already there without verifying
-        // its signature: a new version must arrive as an UPDATE. When some node
-        // does not answer, or it knows nobody to ask, it refuses too (fail-safe
-        // default): accepting would let an attacker win by making answers fail
-        // to arrive, as with soft-fail certificate revocation checks.
-        if self.store_needs_lookup(&key) {
-            // The binding costs a JSON parse, the lookup a message to every
-            // node close to the key: a record that does not belong to `key`
-            // never starts one.
-            if !self.key_binding_is_valid(&key, &value) {
-                log::warn!(
-                    "rpc_store: record from {} is not bound to {}",
-                    sender_addr.0,
-                    hex::encode(key)
-                );
-                self.counters.check(CheckEnd::Unbound, 0, Duration::ZERO);
-                return Some(StoreStatus::InvalidRecord);
-            }
-            match self.network_copy(key, &value).await {
-                NetworkCopy::NoneOrSame => {}
-                NetworkCopy::Other => {
+        if key == digest(STATUS_LIST_KEY) {
+            return self
+                .store_status_list(sender_id, sender_addr, key, value)
+                .await;
+        }
+        let mut asked_network = false;
+        // Decided again once if the stored record changes while this one is
+        // checked (optimistic concurrency, open point 14).
+        for _ in 0..2 {
+            let stored = self.storage.get(&key);
+            let status = match decide_locally(Request::Store, &key, stored.as_deref(), &value) {
+                Local::Invalid(error) => {
                     log::warn!(
-                        "rpc_store: the network holds another record for {} (from {})",
+                        "rpc_store: invalid record for {} from {}: {error}",
                         hex::encode(key),
                         sender_addr.0
                     );
-                    return Some(StoreStatus::Conflict);
+                    if stored.is_none() {
+                        self.counters
+                            .check(CheckEnd::Invalid, 0, Duration::ZERO, false);
+                    }
+                    StoreStatus::InvalidRecord
                 }
-                NetworkCopy::Unknown => {
-                    log::warn!(
-                        "rpc_store: not every node answered about {}, record from {} refused",
-                        hex::encode(key),
-                        sender_addr.0
+                // R1: the same bytes. The STORE refreshes the expiry, so that
+                // republication keeps the record alive; nothing is verified.
+                Local::AlreadyStored => {
+                    match self.storage.replace_if(&key, &value, value.clone()) {
+                        ReplaceStatus::Replaced => StoreStatus::AlreadyStored,
+                        ReplaceStatus::Changed | ReplaceStatus::CapacityExceeded => continue,
+                    }
+                }
+                Local::AskNetwork(form) => {
+                    // A check that would run again after the record changed
+                    // gives no answer: it never loops.
+                    if asked_network {
+                        log::warn!(
+                            "rpc_store: {} emptied while it was checked",
+                            hex::encode(key)
+                        );
+                        return None;
+                    }
+                    asked_network = true;
+                    match self.network_check(key, &value, &form).await {
+                        Verdict::Accept => {}
+                        Verdict::Refuse(refusal) => {
+                            log::warn!(
+                                "rpc_store: the network refuses version {} of {} from {}: {refusal:?}",
+                                form.seq,
+                                hex::encode(key),
+                                sender_addr.0
+                            );
+                            return Some(refused(refusal));
+                        }
+                        Verdict::NoAnswer | Verdict::Fetch(_) => {
+                            log::warn!(
+                                "rpc_store: no answer for version {} of {} from {}",
+                                form.seq,
+                                hex::encode(key),
+                                sender_addr.0
+                            );
+                            return None;
+                        }
+                    }
+                    if !self.verify_for_key(&key, &value).await {
+                        return Some(StoreStatus::InvalidRecord);
+                    }
+                    match self.storage.insert_if_absent(key.to_vec(), value.clone()) {
+                        StorageWriteStatus::Stored => StoreStatus::Stored,
+                        StorageWriteStatus::AlreadyStored => StoreStatus::AlreadyStored,
+                        StorageWriteStatus::CapacityExceeded => StoreStatus::CapacityExceeded,
+                        // Another record arrived meanwhile: decide against it.
+                        StorageWriteStatus::Conflict => continue,
+                    }
+                }
+                // R3: the successor of the stored version, decided locally.
+                Local::VerifyAndReplace => {
+                    if !self.verify_for_key(&key, &value).await {
+                        return Some(StoreStatus::InvalidRecord);
+                    }
+                    let Some(expected) = stored else {
+                        continue;
+                    };
+                    match self.storage.replace_if(&key, &expected, value.clone()) {
+                        ReplaceStatus::Replaced => StoreStatus::Stored,
+                        ReplaceStatus::CapacityExceeded => StoreStatus::CapacityExceeded,
+                        ReplaceStatus::Changed => continue,
+                    }
+                }
+                Local::VerifyDuplicity => {
+                    if !self.verify_for_key(&key, &value).await {
+                        return Some(StoreStatus::InvalidRecord);
+                    }
+                    log_conflict(
+                        &key,
+                        LocalConflict::ProvenDuplicity,
+                        stored.as_deref(),
+                        &value,
                     );
-                    return None;
+                    StoreStatus::Conflict
                 }
-            }
-        }
-        if !self.verify_for_key(&key, &value).await {
-            log::warn!(
-                "rpc_store: invalid record for {} from {}",
-                hex::encode(key),
-                sender_addr.0
-            );
-            return Some(StoreStatus::InvalidRecord);
-        }
-
-        let status = StoreStatus::from(self.storage.insert_if_absent(key.to_vec(), value));
-        match status {
-            StoreStatus::Stored | StoreStatus::AlreadyStored => {
+                Local::Stale { .. } => StoreStatus::Stale,
+                Local::Conflict(kind) => {
+                    log_conflict(&key, kind, stored.as_deref(), &value);
+                    StoreStatus::Conflict
+                }
+                Local::MissingPrevious(seq) => StoreStatus::MissingPrevious {
+                    seq: seq.unwrap_or_default(),
+                },
+            };
+            if matches!(status, StoreStatus::Stored | StoreStatus::AlreadyStored) {
+                // The bytes are those of a verified record: the sender enters
+                // the routing table, never after a refusal.
                 let source = Node::new(sender_id, Some(sender_addr.0), Some(sender_addr.1));
                 self.schedule_welcome_if_new(source).await;
             }
-            StoreStatus::Conflict => {
-                log::warn!(
-                    "rpc_store: conflicting record already exists for {}",
-                    hex::encode(key)
-                );
-            }
-            StoreStatus::CapacityExceeded => {
-                log::warn!(
-                    "rpc_store: storage capacity exceeded for {}",
-                    hex::encode(key)
-                );
-            }
-            StoreStatus::InvalidRecord => unreachable!("storage does not verify records"),
+            return Some(status);
+        }
+        log::warn!(
+            "rpc_store: the record of {} changed twice, no answer",
+            hex::encode(key)
+        );
+        None
+    }
+
+    /// The Status List, outside ADR 0005: signed by the issuer, first writer
+    /// wins.
+    async fn store_status_list(
+        self: &Arc<Self>,
+        sender_id: [u8; ID_LEN],
+        sender_addr: (String, u16),
+        key: [u8; ID_LEN],
+        value: Vec<u8>,
+    ) -> Option<StoreStatus> {
+        if !self.verify_for_key(&key, &value).await {
+            log::warn!("rpc_store: invalid status list from {}", sender_addr.0);
+            return Some(StoreStatus::InvalidRecord);
+        }
+        let status = StoreStatus::from(self.storage.insert_if_absent(key.to_vec(), value));
+        if matches!(status, StoreStatus::Stored | StoreStatus::AlreadyStored) {
+            let source = Node::new(sender_id, Some(sender_addr.0), Some(sender_addr.1));
+            self.schedule_welcome_if_new(source).await;
         }
         Some(status)
     }
 
-    /// A STORE for a DID this node does not hold. A node holding a record
-    /// compares it with the one it is sent; the Status List has rules of its own.
+    /// A STORE for a DID this node does not hold, which runs the network
+    /// check. The Status List has rules of its own.
     pub(super) fn store_needs_lookup(&self, key: &[u8; ID_LEN]) -> bool {
         *key != digest(STATUS_LIST_KEY) && self.storage.get(key).is_none()
     }
 
-    /// What the nodes closest to `key` hold, compared with `value`. The
-    /// lookup asks them for the SHA-256 of their record (`FindHash`) rather
-    /// than the record, asks all of them rather than stopping at the first
-    /// that answers with the hash of `value`, ends at the first other hash,
-    /// gives up after `STORE_LOOKUP_TIMEOUT`, and leaves no copy on any node.
-    /// A hash cannot be verified, so a node answering with another one blocks
-    /// the STORE; it could block it anyway by not answering.
-    async fn network_copy(self: &Arc<Self>, key: [u8; ID_LEN], value: &[u8]) -> NetworkCopy {
+    /// R2 or R5 for `value`, of form `form`, at this replica, which holds
+    /// nothing for `key`. The lookup asks the nodes closest to the key for the
+    /// version and SHA-256 of their record (`FindHash`) rather than the
+    /// record, asks all of them, leaves no copy on any node, and gives up
+    /// after `STORE_LOOKUP_TIMEOUT`. The rules decide once every node asked
+    /// has answered or the deadline has passed, refusals first.
+    async fn network_check(
+        self: &Arc<Self>,
+        key: [u8; ID_LEN],
+        value: &[u8],
+        form: &RecordForm,
+    ) -> Verdict {
         let started = Instant::now();
         let target = Node::from_id(key);
         // Contacts known not to respond are left out, even as a last resort:
@@ -178,14 +269,19 @@ impl KademliaProtocol {
         // what the network holds, which is not the same as knowing it is empty.
         if nearest.is_empty() {
             self.counters
-                .check(CheckEnd::NobodyToAsk, 0, started.elapsed());
-            return NetworkCopy::Unknown;
+                .check(CheckEnd::NobodyToAsk, 0, started.elapsed(), false);
+            return Verdict::NoAnswer;
         }
         let deadline = tokio::time::Instant::now() + STORE_LOOKUP_TIMEOUT;
         let own = record_hash(value);
         let find_hash = |protocol: Arc<Self>, peer, target| protocol.call_find_hash(peer, target);
-        let mut crawl =
-            ValueSpiderCrawl::new(Arc::clone(self), target, nearest, self.ksize, self.alpha);
+        let mut crawl = ValueSpiderCrawl::new(
+            Arc::clone(self),
+            target.clone(),
+            nearest,
+            self.ksize,
+            self.alpha,
+        );
         // A replica has to hear all of them anyway, so it asks them at once:
         // one round instead of several, and a node it knows cannot be pushed
         // out of the lookup by an earlier answer before it is asked. A node far
@@ -194,52 +290,176 @@ impl KademliaProtocol {
         if among_closest {
             crawl = crawl.asking_everyone();
         }
+        // Every answer is kept, none ends the lookup: the rules decide at the
+        // end, refusals first.
+        let hits: Arc<Mutex<Vec<(Node, Answer)>>> = Arc::default();
+        let collected = Arc::clone(&hits);
         let search = crawl
-            .search(Some(deadline), find_hash, |found| async move {
-                (found.as_slice() != own.as_slice()).then_some(found)
+            .search(Some(deadline), find_hash, move |peer, payload| {
+                if let Some((seq, hash)) = parse_hash_hit(&payload) {
+                    if let Ok(mut hits) = collected.lock() {
+                        hits.push((peer, Answer { seq, hash }));
+                    }
+                }
+                async { None }
             })
             .await;
-        let (copy, end) = match search {
-            ValueSearch::Found(_) => (NetworkCopy::Other, CheckEnd::Other),
-            ValueSearch::NotFound => (NetworkCopy::NoneOrSame, CheckEnd::NoneOrSame),
-            ValueSearch::Incomplete => (NetworkCopy::Unknown, CheckEnd::NoAnswer),
+        let everyone_answered = search == ValueSearch::NotFound;
+        let asked = crawl.asked();
+        let mut hits = hits.lock().map(|hits| hits.clone()).unwrap_or_default();
+        hits.sort_by_key(|(peer, _)| peer.distance_to(&target));
+        let (voters, answers): (Vec<Node>, Vec<Answer>) = hits.into_iter().unzip();
+
+        let mut fetched = false;
+        let verdict = if form.seq == 0 {
+            decide_version_zero(self.ksize, asked, &own, &answers, everyone_answered)
+        } else {
+            let first = decide_successor(
+                self.ksize,
+                asked,
+                form,
+                &own,
+                &answers,
+                everyone_answered,
+                &Fetch::NotYet,
+            );
+            match first {
+                Verdict::Fetch(order) => {
+                    fetched = true;
+                    match self
+                        .fetch_previous(key, form, &voters, &order, deadline)
+                        .await
+                    {
+                        Ok(fetch) => decide_successor(
+                            self.ksize,
+                            asked,
+                            form,
+                            &own,
+                            &answers,
+                            everyone_answered,
+                            &fetch,
+                        ),
+                        Err(verdict) => verdict,
+                    }
+                }
+                other => other,
+            }
         };
-        self.counters.check(end, crawl.rounds(), started.elapsed());
-        copy
+        let end = match &verdict {
+            Verdict::Accept => CheckEnd::Accepted,
+            Verdict::Refuse(Refusal::NewerClaimed { .. }) => CheckEnd::NewerClaimed,
+            Verdict::Refuse(Refusal::OtherVersion { .. }) => CheckEnd::OtherVersion,
+            Verdict::Refuse(Refusal::NotFollowing { .. }) => CheckEnd::NotFollowing,
+            Verdict::Refuse(Refusal::HolderBehind { .. }) => CheckEnd::HolderBehind,
+            Verdict::Refuse(Refusal::FetchedDoesNotHold) => CheckEnd::FetchRefused,
+            Verdict::NoAnswer | Verdict::Fetch(_) if everyone_answered && !fetched => {
+                CheckEnd::TooFewVotes
+            }
+            Verdict::NoAnswer | Verdict::Fetch(_) => CheckEnd::NoAnswer,
+        };
+        self.counters
+            .check(end, crawl.rounds(), started.elapsed(), fetched);
+        verdict
+    }
+
+    /// Fetch version N−1 from the nodes that voted for it, in `order` (the
+    /// closest to the key first), until one gives a record that hashes to
+    /// `prev`, within the deadline of the whole check. A node that gives no
+    /// record, or another one, is no vote; the next one is asked.
+    async fn fetch_previous(
+        self: &Arc<Self>,
+        key: [u8; ID_LEN],
+        form: &RecordForm,
+        voters: &[Node],
+        order: &[usize],
+        deadline: tokio::time::Instant,
+    ) -> Result<Fetch, Verdict> {
+        let mut dropped = vec![];
+        for &index in order {
+            let Some(peer) = voters.get(index) else {
+                continue;
+            };
+            let call = Arc::clone(self).call_find_value(peer.clone(), Node::from_id(key));
+            let Ok(raw) = tokio::time::timeout_at(deadline, call).await else {
+                return Err(Verdict::NoAnswer);
+            };
+            let Some(record) = RPCFindResponse::new(raw).get_value() else {
+                dropped.push(index);
+                continue;
+            };
+            match check_fetched(&key, form, &record) {
+                FetchCheck::NotPrev => dropped.push(index),
+                FetchCheck::DoesNotHold => {
+                    log::warn!(
+                        "rpc_store: the version before, from {peer}, does not commit to version {} of {}",
+                        form.seq,
+                        hex::encode(key)
+                    );
+                    return Err(Verdict::Refuse(Refusal::FetchedDoesNotHold));
+                }
+                FetchCheck::Confirmed {
+                    verify_version_zero,
+                } => {
+                    // Version 0 binds by its own signature too (section 1).
+                    if verify_version_zero && !self.verify_for_key(&key, &record).await {
+                        return Err(Verdict::Refuse(Refusal::FetchedDoesNotHold));
+                    }
+                    return Ok(Fetch::Confirmed { dropped });
+                }
+            }
+        }
+        Ok(Fetch::NoneConfirmed)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering;
-
     use tokio::net::UdpSocket;
 
+    use crate::auth_handler::test_chain::{new_key, sign, Chain};
     use crate::protocol::messages::{record_hash, RpcMessage, StoreStatus, WireNode};
     use crate::protocol::test_support::*;
     use crate::storage::ForgetfulStorage;
 
     use super::*;
 
+    /// An id at XOR distance `distance` from `key`, in its first byte.
+    fn id_at(key: [u8; ID_LEN], distance: u8) -> [u8; ID_LEN] {
+        let mut id = key;
+        id[0] ^= distance;
+        id
+    }
+
+    async fn real_protocol() -> (Arc<KademliaProtocol>, Arc<CountingDidHandler>) {
+        real_protocol_with(Arc::new(ForgetfulStorage::new(-1))).await
+    }
+
+    async fn real_protocol_with(
+        storage: Arc<ForgetfulStorage>,
+    ) -> (Arc<KademliaProtocol>, Arc<CountingDidHandler>) {
+        let handler = Arc::new(CountingDidHandler::new());
+        (
+            test_protocol_with_storage(handler.clone(), false, storage).await,
+            handler,
+        )
+    }
+
     /// The network check of a STORE survives a lost question: the node asked
     /// gets it again, and the STORE is decided well before the check's
     /// deadline.
     #[tokio::test]
     async fn the_store_check_survives_a_lost_question() {
-        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        let (protocol, _) = real_protocol().await;
         serve(&protocol);
-        let (peer, contact) = raw_peer([5; ID_LEN]).await;
+        let chain = Chain::new();
+        let (peer, contact) = raw_peer(id_at(chain.key, 1)).await;
         protocol.router.write().await.add_contact(contact);
         let started = Instant::now();
         let replica = Arc::clone(&protocol);
+        let (key, record) = (chain.key, chain.version(0).to_vec());
         let store = tokio::spawn(async move {
             replica
-                .rpc_store(
-                    [2; ID_LEN],
-                    ("127.0.0.1".to_string(), 9015),
-                    [7; ID_LEN],
-                    b"one".to_vec(),
-                )
+                .rpc_store([2; ID_LEN], ("127.0.0.1".to_string(), 9015), key, record)
                 .await
         });
 
@@ -262,30 +482,41 @@ mod tests {
 
     #[tokio::test]
     async fn rpc_store_reports_idempotence_conflict_capacity_and_invalid_records() {
-        let storage = Arc::new(ForgetfulStorage::with_max_storage_bytes(-1, ID_LEN + 3));
-        let protocol =
-            test_protocol_with_storage(Arc::new(TestHandler::new(true, true)), false, storage)
-                .await;
-        give_answering_contact(&protocol, [5; ID_LEN]).await;
+        let chain = Chain::new();
+        let storage = Arc::new(ForgetfulStorage::with_max_storage_bytes(
+            -1,
+            ID_LEN + chain.version(0).len(),
+        ));
+        let (protocol, _) = real_protocol_with(storage).await;
+        give_answering_contact(&protocol, id_at(chain.key, 1)).await;
         let sender = [2; ID_LEN];
         let address = ("127.0.0.1".to_string(), 9010);
-        let key = [7; ID_LEN];
+        let v0 = chain.version(0).to_vec();
+        let again = sign(
+            &chain.doc(
+                0,
+                None,
+                chain.keys[0].public_key(),
+                chain.keys[1].public_key(),
+            ),
+            &chain.keys[0],
+        );
 
         assert_eq!(
             protocol
-                .rpc_store(sender, address.clone(), key, b"one".to_vec())
+                .rpc_store(sender, address.clone(), chain.key, v0.clone())
                 .await,
             Some(StoreStatus::Stored)
         );
         assert_eq!(
             protocol
-                .rpc_store(sender, address.clone(), key, b"one".to_vec())
+                .rpc_store(sender, address.clone(), chain.key, v0)
                 .await,
             Some(StoreStatus::AlreadyStored)
         );
         assert_eq!(
             protocol
-                .rpc_store(sender, address.clone(), key, b"two".to_vec())
+                .rpc_store(sender, address.clone(), chain.key, again)
                 .await,
             Some(StoreStatus::Conflict)
         );
@@ -293,22 +524,31 @@ mod tests {
         // so the node would ask that contact, which does not exist here.
         let contact = Node::new(sender, Some(address.0.clone()), Some(address.1));
         protocol.router.write().await.remove_contact(&contact);
+        let other = Chain::new();
         assert_eq!(
             protocol
-                .rpc_store(sender, address, [8; ID_LEN], b"new".to_vec())
+                .rpc_store(
+                    sender,
+                    address.clone(),
+                    other.key,
+                    other.version(0).to_vec()
+                )
                 .await,
             Some(StoreStatus::CapacityExceeded)
         );
 
-        let invalid_protocol = test_protocol(Arc::new(TestHandler::new(false, false)), false).await;
-        give_answering_contact(&invalid_protocol, [6; ID_LEN]).await;
+        let bad_chain = Chain::new();
+        let mut bad = bad_chain.version(0).to_vec();
+        bad[20] ^= 1;
+        let (invalid_protocol, _) = real_protocol().await;
+        give_answering_contact(&invalid_protocol, id_at(bad_chain.key, 1)).await;
         assert_eq!(
             invalid_protocol
                 .rpc_store(
                     [3; ID_LEN],
                     ("127.0.0.1".to_string(), 9011),
-                    [9; ID_LEN],
-                    b"bad".to_vec(),
+                    bad_chain.key,
+                    bad
                 )
                 .await,
             Some(StoreStatus::InvalidRecord)
@@ -320,31 +560,33 @@ mod tests {
     /// does not answer.
     #[tokio::test]
     async fn store_to_a_node_that_knows_nobody_gets_no_answer() {
-        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        let (protocol, _) = real_protocol().await;
+        let chain = Chain::new();
         assert_eq!(
             protocol
                 .rpc_store(
                     [2; ID_LEN],
                     ("127.0.0.1".to_string(), 9012),
-                    [7; ID_LEN],
-                    b"one".to_vec()
+                    chain.key,
+                    chain.version(0).to_vec()
                 )
                 .await,
             None
         );
-        assert_eq!(protocol.storage.get(&[7; ID_LEN]), None);
+        assert_eq!(protocol.storage.get(&chain.key), None);
         #[cfg(feature = "counters")]
         assert_eq!(protocol.counters().checks.nobody_to_ask, 1);
     }
 
-    /// An empty replica refuses a record that does not belong to the key before
-    /// asking the network: the binding costs a JSON parse, the lookup a message
-    /// to every node close to the key. The signature is not checked either.
+    /// An empty replica refuses a record that does not have the form of a
+    /// record of the key before asking the network: the form costs a JSON
+    /// parse, the lookup a message to every node close to the key. The
+    /// signature is not checked either.
     #[tokio::test]
     async fn a_record_bound_to_another_key_is_refused_before_the_network_check() {
-        let handler = Arc::new(TestHandler::new(true, true).with_key_binding_result(false));
-        let protocol = test_protocol(handler.clone(), false).await;
-        let (peer, contact) = raw_peer([5; ID_LEN]).await;
+        let (protocol, handler) = real_protocol().await;
+        let (chain, other) = (Chain::new(), Chain::new());
+        let (peer, contact) = raw_peer(id_at(other.key, 1)).await;
         protocol.router.write().await.add_contact(contact);
         let started = Instant::now();
 
@@ -353,8 +595,8 @@ mod tests {
                 .rpc_store(
                     [2; ID_LEN],
                     ("127.0.0.1".to_string(), 9016),
-                    [7; ID_LEN],
-                    b"bound to another key".to_vec(),
+                    other.key,
+                    chain.version(0).to_vec(),
                 )
                 .await,
             Some(StoreStatus::InvalidRecord)
@@ -370,10 +612,10 @@ mod tests {
                 .is_none(),
             "the replica asked the network about a record bound to another key"
         );
-        assert_eq!(handler.self_signed_calls.load(Ordering::Relaxed), 0);
-        assert_eq!(protocol.storage.get(&[7; ID_LEN]), None);
+        assert_eq!(handler.verified(), 0);
+        assert_eq!(protocol.storage.get(&other.key), None);
         #[cfg(feature = "counters")]
-        assert_eq!(protocol.counters().checks.unbound, 1);
+        assert_eq!(protocol.counters().checks.invalid, 1);
     }
 
     /// The counters of a STORE check: the question and its copy, sent to a
@@ -384,19 +626,16 @@ mod tests {
         use crate::fragmentation::encode_fragments;
         use crate::protocol::messages::Frame;
 
-        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        let (protocol, _) = real_protocol().await;
         serve(&protocol);
-        let (peer, contact) = raw_peer([5; ID_LEN]).await;
+        let chain = Chain::new();
+        let (peer, contact) = raw_peer(id_at(chain.key, 1)).await;
         protocol.router.write().await.add_contact(contact);
         let replica = Arc::clone(&protocol);
+        let (key, record) = (chain.key, chain.version(0).to_vec());
         let store = tokio::spawn(async move {
             replica
-                .rpc_store(
-                    [2; ID_LEN],
-                    ("127.0.0.1".to_string(), 9020),
-                    [7; ID_LEN],
-                    b"one".to_vec(),
-                )
+                .rpc_store([2; ID_LEN], ("127.0.0.1".to_string(), 9020), key, record)
                 .await
         });
 
@@ -426,9 +665,10 @@ mod tests {
         assert_eq!(counters.sent.len(), 1, "{:?}", counters.sent);
         assert_eq!(counters.resends_to_unmeasured_peers, 1);
         assert_eq!(counters.resends_to_measured_peers, 0);
-        assert_eq!(counters.checks.none_or_same, 1);
+        assert_eq!(counters.checks.accepted, 1);
         assert_eq!(counters.checks.rounds, vec![1, 0, 0, 0, 0]);
         assert_eq!(counters.checks.duration_ms.iter().sum::<u64>(), 1);
+        assert_eq!(counters.checks.fetches, 0);
     }
 
     /// Answer every request that reaches `socket` with `answer`, until no
@@ -445,42 +685,38 @@ mod tests {
 
     /// A replica among the nodes closest to the key, by its own table, must
     /// hear all of them anyway: it asks them all at once rather than α at a
-    /// time. None of them answers, so the STORE is still refused.
+    /// time. None of them answers, so the STORE gets no answer.
     #[tokio::test]
     async fn an_empty_replica_asks_every_known_neighbour_at_once() {
-        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        let (protocol, _) = real_protocol().await;
         serve(&protocol);
-        let key = [7; ID_LEN];
+        let chain = Chain::new();
         let mut peers = vec![];
-        for id in [6u8, 5, 4, 3, 0] {
-            let (peer, contact) = raw_peer([id; ID_LEN]).await;
+        for distance in [1u8, 2, 3, 4, 7] {
+            let (peer, contact) = raw_peer(id_at(chain.key, distance)).await;
             protocol.router.write().await.add_contact(contact);
-            peers.push((id, peer));
+            peers.push((distance, peer));
         }
         let started = tokio::time::Instant::now();
         let replica = Arc::clone(&protocol);
+        let (key, record) = (chain.key, chain.version(0).to_vec());
         let store = tokio::spawn(async move {
             replica
-                .rpc_store(
-                    [2; ID_LEN],
-                    ("127.0.0.1".to_string(), 9017),
-                    key,
-                    b"one".to_vec(),
-                )
+                .rpc_store([2; ID_LEN], ("127.0.0.1".to_string(), 9017), key, record)
                 .await
         });
 
         let asked_by = started + Duration::from_millis(300);
         let mut not_asked = vec![];
-        for (id, peer) in &peers {
+        for (distance, peer) in &peers {
             let wait = asked_by.saturating_duration_since(tokio::time::Instant::now());
             match try_read_frame(peer, wait).await {
                 Some((frame, _)) => assert!(
-                    matches!(frame.message, RpcMessage::FindHash { key: asked, .. } if asked == key),
+                    matches!(frame.message, RpcMessage::FindHash { key: asked, .. } if asked == chain.key),
                     "{:?}",
                     frame.message
                 ),
-                None => not_asked.push(*id),
+                None => not_asked.push(*distance),
             }
         }
         assert!(
@@ -488,7 +724,7 @@ mod tests {
             "neighbours not asked within 300 ms: {not_asked:?}"
         );
         assert_eq!(store.await.unwrap(), None);
-        assert_eq!(protocol.storage.get(&key), None);
+        assert_eq!(protocol.storage.get(&chain.key), None);
     }
 
     /// A node that knows k nodes closer to the key than itself is not among the
@@ -496,70 +732,64 @@ mod tests {
     /// nodes it knows would be replaced at the next hop.
     #[tokio::test]
     async fn a_node_far_from_the_key_asks_alpha_neighbours_at_a_time() {
+        let chain = Chain::new();
         let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
         let protocol = Arc::new(KademliaProtocol::new(
-            Node::from_id([1; ID_LEN]),
+            Node::from_id(id_at(chain.key, 0x80)),
             socket,
             Arc::new(ForgetfulStorage::new(-1)),
             5,
             3,
-            Arc::new(TestHandler::new(true, true)),
+            Arc::new(CountingDidHandler::new()),
             None,
         ));
         serve(&protocol);
-        let key = [7; ID_LEN];
         // Five nodes, all closer to the key than this node, from the closest.
         let mut peers = vec![];
-        for first in [6u8, 5, 4, 3, 2] {
-            let mut id = [0; ID_LEN];
-            id[0] = first;
-            let (peer, contact) = raw_peer(id).await;
+        for distance in [1u8, 2, 3, 4, 5] {
+            let (peer, contact) = raw_peer(id_at(chain.key, distance)).await;
             protocol.router.write().await.add_contact(contact);
-            peers.push((first, peer));
+            peers.push((distance, peer));
         }
         let started = tokio::time::Instant::now();
         let replica = Arc::clone(&protocol);
+        let (key, record) = (chain.key, chain.version(0).to_vec());
         let store = tokio::spawn(async move {
             replica
-                .rpc_store(
-                    [2; ID_LEN],
-                    ("127.0.0.1".to_string(), 9019),
-                    key,
-                    b"one".to_vec(),
-                )
+                .rpc_store([2; ID_LEN], ("127.0.0.1".to_string(), 9019), key, record)
                 .await
         });
 
         let asked_by = started + Duration::from_millis(300);
         let mut asked = vec![];
-        for (first, peer) in &peers {
+        for (distance, peer) in &peers {
             let wait = asked_by.saturating_duration_since(tokio::time::Instant::now());
             if try_read_frame(peer, wait).await.is_some() {
-                asked.push(*first);
+                asked.push(*distance);
             }
         }
-        assert_eq!(asked, vec![6, 5, 4]);
+        assert_eq!(asked, vec![1, 2, 3]);
         assert_eq!(store.await.unwrap(), None);
-        assert_eq!(protocol.storage.get(&key), None);
+        assert_eq!(protocol.storage.get(&chain.key), None);
     }
 
     /// A neighbour answers the STORE check with made-up nodes closer to the key,
     /// all at its own address, that hold nothing. They must not push out of the
-    /// check a node the replica already knows, which holds another record.
+    /// check a node the replica already knows, which holds another version 1.
     #[tokio::test]
     async fn a_neighbour_cannot_push_a_known_holder_out_of_the_store_check() {
-        let handler = Arc::new(TestHandler::new(true, true));
-        let protocol = test_protocol(handler.clone(), false).await;
+        let (protocol, handler) = real_protocol().await;
         serve(&protocol);
-        let key = [7; ID_LEN];
+        let chain = Chain::with_versions(1);
+        let key = chain.key;
 
         // From the closest to the key: an empty node, the liar, another empty
         // node, the holder, a third empty node.
-        let (liar, liar_contact) = raw_peer([5; ID_LEN]).await;
-        let (holder, holder_contact) = raw_peer([3; ID_LEN]).await;
+        let (liar, liar_contact) = raw_peer(id_at(key, 2)).await;
+        let (holder, holder_contact) = raw_peer(id_at(key, 4)).await;
         let mut contacts = vec![liar_contact.clone(), holder_contact];
-        for id in [6u8, 4, 0] {
-            let (empty, contact) = raw_peer([id; ID_LEN]).await;
+        for distance in [1u8, 3, 7] {
+            let (empty, contact) = raw_peer(id_at(key, distance)).await;
             answer_every_request(empty, RpcMessage::FindValueNodes { nodes: vec![] });
             contacts.push(contact);
         }
@@ -578,28 +808,34 @@ mod tests {
         answer_every_request(
             holder,
             RpcMessage::FindHashHit {
-                hash: record_hash(b"the owner's record"),
+                seq: 1,
+                hash: record_hash(chain.version(1)),
             },
         );
 
+        let attacker = new_key();
+        let forged = sign(
+            &chain.doc(
+                1,
+                Some(chain.version(0)),
+                attacker.public_key(),
+                new_key().public_key(),
+            ),
+            &attacker,
+        );
         assert_eq!(
             protocol
-                .rpc_store(
-                    [2; ID_LEN],
-                    ("127.0.0.1".to_string(), 9018),
-                    key,
-                    b"a forged record".to_vec(),
-                )
+                .rpc_store([2; ID_LEN], ("127.0.0.1".to_string(), 9018), key, forged)
                 .await,
             Some(StoreStatus::Conflict)
         );
-        assert_eq!(handler.self_signed_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(handler.verified(), 0);
         assert_eq!(protocol.storage.get(&key), None);
     }
 
     #[tokio::test]
     async fn invalid_store_does_not_remove_spoofed_sender_from_routing_table() {
-        let protocol = test_protocol(Arc::new(TestHandler::new(false, false)), false).await;
+        let (protocol, _) = real_protocol().await;
         let sender_id = [14; ID_LEN];
         let registered = Node::new(sender_id, Some("127.0.0.1".into()), Some(9013));
         protocol
@@ -607,11 +843,14 @@ mod tests {
             .write()
             .await
             .add_contact(registered.clone());
-        // The node holds a record for the key, so each STORE is verified
-        // without asking the network, whose contact here never answers.
+        // The node holds version 0, so each STORE of version 1 is decided
+        // locally, without asking the network, whose contact never answers.
+        let chain = Chain::with_versions(1);
         protocol
             .storage
-            .set([15; ID_LEN].to_vec(), b"stored".to_vec());
+            .set(chain.key.to_vec(), chain.version(0).to_vec());
+        let mut invalid = chain.version(1).to_vec();
+        invalid[20] ^= 1;
 
         for _ in 0..3 {
             assert_eq!(
@@ -619,8 +858,8 @@ mod tests {
                     .rpc_store(
                         sender_id,
                         ("127.0.0.1".into(), 9999),
-                        [15; ID_LEN],
-                        b"invalid".to_vec(),
+                        chain.key,
+                        invalid.clone()
                     )
                     .await,
                 Some(StoreStatus::InvalidRecord)

@@ -41,6 +41,18 @@ impl MlDsa65KeyPair {
             .map_err(|_| VerifierError::VerificationFailed("key generation failed".into()))
     }
 
+    /// Bytes of a seed, from the crate: FIPS 204 builds a key pair from 32.
+    pub const SEED_LEN: usize = 32;
+
+    /// The key pair of a 32-byte seed (FIPS 204, `ML-DSA.KeyGen_internal`): the
+    /// same seed always gives the same key pair. The owner keeps the next key
+    /// as its seed (ADR 0005, open point 22).
+    pub fn from_seed(seed: &[u8]) -> Result<Self, VerifierError> {
+        PqdsaKeyPair::from_seed(&ML_DSA_65_SIGNING, seed)
+            .map(Self)
+            .map_err(|_| VerifierError::InvalidKeyLength(seed.len()))
+    }
+
     /// The key pair of an expanded private key, as `private_key` returns it.
     pub fn from_private_key(private_key: &[u8]) -> Result<Self, VerifierError> {
         PqdsaKeyPair::from_raw_private_key(&ML_DSA_65_SIGNING, private_key)
@@ -151,6 +163,29 @@ mod tests {
             .verify(key.public_key(), &signature[..signature.len() - 1], b"msg")
             .is_err());
         assert!(MlDsa65Signer.sign(&[0u8; 2560], b"msg").is_err());
+    }
+
+    /// A seed gives one key pair, the same every time; another seed another.
+    #[test]
+    fn a_seed_gives_the_same_key_pair_every_time() {
+        let seed = [7u8; MlDsa65KeyPair::SEED_LEN];
+        let first = MlDsa65KeyPair::from_seed(&seed).unwrap();
+        let again = MlDsa65KeyPair::from_seed(&seed).unwrap();
+        assert_eq!(first.public_key(), again.public_key());
+        assert_eq!(first.private_key().unwrap(), again.private_key().unwrap());
+        assert_eq!(first.public_key().len(), public_key_len());
+        let other = MlDsa65KeyPair::from_seed(&[8u8; MlDsa65KeyPair::SEED_LEN]).unwrap();
+        assert_ne!(first.public_key(), other.public_key());
+        let signature = again.sign(b"msg").unwrap();
+        assert!(MlDsa65SignatureVerifier
+            .verify(first.public_key(), &signature, b"msg")
+            .unwrap());
+        for wrong in [31, 33, 0] {
+            assert!(
+                MlDsa65KeyPair::from_seed(&vec![7u8; wrong]).is_err(),
+                "{wrong} bytes"
+            );
+        }
     }
 
     /// The same key as a DER `SubjectPublicKeyInfo` verifies in `aws-lc-rs`,

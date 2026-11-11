@@ -7,21 +7,18 @@
 //! Covered invariants:
 //!   1. Tampered payload → rejected at set() (wrong sig over modified bytes)
 //!   2. Algorithm field injection → rejected (Ed25519 field, ML-DSA-65 sig)
-//!   3. Key rotation downgrade attack → rejected after v1→v2 rotation,
-//!      an attacker who holds sk1 cannot submit v1 as "new record" to
-//!      replace v2 (they would need sk2, which they do not possess)
-//!   4. Key rotation chain: only the current key owner can authorise the next
-//!      rotation — old keys are revoked after each rotation.
+//!   3. Downgrade after rotations → rejected: a replica holding version 2
+//!      refuses version 1, sent again by anyone, as stale (ADR 0005)
+//!   4. Pre-rotation: only the key the previous version committed to signs
+//!      the next one; a key revealed by an earlier version cannot.
 //!
 //! Ports: 15860–15865, 15886–15887.
 
 #[path = "common.rs"]
 mod common;
 
-use auth_kademlia_rs::crypto::mldsa::{self as mldsa, MlDsa65KeyPair};
-use common::{
-    build_did_document, build_signed_record, generate_did_iiot, make_record, rt, start_node,
-};
+use auth_kademlia_rs::crypto::mldsa;
+use common::{make_record, rt, start_node, Chain};
 
 /// A record whose payload bytes have been tampered with must be rejected.
 /// The signature was produced over the original bytes — any modification
@@ -77,12 +74,9 @@ fn algorithm_field_injection_rejected() {
     });
 }
 
-/// After a v1→v2 key rotation, an attacker who still holds sk1 cannot
-/// substitute v1 back as the "new record". Producing a valid auth_signature
-/// over v1 requires signing with sk2 — which the attacker does not have.
-///
-/// AGENTS.md invariant: "downgrade attacks are impossible: to submit record_v1
-/// as 'new' when record_v2 is stored, an attacker would need to sign with sk_v2."
+/// After two rotations, version 1 sent again, through `update` or as a STORE,
+/// is refused as stale by every replica holding version 2: an older `seq`
+/// never replaces a newer one, whoever holds the keys it was signed with.
 ///
 /// Ports: 15862–15863, 15886.
 #[test]
@@ -99,62 +93,39 @@ fn downgrade_attack_after_rotation_rejected() {
             .await;
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-        // v1: owner publishes with keypair_1.
-        let sk1 = MlDsa65KeyPair::generate().unwrap();
-        let pk1 = sk1.public_key().to_vec();
-        let did = generate_did_iiot();
-        let key = did.split(':').next_back().unwrap().to_string();
-        let doc_v1 = build_did_document(&did, &pk1);
-        let record_v1 = build_signed_record(&doc_v1, &sk1, "ML-DSA-65");
-
+        let chain = Chain::with_versions(2);
+        let key = chain.did.clone();
         assert_eq!(
-            node_a.set(&key, record_v1.clone()).await,
+            node_a.set(&key, chain.version(0)).await,
             Some(true),
-            "v1 store must succeed"
+            "v0 store must succeed"
         );
-
-        // Legitimate v1→v2 rotation: auth_sig = sign(record_v2, sk1).
-        let sk2 = MlDsa65KeyPair::generate().unwrap();
-        let pk2 = sk2.public_key().to_vec();
-        let doc_v2 = build_did_document(&did, &pk2);
-        let record_v2 = build_signed_record(&doc_v2, &sk2, "ML-DSA-65");
-        let auth_v1_to_v2 = sk1.sign(&record_v2).unwrap();
-
-        assert_eq!(
-            node_a
-                .update(&key, record_v2.clone(), Some(auth_v1_to_v2))
-                .await,
-            Some(true),
-            "legitimate rotation v1→v2 must succeed"
-        );
-
-        // Downgrade attempt: attacker tries to submit v1 as "update" to v2.
-        // They produce auth_sig = sign(record_v1, sk1) — using the key they still hold.
-        // Protocol checks: verify(pk2, auth_sig, record_v1) → fails (sk1 ≠ sk2).
-        let fake_auth = sk1.sign(&record_v1).unwrap();
+        for seq in 1..=2 {
+            assert_eq!(
+                node_a
+                    .update(&key, chain.version(seq), chain.earlier(seq))
+                    .await,
+                Some(true),
+                "legitimate rotation to version {seq} must succeed"
+            );
+        }
 
         let downgrade = node_b
-            .update(&key, record_v1.clone(), Some(fake_auth))
+            .update(&key, chain.version(1), chain.earlier(1))
             .await;
-        assert!(
-            downgrade.is_none(),
-            "downgrade attack must be rejected — attacker cannot produce auth_sig with sk2"
-        );
-
-        // v2 must still be the current record — the downgrade had no effect.
-        let current = node_a.get(&key).await;
+        assert_ne!(downgrade, Some(true), "a downgrade must not be confirmed");
         assert_eq!(
-            current,
-            Some(record_v2),
-            "v2 must remain after failed downgrade attempt"
+            node_a.get(&key).await,
+            Some(chain.version(2)),
+            "version 2 must remain after the downgrade attempt"
         );
     });
 }
 
-/// After v1→v2 rotation, the old key (sk1) cannot authorise a third rotation.
-/// Only sk2 (the current owner) can produce a valid auth_signature for v3.
-///
-/// Also verifies the positive case: sk2 does authorise v2→v3.
+/// A key revealed by an earlier version cannot sign the next version: only
+/// the key the current version committed to can (pre-rotation). The owner's
+/// node refuses the forged version before sending it; the genuine one is
+/// accepted.
 ///
 /// Ports: 15864–15865, 15887.
 #[test]
@@ -171,64 +142,51 @@ fn revoked_key_cannot_authorise_further_rotation() {
             .await;
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-        // v1 → v2 rotation (legitimate).
-        let sk1 = MlDsa65KeyPair::generate().unwrap();
-        let pk1 = sk1.public_key().to_vec();
-        let did = generate_did_iiot();
-        let key = did.split(':').next_back().unwrap().to_string();
-        let doc_v1 = build_did_document(&did, &pk1);
-        let record_v1 = build_signed_record(&doc_v1, &sk1, "ML-DSA-65");
-
+        let chain = Chain::with_versions(3);
+        let key = chain.did.clone();
         assert_eq!(
-            node_a.set(&key, record_v1.clone()).await,
+            node_a.set(&key, chain.version(0)).await,
             Some(true),
-            "v1 store must succeed"
+            "v0 store must succeed"
         );
-
-        let sk2 = MlDsa65KeyPair::generate().unwrap();
-        let pk2 = sk2.public_key().to_vec();
-        let doc_v2 = build_did_document(&did, &pk2);
-        let record_v2 = build_signed_record(&doc_v2, &sk2, "ML-DSA-65");
-        let auth_v1_v2 = sk1.sign(&record_v2).unwrap();
         assert_eq!(
             node_a
-                .update(&key, record_v2.clone(), Some(auth_v1_v2))
+                .update(&key, chain.version(1), chain.earlier(1))
+                .await,
+            Some(true),
+            "v0→v1 rotation must succeed"
+        );
+        assert_eq!(
+            node_a
+                .update(&key, chain.version(2), chain.earlier(2))
                 .await,
             Some(true),
             "v1→v2 rotation must succeed"
         );
-
-        // Wait for the v1→v2 UPDATE RPC to propagate to both replicas.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-        // Build v3; try to authorise with the revoked sk1.
-        // node_a is used as the caller: its update_digest sends UPDATE RPCs to
-        // the replicas, which hold v2 and can verify the rotation correctly.
-        let sk3 = MlDsa65KeyPair::generate().unwrap();
-        let pk3 = sk3.public_key().to_vec();
-        let doc_v3 = build_did_document(&did, &pk3);
-        let record_v3 = build_signed_record(&doc_v3, &sk3, "ML-DSA-65");
-        let bad_auth = sk1.sign(&record_v3).unwrap();
-
-        let rejected = node_a.update(&key, record_v3.clone(), Some(bad_auth)).await;
+        // Version 3 signed with the key version 1 revealed.
+        let forged = chain.forge(3, &chain.version(2), &chain.keys[1]);
         assert!(
-            rejected.is_none(),
-            "revoked key sk1 must not authorise v2→v3 rotation"
+            node_a
+                .update(&key, forged, chain.earlier(3))
+                .await
+                .is_none(),
+            "a key revealed by version 1 must not sign version 3"
         );
 
-        // Positive case: sk2 (current owner) DOES authorise v2→v3.
-        let good_auth = sk2.sign(&record_v3).unwrap();
-        let accepted = node_a
-            .update(&key, record_v3.clone(), Some(good_auth))
-            .await;
         assert_eq!(
-            accepted,
+            node_a
+                .update(&key, chain.version(3), chain.earlier(3))
+                .await,
             Some(true),
-            "current key sk2 must authorise v2→v3 rotation"
+            "the committed key must sign version 3"
         );
-
-        let current = node_b.get(&key).await;
-        assert_eq!(current, Some(record_v3), "v3 must be the current record");
+        assert_eq!(
+            node_b.get(&key).await,
+            Some(chain.version(3)),
+            "v3 must be the current record"
+        );
 
         node_a.stop().await;
     });

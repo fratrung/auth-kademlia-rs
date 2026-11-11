@@ -10,8 +10,9 @@ pub const ID_LEN: usize = 32;
 /// use issuer-node signature verification instead of DID-owner verification.
 pub const STATUS_LIST_KEY: &str = "status-list";
 
-/// The SHA-256 digest of a UTF-8 string: the key of a DID is the digest of its
-/// UUID in canonical form.
+/// The SHA-256 digest of a UTF-8 string, such as the key of the Status List
+/// (`digest(STATUS_LIST_KEY)`). The key of a DID is its decoded suffix
+/// (ADR 0005), not a digest.
 pub fn digest(s: &str) -> [u8; ID_LEN] {
     digest_bytes(s.as_bytes())
 }

@@ -6,9 +6,9 @@ use std::sync::Arc;
 use crate::crawling::ValueSpiderCrawl;
 use crate::node::Node;
 use crate::storage::IStorage;
-use crate::utils::{digest, STATUS_LIST_KEY};
+use crate::utils::STATUS_LIST_KEY;
 
-use super::Server;
+use super::{dht_key, Server};
 
 /// Byte-identical responses a Status List GET needs, derived from `alpha`.
 pub(super) fn read_quorum(alpha: usize) -> usize {
@@ -24,7 +24,7 @@ impl Server {
     /// Returns `None` if no record is found or none passes verification.
     pub async fn get(&self, key: &str) -> Option<Vec<u8>> {
         log::info!("get({})", key);
-        let dkey = digest(key);
+        let dkey = dht_key(key)?;
         let is_status_list = key == STATUS_LIST_KEY;
         let local_value = self.storage.get(&dkey);
 

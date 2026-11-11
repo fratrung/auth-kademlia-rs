@@ -11,6 +11,8 @@
 //! - `contacts.rs`: failing and returning contacts, refresh ids;
 //! - `welcome.rs`: nodes met through a message, and their records.
 
+#[cfg(test)]
+mod acceptance_tests;
 mod client;
 mod contacts;
 mod handlers;
@@ -22,7 +24,7 @@ mod transport;
 mod welcome;
 
 pub use handlers::FindValueResult;
-pub use messages::{record_hash, RpcMessage, StoreStatus, WireNode, RECORD_HASH_LEN};
+pub use messages::{record_hash, RpcMessage, StoreStatus, UpdateStatus, WireNode, RECORD_HASH_LEN};
 use transport::{PendingMap, RequestKey};
 use welcome::WELCOME_CONCURRENCY;
 
@@ -75,10 +77,10 @@ pub struct KademliaProtocol {
     requests_in_progress: Arc<DashMap<RequestKey, ()>>,
     /// What this node sent (feature `counters`; empty without it).
     counters: Counters,
-    /// Start from a random value, not 0, so that after `stop` and `listen`
-    /// an answer or a fragment meant for the old protocol does not match a
-    /// request or a message of the new one.
-    next_msg_id: AtomicU32,
+    /// Starts from a random value, not 0, so that after `stop` and `listen` a
+    /// fragment meant for the old protocol does not match a message of the
+    /// new one. Message ids are drawn at random for each request
+    /// (`next_id`, `fresh_id`).
     next_frag_id: AtomicU32,
     reassembly: ReassemblyMap,
     last_reassembly_gc: Mutex<Instant>,
@@ -87,6 +89,10 @@ pub struct KademliaProtocol {
     tasks: StdMutex<Option<JoinSet<()>>>,
     /// Bootstrap addresses, kept so that an isolated node can rejoin.
     seeds: StdMutex<Vec<(String, u16)>>,
+    /// Testbed only: answer every `FindHash` with a made-up newer version
+    /// (`set_lying`). Not in any other build.
+    #[cfg(feature = "testbed")]
+    lying: std::sync::atomic::AtomicBool,
 }
 
 impl KademliaProtocol {
@@ -117,12 +123,13 @@ impl KademliaProtocol {
             round_trips: RoundTrips::default(),
             requests_in_progress: Arc::new(DashMap::new()),
             counters: Counters::default(),
-            next_msg_id: AtomicU32::new(rand::random()),
             next_frag_id: AtomicU32::new(rand::random()),
             reassembly: Arc::new(Mutex::new(HashMap::new())),
             last_reassembly_gc: Mutex::new(Instant::now()),
             tasks: StdMutex::new(Some(JoinSet::new())),
             seeds: StdMutex::new(Vec::new()),
+            #[cfg(feature = "testbed")]
+            lying: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -179,6 +186,21 @@ impl KademliaProtocol {
     pub fn counters(&self) -> crate::counters::CounterSnapshot {
         self.counters.snapshot()
     }
+
+    /// Testbed only: from now on, answer every `FindHash`, for any key, with
+    /// a version far ahead and a made-up hash this node never serves, to
+    /// measure what nodes that lie in `FindHash` block (ADR 0005,
+    /// Validation). Records are stored and served as usual.
+    #[cfg(feature = "testbed")]
+    pub fn set_lying(&self, lying: bool) {
+        self.lying
+            .store(lying, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(feature = "testbed")]
+    pub(crate) fn is_lying(&self) -> bool {
+        self.lying.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 #[cfg(test)]
@@ -188,18 +210,15 @@ mod tests {
 
     use super::test_support::{test_protocol, TestHandler};
 
-    /// A node that listens again does not start from the same message and
-    /// fragment ids, so an answer or a fragment sent to it before it stopped
-    /// does not match a request or a message of the new one.
+    /// A node that listens again does not start from the same fragment ids, so
+    /// a fragment sent to it before it stopped does not match a message of
+    /// the new one. Message ids are drawn at random for each request.
     #[tokio::test]
     async fn a_new_protocol_does_not_start_from_the_same_ids() {
         let handler = Arc::new(TestHandler::new(true, true));
         let first = test_protocol(handler.clone(), false).await;
         let second = test_protocol(handler, false).await;
-        assert_ne!(
-            first.next_msg_id.load(Ordering::Relaxed),
-            second.next_msg_id.load(Ordering::Relaxed)
-        );
+        assert_ne!(first.next_id(), second.next_id());
         assert_ne!(
             first.next_frag_id.load(Ordering::Relaxed),
             second.next_frag_id.load(Ordering::Relaxed)

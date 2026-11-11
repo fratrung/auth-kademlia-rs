@@ -16,15 +16,14 @@ mod common;
 use std::time::Duration;
 
 use auth_kademlia_rs::storage::IStorage;
-use auth_kademlia_rs::utils::digest;
 
-use common::{make_record, poll_until, rt, start_node_with_id};
+use common::{key_of, make_record, poll_until, rt, start_node_with_id};
 
 #[test]
 fn welcome_if_new_replicates_to_joining_node() {
     rt().block_on(async {
         let (key, record) = make_record();
-        let dkey = digest(&key);
+        let dkey = key_of(&key);
         // Next to the key but not the key itself: lookups leave out a node
         // whose id is the key, and B must find A when it checks the record.
         let mut node_a_id = dkey;

@@ -20,13 +20,14 @@ use read::read_quorum;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::error::TrySendError;
 
+use crate::auth_handler::did::key_of_did;
 use crate::auth_handler::{verify_record, SignatureVerifierHandler};
 use crate::crawling::NodeSpiderCrawl;
 use crate::node::Node;
 use crate::protocol::KademliaProtocol;
 use crate::signature_cache::SignatureCache;
 use crate::storage::{ForgetfulStorage, DEFAULT_TTL};
-use crate::utils::{digest, digest_bytes, ID_LEN};
+use crate::utils::{digest, digest_bytes, ID_LEN, STATUS_LIST_KEY};
 
 pub struct Server {
     pub ksize: usize,
@@ -39,6 +40,16 @@ pub struct Server {
     /// (rpc_store) is visible at the API layer (get/set) and vice versa.
     /// `None` when the cache is disabled.
     sig_cache: Option<Arc<SignatureCache>>,
+}
+
+/// The DHT key of `name`: the decoded suffix of a DID (ADR 0005), or the
+/// fixed key of the Status List. `None` for any other text.
+pub fn dht_key(name: &str) -> Option<[u8; ID_LEN]> {
+    if name == STATUS_LIST_KEY {
+        Some(digest(STATUS_LIST_KEY))
+    } else {
+        key_of_did(name)
+    }
 }
 
 impl Server {
@@ -227,10 +238,13 @@ impl Server {
 
     /// Verify `value` for `key` (`auth_handler::verify_record`).
     async fn verify_value(&self, key: &str, value: &[u8]) -> bool {
+        let Some(dkey) = dht_key(key) else {
+            return false;
+        };
         verify_record(
             &self.signature_handler,
             self.sig_cache.as_deref(),
-            &digest(key),
+            &dkey,
             value,
         )
         .await

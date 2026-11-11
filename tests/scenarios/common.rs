@@ -1,14 +1,16 @@
 #![allow(dead_code)]
 
+/// The record builders of the integration tests, shared with the scenarios.
+#[path = "../common/mod.rs"]
+mod shared;
+
+#[allow(unused_imports)]
+pub use shared::{key_of, new_did_record, version0, Chain};
+
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-
-use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use serde_json::{json, Value};
-use uuid::Uuid;
 
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::Server;
@@ -73,68 +75,7 @@ where
     }
 }
 
-fn sort_json_keys(v: &Value) -> Value {
-    match v {
-        Value::Object(map) => {
-            let sorted: serde_json::Map<String, Value> = map
-                .iter()
-                .collect::<std::collections::BTreeMap<_, _>>()
-                .into_iter()
-                .map(|(k, v)| (k.clone(), sort_json_keys(v)))
-                .collect();
-            Value::Object(sorted)
-        }
-        Value::Array(arr) => Value::Array(arr.iter().map(sort_json_keys).collect()),
-        other => other.clone(),
-    }
-}
-
-pub fn generate_did_iiot() -> String {
-    format!("did:iiot:{}", Uuid::new_v4())
-}
-
-pub fn build_did_document(did: &str, signing_pk: &[u8]) -> Value {
-    let signing_x = URL_SAFE_NO_PAD.encode(signing_pk);
-    json!({
-        "@context": ["https://www.w3.org/ns/did/v1"],
-        "id": did,
-        "verificationMethod": [
-            {
-                "id": format!("{}#k0", did), "type": "JsonWebKey2020", "controller": did,
-                "publicKeyJwk": { "kty": "AKP", "alg": "ML-DSA-65", "pub": signing_x }
-            }
-        ],
-        "authentication": [ format!("{}#k0", did) ],
-        "service": [{
-            "id": format!("{}#device", did),
-            "type": "DeviceAgent",
-            "serviceEndpoint": "http://example.com/device"
-        }]
-    })
-}
-
-pub fn build_signed_record(doc: &Value, secret_key: &MlDsa65KeyPair, algorithm: &str) -> Vec<u8> {
-    let doc_bytes =
-        serde_json::to_vec(&sort_json_keys(doc)).expect("DID Document serialisation failed");
-    let mut alg_field = [0u8; 12];
-    let copy_len = algorithm.len().min(12);
-    alg_field[..copy_len].copy_from_slice(&algorithm.as_bytes()[..copy_len]);
-    let sig = secret_key.sign(&doc_bytes).unwrap();
-    let sig_bytes = sig.as_slice();
-    let mut record = Vec::with_capacity(12 + sig_bytes.len() + doc_bytes.len());
-    record.extend_from_slice(&alg_field);
-    record.extend_from_slice(sig_bytes);
-    record.extend_from_slice(&doc_bytes);
-    record
-}
-
-/// Generate a random valid DID record. Returns `(dht_key, signed_record_bytes)`.
+/// Version 0 of a new DID. Returns `(did, signed_record_bytes)`.
 pub fn make_record() -> (String, Vec<u8>) {
-    let dsk = MlDsa65KeyPair::generate().unwrap();
-    let dpk = dsk.public_key().to_vec();
-    let did = generate_did_iiot();
-    let key = did.split(':').next_back().unwrap().to_string();
-    let doc = build_did_document(&did, &dpk);
-    let record = build_signed_record(&doc, &dsk, "ML-DSA-65");
-    (key, record)
+    new_did_record()
 }

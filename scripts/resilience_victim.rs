@@ -12,46 +12,31 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use auth_kademlia_rs::auth_handler::did::{canonical_bytes, derive_did, key_of_did, PLACEHOLDER};
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::Server;
 use auth_kademlia_rs::storage::IStorage;
-use auth_kademlia_rs::utils::digest;
+use auth_kademlia_rs::utils::digest_bytes;
 
 use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use serde_json::{json, Value};
-use uuid::Uuid;
+use serde_json::json;
 
 fn b64url(data: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(data)
 }
 
-/// Sorts object keys recursively so the JSON is canonical before signing.
-fn sort_json(v: &Value) -> Value {
-    match v {
-        Value::Object(m) => Value::Object(
-            m.iter()
-                .collect::<std::collections::BTreeMap<_, _>>()
-                .into_iter()
-                .map(|(k, v)| (k.clone(), sort_json(v)))
-                .collect(),
-        ),
-        Value::Array(a) => Value::Array(a.iter().map(sort_json).collect()),
-        other => other.clone(),
-    }
-}
-
-/// Builds a valid self-signed ML-DSA-65 DID record (wire format: alg ‖ sig ‖ doc).
+/// Builds version 0 of a new DID, self-signed with ML-DSA-65 (ADR 0005; wire
+/// format: alg ‖ sig ‖ doc), and returns the DID and the record.
 fn make_record() -> (String, Vec<u8>) {
     let dsk = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
     let dpk = dsk.public_key().to_vec();
-    let did = format!("did:iiot:{}", Uuid::new_v4());
-    let key = did.split(':').next_back().unwrap().to_string();
+    let next = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
+    let did = PLACEHOLDER;
 
-    let doc = json!({
+    let draft = json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
-        "id": did,
         "verificationMethod": [
             {
                 "id": format!("{}#k0", did), "type": "JsonWebKey2020",
@@ -65,10 +50,13 @@ fn make_record() -> (String, Vec<u8>) {
             "id": format!("{}#device", did),
             "type": "DeviceAgent",
             "serviceEndpoint": "http://example.com/device"
-        }]
+        }],
+        "seq": 0,
+        "nextKeyHash": b64url(&digest_bytes(next.public_key())),
     });
+    let (did, doc) = derive_did(&draft).expect("version 0 gives its DID");
 
-    let doc_bytes = serde_json::to_vec(&sort_json(&doc)).unwrap();
+    let doc_bytes = canonical_bytes(&doc).expect("a DID Document in canonical form");
     let sig = dsk.sign(&doc_bytes).expect("ML-DSA-65 signing");
 
     let mut alg = [0u8; 12];
@@ -78,7 +66,7 @@ fn make_record() -> (String, Vec<u8>) {
     record.extend_from_slice(&alg);
     record.extend_from_slice(sig.as_slice());
     record.extend_from_slice(&doc_bytes);
-    (key, record)
+    (did, record)
 }
 
 fn main() {
@@ -143,7 +131,8 @@ async fn run() {
             .unwrap();
 
     for (key, record) in &records {
-        server.storage.set(digest(key).to_vec(), record.clone());
+        let key = key_of_did(key).expect("a DID made by make_record");
+        server.storage.set(key.to_vec(), record.clone());
     }
     println!("[victim] Seeded {seed_count} records. Ready.\n");
 

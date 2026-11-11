@@ -1,6 +1,7 @@
-# DEMO_DID_UUID is read from the .env file in the same directory.
-# peer1 publishes under that key; peer2 retrieves it.
-# To change the demo DID, edit .env and restart with `docker compose up --build`.
+# peer1 publishes version 0 of a new DID and writes the DID to /shared/did;
+# peer2 waits for that file and retrieves the record (ADR 0005). The DID is
+# the hash of the first document, so it changes on every run: like a real
+# verifier, the retriever learns it from outside, here the shared volume.
 
 services:
   seed:
@@ -23,8 +24,9 @@ services:
       - NODE_PORT=5679
       - BOOTSTRAP_ADDR=172.20.0.10:5678
       - ROLE=publisher
-      - FIXED_DID_UUID=${DEMO_DID_UUID}
       - RUST_LOG=info
+    volumes:
+      - did_share:/shared
     networks:
       dht_net:
         ipv4_address: 172.20.0.11
@@ -38,8 +40,9 @@ services:
       - NODE_PORT=5680
       - BOOTSTRAP_ADDR=172.20.0.10:5678
       - ROLE=retriever
-      - RETRIEVE_KEY=${DEMO_DID_UUID}
       - RUST_LOG=info
+    volumes:
+      - did_share:/shared
     networks:
       dht_net:
         ipv4_address: 172.20.0.12
@@ -59,6 +62,14 @@ services:
         ipv4_address: 172.20.0.13
     depends_on:
       - seed
+
+# In memory (tmpfs): emptied once no container uses it, so a retriever never
+# reads the DID of an earlier run.
+volumes:
+  did_share:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
 
 networks:
   dht_net:

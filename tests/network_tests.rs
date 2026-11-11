@@ -45,8 +45,8 @@ use auth_kademlia_rs::storage::IStorage;
 use auth_kademlia_rs::utils::{digest, ID_LEN};
 
 use common::{
-    build_did_document, build_signed_record, generate_did_iiot, start_node,
-    start_node_with_max_storage_bytes,
+    build_signed_record, key_of, new_did_record, start_node, start_node_with_max_storage_bytes,
+    version0, Chain,
 };
 
 /// Two nodes bootstrap from each other and end up in each other's routing table.
@@ -86,13 +86,8 @@ async fn test_set_on_node_a_and_get_from_node_b() {
         .await;
     sleep(Duration::from_millis(200)).await;
 
-    // Build a valid signed DID record.
-    let dsk = MlDsa65KeyPair::generate().unwrap();
-    let dpk = dsk.public_key().to_vec();
-    let did = generate_did_iiot();
-    let doc = build_did_document(&did, &dpk);
-    let key = did.split(':').next_back().unwrap().to_string();
-    let record = build_signed_record(&doc, &dsk, "ML-DSA-65");
+    // Version 0 of a new DID.
+    let (key, record) = new_did_record();
 
     // Node A publishes the record.
     let store_result = node_a.set(&key, record.clone()).await;
@@ -124,12 +119,9 @@ async fn test_set_is_idempotent_but_rejects_conflicting_value() {
         .await;
     sleep(Duration::from_millis(200)).await;
 
-    let dsk = MlDsa65KeyPair::generate().unwrap();
-    let dpk = dsk.public_key().to_vec();
-    let did = generate_did_iiot();
-    let doc = build_did_document(&did, &dpk);
-    let key = did.split(':').next_back().unwrap().to_string();
-    let record = build_signed_record(&doc, &dsk, "ML-DSA-65");
+    let chain = Chain::new();
+    let key = chain.did.clone();
+    let record = chain.version(0);
 
     // First set must succeed.
     let first = node.set(&key, record.clone()).await;
@@ -139,11 +131,9 @@ async fn test_set_is_idempotent_but_rejects_conflicting_value() {
     let second = node.set(&key, record.clone()).await;
     assert_eq!(second, Some(true), "an identical retry must be idempotent");
 
-    // A different valid record for the same DHT key remains a conflict.
-    let other_dsk = MlDsa65KeyPair::generate().unwrap();
-    let other_dpk = other_dsk.public_key().to_vec();
-    let other_doc = build_did_document(&did, &other_dpk);
-    let conflicting_record = build_signed_record(&other_doc, &other_dsk, "ML-DSA-65");
+    // Another valid record at the same place, the same version 0 signed
+    // again, remains a conflict.
+    let conflicting_record = chain.signed_again(0);
     assert!(
         node.set(&key, conflicting_record).await.is_none(),
         "immutable records must reject different bytes for an occupied key"
@@ -152,11 +142,9 @@ async fn test_set_is_idempotent_but_rejects_conflicting_value() {
     node.stop().await;
 }
 
-/// A DID owner rotates their key using the `update` operation:
-///   1. Store old record (signed with old keypair).
-///   2. Build new record (signed with new keypair).
-///   3. auth_sig = Sign(new_record_bytes, old_secret_key) — proves ownership.
-///   4. `update` succeeds; subsequent `get` returns the new record.
+/// A DID owner rotates its key with `update`: version 1 is signed by the key
+/// version 0 committed to, and carries no other authorization. Every node then
+/// returns version 1.
 #[tokio::test]
 async fn test_update_did_record_key_rotation() {
     let mut node1 = start_node(15730).await;
@@ -171,59 +159,23 @@ async fn test_update_did_record_key_rotation() {
         .await;
     sleep(Duration::from_millis(300)).await;
 
-    // ── Step 1: generate old keypair and publish original record ──────────────
-    let old_sk = MlDsa65KeyPair::generate().unwrap();
-    let old_pk = old_sk.public_key().to_vec();
-    let did = generate_did_iiot();
-    let key = did.split(':').next_back().unwrap().to_string();
-    let old_doc = build_did_document(&did, &old_pk);
-    let old_record = build_signed_record(&old_doc, &old_sk, "ML-DSA-65");
-
-    let stored = node2.set(&key, old_record.clone()).await;
+    let chain = Chain::with_versions(1);
+    let key = chain.did.clone();
+    let stored = node2.set(&key, chain.version(0)).await;
     assert!(stored.unwrap_or(false), "initial store must succeed");
 
-    // ── Step 2: generate new keypair and build new record ─────────────────────
-    let new_sk = MlDsa65KeyPair::generate().unwrap();
-    let new_pk = new_sk.public_key().to_vec();
-    let new_doc = build_did_document(&did, &new_pk);
-    let new_record = build_signed_record(&new_doc, &new_sk, "ML-DSA-65");
-
-    // ── Step 3: auth_sig proves old owner authorises this rotation ────────────
-    // The protocol verifies: old_pub_key.verify(new_record, auth_sig)
-    let auth_sig_ds = old_sk.sign(&new_record).unwrap();
-    let auth_sig = auth_sig_ds.as_slice().to_vec();
-
-    // ── Step 4: update via node3 ──────────────────────────────────────────────
-    let updated = node3.update(&key, new_record.clone(), Some(auth_sig)).await;
+    let updated = node3.update(&key, chain.version(1), chain.earlier(1)).await;
     assert!(updated.unwrap_or(false), "key-rotation update must succeed");
 
-    // ── Step 5: all nodes must return the NEW record ─────────────────────────
     // Give the network a moment to propagate the update.
     sleep(Duration::from_millis(500)).await;
-
-    // node1 — neutral observer, verifies network-wide propagation.
-    let from_node1 = node1.get(&key).await;
-    assert!(
-        from_node1.is_some(),
-        "node1 must return the new record after update"
-    );
-    assert_eq!(
-        from_node1.unwrap(),
-        new_record,
-        "node1: retrieved record must match the new record"
-    );
-
-    // node2 — original storing node; must no longer serve the old record.
-    let from_node2 = node2.get(&key).await;
-    assert!(
-        from_node2.is_some(),
-        "node2 must return the new record after update"
-    );
-    assert_eq!(
-        from_node2.unwrap(),
-        new_record,
-        "node2: old record must be replaced by the new one"
-    );
+    for (name, node) in [("node1", &node1), ("node2", &node2)] {
+        assert_eq!(
+            node.get(&key).await,
+            Some(chain.version(1)),
+            "{name} must return version 1 after the update"
+        );
+    }
 
     node1.stop().await;
     node2.stop().await;
@@ -236,16 +188,9 @@ async fn test_update_did_record_key_rotation() {
 async fn test_invalid_signature_record_rejected_on_set() {
     let mut node = start_node(15750).await;
 
-    let _correct_sk = MlDsa65KeyPair::generate().unwrap();
-    let pk = _correct_sk.public_key().to_vec();
-    let wrong_sk = MlDsa65KeyPair::generate().unwrap(); // different secret key — mismatch!
-    let did = generate_did_iiot();
-    let key = did.split(':').next_back().unwrap().to_string();
-
-    // Build a record: DID Doc embeds `pk` (key A's public key) but the
-    // signature is produced with `wrong_sk` (key B's secret key).
-    let doc = build_did_document(&did, &pk);
-    let invalid_record = build_signed_record(&doc, &wrong_sk, "ML-DSA-65");
+    let correct = MlDsa65KeyPair::generate().unwrap();
+    let wrong = MlDsa65KeyPair::generate().unwrap(); // different secret key — mismatch!
+    let (key, invalid_record) = version0(correct.public_key(), &wrong);
 
     let result = node.set(&key, invalid_record).await;
     assert!(
@@ -256,26 +201,20 @@ async fn test_invalid_signature_record_rejected_on_set() {
     node.stop().await;
 }
 
-/// A valid self-signed record cannot be stored under a key derived from a
-/// different DID UUID.
+/// A valid self-signed record cannot be stored, or read, under another DID.
 #[tokio::test]
 async fn test_valid_record_rejected_under_another_did_key() {
     let mut node = start_node(15897).await;
-    let sk = MlDsa65KeyPair::generate().unwrap();
-    let pk = sk.public_key().to_vec();
-    let record_did = generate_did_iiot();
-    let requested_did = generate_did_iiot();
-    let requested_key = requested_did.split(':').next_back().unwrap().to_string();
-    let doc = build_did_document(&record_did, &pk);
-    let record = build_signed_record(&doc, &sk, "ML-DSA-65");
+    let (_, record) = new_did_record();
+    let (requested_did, _) = new_did_record();
 
     assert!(
-        node.set(&requested_key, record.clone()).await.is_none(),
-        "set must reject a valid DID Document submitted under another UUID"
+        node.set(&requested_did, record.clone()).await.is_none(),
+        "set must reject a valid DID Document submitted under another DID"
     );
 
-    node.storage.set(digest(&requested_key).to_vec(), record);
-    assert!(node.get(&requested_key).await.is_none());
+    node.storage.set(key_of(&requested_did).to_vec(), record);
+    assert!(node.get(&requested_did).await.is_none());
 
     node.stop().await;
 }
@@ -295,11 +234,8 @@ async fn test_bootstrap_unreachable_peer_returns_empty() {
     );
 }
 
-/// `update` must return None when the submitted new record has a valid
-/// auth_signature (proving ownership of the old key) but an invalid
-/// self-signature (the embedded public key does not match the signing key).
-///
-/// This exercises the rpc_update path on a live three-replica setup.
+/// `update` must return None when the new version names the committed key but
+/// is not signed by it: its self-signature is invalid.
 #[tokio::test]
 async fn test_update_rejected_when_new_record_self_sig_invalid() {
     let mut node1 = start_node(15780).await;
@@ -314,57 +250,46 @@ async fn test_update_rejected_when_new_record_self_sig_invalid() {
         .await;
     sleep(Duration::from_millis(200)).await;
 
-    // Store a valid original record on node1.
-    let old_sk = MlDsa65KeyPair::generate().unwrap();
-    let old_pk = old_sk.public_key().to_vec();
-    let did = generate_did_iiot();
-    let key = did.split(':').next_back().unwrap().to_string();
-    let old_doc = build_did_document(&did, &old_pk);
-    let old_record = build_signed_record(&old_doc, &old_sk, "ML-DSA-65");
-
-    let stored = node1.set(&key, old_record.clone()).await;
+    let chain = Chain::with_versions(1);
+    let key = chain.did.clone();
+    let stored = node1.set(&key, chain.version(0)).await;
     assert!(stored.unwrap_or(false), "initial store must succeed");
 
-    // Build a new record where the DID Document embeds new_pk but the
-    // record is signed with wrong_new_sk — self-signature is invalid.
-    let new_pk = MlDsa65KeyPair::generate().unwrap().public_key().to_vec();
-    let wrong_new_sk = MlDsa65KeyPair::generate().unwrap();
-    let new_doc = build_did_document(&did, &new_pk);
-    let invalid_new_record = build_signed_record(&new_doc, &wrong_new_sk, "ML-DSA-65");
+    let doc = chain.doc(
+        1,
+        Some(&chain.version(0)),
+        chain.keys[1].public_key(),
+        chain.keys[2].public_key(),
+    );
+    let wrong = MlDsa65KeyPair::generate().unwrap();
+    let invalid_new_record = build_signed_record(&doc, &wrong, "ML-DSA-65");
 
-    // auth_sig is correctly signed with the old key — ownership proof is valid,
-    // but the new record's self-signature is invalid.
-    let auth_sig = old_sk.sign(&invalid_new_record).unwrap();
-
-    let result = node2.update(&key, invalid_new_record, Some(auth_sig)).await;
+    let result = node2
+        .update(&key, invalid_new_record, chain.earlier(1))
+        .await;
     assert!(
         result.is_none(),
         "update must be rejected when the new record's self-signature is invalid"
     );
-
-    // Original record must still be retrievable.
-    let still_there = node1.get(&key).await;
-    assert!(
-        still_there.is_some(),
-        "original record must remain after rejected update"
+    assert_eq!(
+        node1.get(&key).await,
+        Some(chain.version(0)),
+        "the original record must remain after a rejected update"
     );
-    assert_eq!(still_there.unwrap(), old_record);
 
     node1.stop().await;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 9. Update rejected when auth_sig uses a wrong key (port 15782–15784)
+// 9. Update rejected when signed by a key that was not committed (15782–15784)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// `update` must return None when the auth_signature is produced by a third
-/// party (not the old key owner), even if the new record carries a valid
-/// self-signature.  The original record must survive the failed attempt.
-///
-/// This exercises step 2 of `verify_key_rotation`: the auth_sig is checked
-/// against the OLD public key embedded in the stored record.
+/// `update` must return None when the new version is self-signed by a key
+/// the version before did not commit to: the owner's node sees it against
+/// the earlier versions it is given, and sends nothing. The original record
+/// survives.
 #[tokio::test]
-async fn test_update_rejected_when_auth_signature_uses_wrong_key() {
+async fn test_update_rejected_when_signed_by_an_uncommitted_key() {
     let mut node1 = start_node(15782).await;
     let node2 = start_node(15783).await;
     let mut node3 = start_node(15784).await;
@@ -377,44 +302,23 @@ async fn test_update_rejected_when_auth_signature_uses_wrong_key() {
         .await;
     sleep(Duration::from_millis(300)).await;
 
-    // Store valid original record.
-    let old_sk = MlDsa65KeyPair::generate().unwrap();
-    let old_pk = old_sk.public_key().to_vec();
-    let did = generate_did_iiot();
-    let key = did.split(':').next_back().unwrap().to_string();
-    let old_doc = build_did_document(&did, &old_pk);
-    let old_record = build_signed_record(&old_doc, &old_sk, "ML-DSA-65");
-
-    let stored = node2.set(&key, old_record.clone()).await;
+    let chain = Chain::with_versions(1);
+    let key = chain.did.clone();
+    let stored = node2.set(&key, chain.version(0)).await;
     assert!(stored.unwrap_or(false), "initial store must succeed");
 
-    // Build a new record with a valid self-signature.
-    let new_sk = MlDsa65KeyPair::generate().unwrap();
-    let new_pk = new_sk.public_key().to_vec();
-    let new_doc = build_did_document(&did, &new_pk);
-    let new_record = build_signed_record(&new_doc, &new_sk, "ML-DSA-65");
-
-    // auth_sig produced with an UNRELATED key — attacker does not own the old key.
-    let unrelated_sk = MlDsa65KeyPair::generate().unwrap();
-    let bad_auth_sig = unrelated_sk.sign(&new_record).unwrap();
-
-    // Update via node3 must be rejected.
-    let result = node3.update(&key, new_record, Some(bad_auth_sig)).await;
+    let unrelated = MlDsa65KeyPair::generate().unwrap();
+    let new_record = chain.forge(1, &chain.version(0), &unrelated);
+    let result = node3.update(&key, new_record, chain.earlier(1)).await;
     assert!(
         result.is_none(),
-        "update with wrong auth_sig must return None"
+        "an update signed by a key that was not committed must return None"
     );
 
-    // Original record must still be retrievable from a neutral node.
     sleep(Duration::from_millis(200)).await;
-    let still_there = node1.get(&key).await;
-    assert!(
-        still_there.is_some(),
-        "original record must survive a rejected update"
-    );
     assert_eq!(
-        still_there.unwrap(),
-        old_record,
+        node1.get(&key).await,
+        Some(chain.version(0)),
         "record content must be unchanged"
     );
 
@@ -431,11 +335,7 @@ async fn test_set_detailed_reports_capacity_degraded_replication() {
         .await;
     sleep(Duration::from_millis(200)).await;
 
-    let dsk = MlDsa65KeyPair::generate().unwrap();
-    let dpk = dsk.public_key().to_vec();
-    let did = generate_did_iiot();
-    let key = did.split(':').next_back().unwrap().to_string();
-    let record = build_signed_record(&build_did_document(&did, &dpk), &dsk, "ML-DSA-65");
+    let (key, record) = new_did_record();
 
     let outcome = limited.set_detailed(&key, record.clone()).await;
     let report = match outcome {
@@ -532,18 +432,9 @@ async fn test_stop_cancels_in_flight_replication() {
 /// time out, for its backoff to elapse, and for the next probe to succeed.
 const RECOVERY_BUDGET: Duration = Duration::from_secs(30);
 
-/// Build a valid record for a new DID, returning `(did, dht_key, record)`.
-fn new_record() -> (String, String, Vec<u8>) {
-    let did = generate_did_iiot();
-    let key = did.split(':').next_back().unwrap().to_string();
-    let record = record_for_did(&did);
-    (did, key, record)
-}
-
-fn record_for_did(did: &str) -> Vec<u8> {
-    let dsk = MlDsa65KeyPair::generate().unwrap();
-    let dpk = dsk.public_key().to_vec();
-    build_signed_record(&build_did_document(did, &dpk), &dsk, "ML-DSA-65")
+/// Version 0 of a new DID, returning `(did, record)`.
+fn new_record() -> (String, Vec<u8>) {
+    new_did_record()
 }
 
 /// Forward datagrams between two nodes until the returned flag is raised, which
@@ -601,8 +492,8 @@ async fn test_outage_keeps_contacts_and_nodes_recover_on_their_own() {
     assert_eq!(b.stats().await.live_routing_nodes, 1);
 
     down.store(true, Ordering::Relaxed);
-    let (_, absent_a, _) = new_record();
-    let (_, absent_b, _) = new_record();
+    let (absent_a, _) = new_record();
+    let (absent_b, _) = new_record();
     let (found_a, found_b) = tokio::join!(a.get(&absent_a), b.get(&absent_b));
     assert!(found_a.is_none() && found_b.is_none());
     for node in [&a, &b] {
@@ -614,7 +505,7 @@ async fn test_outage_keeps_contacts_and_nodes_recover_on_their_own() {
         assert_eq!(stats.live_routing_nodes, 0);
     }
 
-    let (_, during_outage, record) = new_record();
+    let (during_outage, record) = new_record();
     let outcome = a.set_detailed(&during_outage, record).await;
     assert!(
         matches!(outcome, SetOutcome::Degraded(_)),
@@ -623,19 +514,21 @@ async fn test_outage_keeps_contacts_and_nodes_recover_on_their_own() {
 
     down.store(false, Ordering::Relaxed);
     timeout(RECOVERY_BUDGET, async {
-        while b.storage.get(&digest(&during_outage)).is_none() {
+        while b.storage.get(&key_of(&during_outage)).is_none() {
             sleep(Duration::from_millis(100)).await;
         }
     })
     .await
     .expect("the record published during the outage must reach the other replica");
 
-    let (did, key, record) = new_record();
+    let chain = Chain::new();
+    let key = chain.did.clone();
+    let record = chain.version(0);
     let outcome = a.set_detailed(&key, record.clone()).await;
     assert!(matches!(outcome, SetOutcome::Complete(_)), "{outcome:?}");
     assert_eq!(b.get(&key).await, Some(record));
 
-    let outcome = b.set_detailed(&key, record_for_did(&did)).await;
+    let outcome = b.set_detailed(&key, chain.signed_again(0)).await;
     assert!(
         matches!(
             outcome,
@@ -659,7 +552,7 @@ async fn test_node_joins_when_its_seed_starts_late() {
         .await
         .is_empty());
 
-    let (_, key, record) = new_record();
+    let (key, record) = new_record();
     let outcome = node.set_detailed(&key, record).await;
     assert!(
         matches!(outcome, SetOutcome::Degraded(_)),
@@ -668,7 +561,7 @@ async fn test_node_joins_when_its_seed_starts_late() {
 
     let seed = start_node(seed_port).await;
     timeout(RECOVERY_BUDGET, async {
-        while seed.storage.get(&digest(&key)).is_none() {
+        while seed.storage.get(&key_of(&key)).is_none() {
             sleep(Duration::from_millis(100)).await;
         }
     })
@@ -705,7 +598,7 @@ async fn test_set_ignores_a_dead_peer_that_others_keep_reporting() {
         protocol.router.write().await.add_contact(dead.clone());
     }
 
-    let (_, key, record) = new_record();
+    let (key, record) = new_record();
     let first = writer.set_detailed(&key, record.clone()).await;
     assert!(matches!(first, SetOutcome::Degraded(_)), "{first:?}");
     assert_eq!(first.report().expected_replicas, 3);
@@ -723,7 +616,7 @@ async fn test_set_ignores_a_dead_peer_that_others_keep_reporting() {
     assert!(matches!(retry, SetOutcome::Complete(_)), "{retry:?}");
     assert_eq!(retry.report().unavailable_nodes, 1);
 
-    let (_, key, record) = new_record();
+    let (key, record) = new_record();
     let started = std::time::Instant::now();
     let second = writer.set_detailed(&key, record).await;
     assert!(
@@ -739,7 +632,7 @@ async fn test_set_ignores_a_dead_peer_that_others_keep_reporting() {
 #[tokio::test]
 async fn test_node_that_never_had_contacts_publishes_completely() {
     let node = start_node(15912).await;
-    let (_, key, record) = new_record();
+    let (key, record) = new_record();
     let outcome = node.set_detailed(&key, record).await;
     assert!(matches!(outcome, SetOutcome::Complete(_)), "{outcome:?}");
 }

@@ -27,18 +27,20 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use auth_kademlia_rs::auth_handler::did::{
+    canonical_bytes, derive_did, key_of_did, DID_PREFIX, PLACEHOLDER,
+};
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::Server;
 use auth_kademlia_rs::node::Node;
 use auth_kademlia_rs::storage::IStorage;
-use auth_kademlia_rs::utils::digest;
+use auth_kademlia_rs::utils::{digest_bytes, ID_LEN};
 use primitive_types::U256;
 
 use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
 use tokio::time::timeout;
-use uuid::Uuid;
 
 const BASE_PORT: u16 = 15810;
 const NUM_NODES: usize = 30;
@@ -103,28 +105,19 @@ fn base64url(pk: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(pk)
 }
 
-fn sort_json_keys(v: &Value) -> Value {
-    match v {
-        Value::Object(map) => {
-            let sorted: serde_json::Map<String, Value> = map
-                .iter()
-                .collect::<std::collections::BTreeMap<_, _>>()
-                .into_iter()
-                .map(|(k, v)| (k.clone(), sort_json_keys(v)))
-                .collect();
-            Value::Object(sorted)
-        }
-        Value::Array(arr) => Value::Array(arr.iter().map(sort_json_keys).collect()),
-        other => other.clone(),
-    }
+/// The DHT key of a DID made by `new_record`: its suffix, decoded.
+fn dht_key(did: &str) -> [u8; ID_LEN] {
+    key_of_did(did).expect("a DID made by new_record")
 }
 
-fn encode_did_document(doc: &Value) -> Vec<u8> {
-    serde_json::to_vec(&sort_json_keys(doc)).expect("serialization failed")
+/// The first characters of a DID's suffix, to tell records apart in the output.
+fn short(did: &str) -> &str {
+    did.get(DID_PREFIX.len()..DID_PREFIX.len() + 8)
+        .unwrap_or(did)
 }
 
 fn build_signed_record(doc: &Value, sk: &MlDsa65KeyPair) -> Vec<u8> {
-    let doc_bytes = encode_did_document(doc);
+    let doc_bytes = canonical_bytes(doc).expect("a DID Document in canonical form");
     let mut alg = [0u8; 12];
     alg[..9].copy_from_slice(b"ML-DSA-65");
     let sig = sk.sign(&doc_bytes).expect("ML-DSA-65 signing");
@@ -136,10 +129,12 @@ fn build_signed_record(doc: &Value, sk: &MlDsa65KeyPair) -> Vec<u8> {
     record
 }
 
-fn build_did_document(did: &str, signing_pk: &[u8]) -> Value {
+/// The draft of version 0 of a new DID (ADR 0005): its own DID written as
+/// the placeholder, no `id`, and the hash of the next public key.
+fn build_version_zero_draft(signing_pk: &[u8], next_pk: &[u8]) -> Value {
+    let did = PLACEHOLDER;
     json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
-        "id": did,
         "verificationMethod": [
             {
                 "id": format!("{}#k0", did),
@@ -150,19 +145,22 @@ fn build_did_document(did: &str, signing_pk: &[u8]) -> Value {
         ],
         "authentication": [format!("{}#k0", did)],
         "service": [{ "id": format!("{}#device", did), "type": "DeviceAgent",
-                      "serviceEndpoint": "http://example.com/device" }]
+                      "serviceEndpoint": "http://example.com/device" }],
+        "seq": 0,
+        "nextKeyHash": base64url(&digest_bytes(next_pk)),
     })
 }
 
-/// Returns (did_uri, dht_key_uuid, record_bytes).
+/// Returns (did_uri, key, record_bytes) for version 0 of a new DID; the key
+/// that `set` and `get` take is the DID itself.
 fn new_record() -> (String, String, Vec<u8>) {
     let dsk = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
     let dpk = dsk.public_key().to_vec();
-    let did = format!("did:iiot:{}", Uuid::new_v4());
-    let key = did.split(':').next_back().unwrap().to_string();
-    let doc = build_did_document(&did, &dpk);
+    let next = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
+    let draft = build_version_zero_draft(&dpk, next.public_key());
+    let (did, doc) = derive_did(&draft).expect("version 0 gives its DID");
     let record = build_signed_record(&doc, &dsk);
-    (did, key, record)
+    (did.clone(), did, record)
 }
 
 /// Extract the DID Document JSON from a raw wire record (skip alg + sig header).
@@ -193,7 +191,7 @@ async fn start_node(port: u16, ksize: usize, alpha: usize) -> Arc<Server> {
 fn print_sample_docs(published: &[(String, String, Vec<u8>)]) {
     println!("━━━ Sample DID Documents ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     for (did, key_str, record) in published.iter().take(3) {
-        let dkey_hex = hex::encode(digest(key_str.as_str()));
+        let dkey_hex = hex::encode(dht_key(key_str));
         println!("  DID URI : {did}");
         println!("  DHT key : {dkey_hex}");
         match extract_doc(record) {
@@ -363,7 +361,7 @@ fn verify_global_replica_placement(
     };
 
     for (_did, key, _) in published {
-        let dkey = digest(key);
+        let dkey = dht_key(key);
         let target = Node::from_id(dkey);
         let dkey_hex = hex::encode(dkey);
         let holders = key_holders.get(&dkey_hex).map(Vec::as_slice).unwrap_or(&[]);
@@ -614,7 +612,7 @@ async fn verify_local_top_k(
 
     let targets = published
         .iter()
-        .map(|(_, key, _)| Node::from_id(digest(key)))
+        .map(|(_, key, _)| Node::from_id(dht_key(key)))
         .collect::<Vec<_>>();
     let mut report = LocalTopKReport::default();
 
@@ -856,7 +854,7 @@ async fn run() {
                 if verbose {
                     println!(
                         "  [{i:>3}] writer={writer_port}  key={}  did={}…  SET ✓  ({:.1}ms)",
-                        &key[..8],
+                        short(&key),
                         &did[..32],
                         ns as f64 / 1e6
                     );
@@ -867,7 +865,7 @@ async fn run() {
                 set_fail += 1;
                 println!(
                     "  [{i:>3}] writer={writer_port}  key={}  SET ✗  {other:?}",
-                    &key[..8]
+                    short(&key)
                 );
             }
         }
@@ -887,7 +885,7 @@ async fn run() {
     for (i, (_did, key, original)) in published.iter().enumerate() {
         let reader_idx = (i + NUM_NODES / 2) % NUM_NODES;
         let (reader, reader_port) = &nodes[reader_idx];
-        let local_fast_path = reader.storage.get(&digest(key)).is_some();
+        let local_fast_path = reader.storage.get(&dht_key(key)).is_some();
         let path = if local_fast_path {
             local_gets += 1;
             "local-fast-path"
@@ -908,7 +906,7 @@ async fn run() {
                     if verbose {
                         println!(
                             "  [{i:>3}] reader={reader_port}  key={}  GET ✓  path={path}  ({:.1}ms)",
-                            &key[..8],
+                            short(key),
                             ns as f64 / 1e6
                         );
                     }
@@ -916,7 +914,7 @@ async fn run() {
                     get_corrupt += 1;
                     println!(
                         "  [{i:>3}] reader={reader_port}  key={}  GET ✗  CORRUPTION  path={path}",
-                        &key[..8]
+                        short(key)
                     );
                 }
             }
@@ -924,7 +922,7 @@ async fn run() {
                 get_fail += 1;
                 println!(
                     "  [{i:>3}] reader={reader_port}  key={}  GET ✗  no verified value  path={path}  ({:.1}ms)",
-                    &key[..8],
+                    short(key),
                     ns as f64 / 1e6
                 );
             }
@@ -932,7 +930,7 @@ async fn run() {
                 get_fail += 1;
                 println!(
                     "  [{i:>3}] reader={reader_port}  key={}  GET ✗  timeout  path={path}",
-                    &key[..8]
+                    short(key)
                 );
             }
         }
@@ -965,7 +963,7 @@ async fn run() {
     let key_to_did: HashMap<String, String> = published
         .iter()
         .map(|(did, key_str, _)| {
-            let dht_hex = hex::encode(digest(key_str.as_str()));
+            let dht_hex = hex::encode(dht_key(key_str));
             (dht_hex, did.clone())
         })
         .collect();

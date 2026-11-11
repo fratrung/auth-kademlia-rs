@@ -64,6 +64,16 @@ impl Server {
         self.protocol.as_ref().map(|protocol| protocol.counters())
     }
 
+    /// Testbed only: make this node lie in `FindHash`, or stop
+    /// (`KademliaProtocol::set_lying`). False when it is not listening.
+    #[cfg(feature = "testbed")]
+    pub fn set_lying(&self, lying: bool) -> bool {
+        self.protocol
+            .as_ref()
+            .map(|protocol| protocol.set_lying(lying))
+            .is_some()
+    }
+
     /// Persist node state (ksize, alpha, id, neighbours) to a JSON file.
     pub async fn save_state(&self, fname: &str) {
         let neighbors = self.bootstrappable_neighbors().await;

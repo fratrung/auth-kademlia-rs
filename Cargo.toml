@@ -47,7 +47,6 @@ counters = []
 tokio          = { version = "1", features = ["full"] }
 futures        = "0.3"
 async-trait    = "0.1"
-uuid               = { version = "1", features = ["v4"] }
 
 # Serialization
 serde          = { version = "1", features = ["derive"] }

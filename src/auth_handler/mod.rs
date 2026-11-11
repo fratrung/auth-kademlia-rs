@@ -19,13 +19,17 @@ use std::sync::Arc;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::Value;
 use thiserror::Error;
-use uuid::Uuid;
 
 use crate::crypto::factory::SignatureVerifierFactory;
 use crate::crypto::mldsa::ML_DSA_65;
 use crate::crypto::signature_verifier::{resolve_alg_and_length, VerifierError};
 use crate::signature_cache::{SignatureCache, VerificationDomain};
 use crate::utils::{digest, ID_LEN, STATUS_LIST_KEY};
+
+pub mod did;
+pub mod rules;
+#[cfg(test)]
+pub(crate) mod test_chain;
 
 #[derive(Debug, Error)]
 pub enum AuthHandlerError {
@@ -67,18 +71,6 @@ pub trait SignatureVerifierHandler: Send + Sync {
 
     /// Verify that `value` is correctly self-signed (store / get path).
     fn handle_signature_verification(&self, value: &[u8]) -> Result<bool, AuthHandlerError>;
-
-    /// Verify a key-rotation update.
-    ///
-    /// `value` is the new record, `old_value` is the existing record,
-    /// and `auth_signature` is a signature of `value` produced with the
-    /// private key corresponding to `old_value`'s public key.
-    fn handle_update_verification(
-        &self,
-        value: &[u8],
-        old_value: &[u8],
-        auth_signature: &[u8],
-    ) -> Result<bool, AuthHandlerError>;
 
     /// Verify that `value` is signed by the issuer node's public key.
     fn handle_issuer_node_signature_verification(
@@ -162,29 +154,12 @@ fn public_key_from_did_doc(data: &[u8], alg: &str) -> Result<Vec<u8>, AuthHandle
     decode_b64url(public)
 }
 
-/// Verify that `value` contains `id = "did:iiot:<uuid>"`, with the UUID in
-/// canonical form, and that its digest is exactly the requested DHT key.
-///
-/// The canonical form is the one RFC 9562 writes, lower case and hyphenated,
-/// as `Uuid::to_string` gives it. Any other text of the same UUID (upper
-/// case, no hyphens, braces, `urn:uuid:`) is refused, so one UUID is one DID
-/// and one key (ADR 0004).
+/// Whether `value` has the form of a record of the DID whose key is `key`
+/// (ADR 0005, step 1): its `id` is that DID, with a canonical suffix, its
+/// document is canonical and carries valid `seq`, `prev` and `nextKeyHash`,
+/// and a version 0 hashes to the key. No signature is verified.
 fn did_document_matches_key(value: &[u8], key: &[u8; ID_LEN]) -> Result<bool, AuthHandlerError> {
-    let alg = record_algorithm(value)?;
-    let (_, sig_len) = resolve_alg_and_length(&alg)?;
-    let (_, data) = extract_sig_and_data(value, sig_len)?;
-    let doc: Value = serde_json::from_slice(data)?;
-    let did = doc["id"]
-        .as_str()
-        .ok_or_else(|| AuthHandlerError::MissingField("id".into()))?;
-    let uuid = did
-        .strip_prefix("did:iiot:")
-        .ok_or(AuthHandlerError::InvalidDid)?;
-    let parsed = Uuid::parse_str(uuid).map_err(|_| AuthHandlerError::InvalidDid)?;
-    if parsed.hyphenated().to_string() != uuid {
-        return Err(AuthHandlerError::InvalidDid);
-    }
-    Ok(digest(uuid) == *key)
+    Ok(did::record_form(key, value).is_ok())
 }
 
 /// Concrete handler that verifies ML-DSA-65-signed DID Document records.
@@ -219,30 +194,6 @@ impl DIDSignatureVerifierHandler {
         let verifier = SignatureVerifierFactory::get_verifier(&alg)?;
         Ok(verifier.verify(&pub_key, signature, data)?)
     }
-
-    /// Verify a key-rotation update:
-    ///
-    /// 1. Extract the public key from the *old* DID Document.
-    /// 2. Verify that `auth_signature` over `new_value` is valid under that key.
-    /// 3. Verify the self-signature embedded in `new_value`.
-    fn verify_key_rotation(
-        &self,
-        new_value: &[u8],
-        old_value: &[u8],
-        auth_signature: &[u8],
-    ) -> Result<bool, AuthHandlerError> {
-        let old_alg = record_algorithm(old_value)?;
-        let (_, old_sig_len) = resolve_alg_and_length(&old_alg)?;
-        let (_, old_data) = extract_sig_and_data(old_value, old_sig_len)?;
-        let old_pub_key = public_key_from_did_doc(old_data, &old_alg)?;
-
-        let verifier = SignatureVerifierFactory::get_verifier(&old_alg)?;
-        if !verifier.verify(&old_pub_key, auth_signature, new_value)? {
-            return Ok(false);
-        }
-
-        self.verify_self_signed(new_value)
-    }
 }
 
 impl SignatureVerifierHandler for DIDSignatureVerifierHandler {
@@ -258,15 +209,6 @@ impl SignatureVerifierHandler for DIDSignatureVerifierHandler {
         self.verify_self_signed(value)
     }
 
-    fn handle_update_verification(
-        &self,
-        value: &[u8],
-        old_value: &[u8],
-        auth_signature: &[u8],
-    ) -> Result<bool, AuthHandlerError> {
-        self.verify_key_rotation(value, old_value, auth_signature)
-    }
-
     fn handle_issuer_node_signature_verification(
         &self,
         value: &[u8],
@@ -280,9 +222,10 @@ impl SignatureVerifierHandler for DIDSignatureVerifierHandler {
     }
 }
 
-/// Whether `value` belongs to `key`: its DID Document names the DID whose UUID
-/// hashes to `key`. A JSON parse, no signature. The Status List is exempt: its
-/// key is fixed and its record is signed by the issuer.
+/// Whether `value` belongs to `key`: its DID Document has the form of a
+/// record of the DID whose key is `key` (`did::record_form`). No signature.
+/// The Status List is exempt: its key is fixed and its record is signed by
+/// the issuer.
 pub(crate) fn is_bound_to_key(
     handler: &dyn SignatureVerifierHandler,
     key: &[u8; ID_LEN],
@@ -346,34 +289,6 @@ pub(crate) async fn verify_record(
     result
 }
 
-/// Whether `new` may replace `old` for `key` (a key rotation): both are bound
-/// to `key`, `auth_signature` signs `new` with the key of `old`, and `new` is
-/// self-signed. Not cached. Runs on a blocking thread.
-pub(crate) async fn verify_rotation(
-    handler: &Arc<dyn SignatureVerifierHandler>,
-    key: &[u8; ID_LEN],
-    new: &[u8],
-    old: &[u8],
-    auth_signature: &[u8],
-) -> bool {
-    let handler = Arc::clone(handler);
-    let (key, new, old, auth_signature) =
-        (*key, new.to_vec(), old.to_vec(), auth_signature.to_vec());
-    tokio::task::spawn_blocking(move || {
-        handler
-            .handle_key_binding_verification(&key, &old)
-            .unwrap_or(false)
-            && handler
-                .handle_key_binding_verification(&key, &new)
-                .unwrap_or(false)
-            && handler
-                .handle_update_verification(&new, &old, &auth_signature)
-                .unwrap_or(false)
-    })
-    .await
-    .unwrap_or(false)
-}
-
 /// Whether `value` is signed by the issuer node (an update of the Status
 /// List). Not cached. Runs on a blocking thread.
 pub(crate) async fn verify_issuer_signed(
@@ -393,36 +308,13 @@ pub(crate) async fn verify_issuer_signed(
 
 #[cfg(test)]
 mod tests {
-    use crate::crypto::mldsa::MlDsa65KeyPair;
-    use serde_json::json;
-
     use super::*;
 
-    /// `(key, record)`: a DID Document holding one ML-DSA-65 key (RFC 9964),
-    /// self-signed, under the DHT key of its DID.
+    /// `(key, record)`: version 0 of a new DID, holding one ML-DSA-65 key
+    /// (RFC 9964), self-signed.
     fn ml_dsa_65_record() -> ([u8; ID_LEN], Vec<u8>) {
-        let key = MlDsa65KeyPair::generate().unwrap();
-        let uuid = Uuid::new_v4().to_string();
-        let did = format!("did:iiot:{uuid}");
-        let doc = json!({
-            "id": did,
-            "verificationMethod": [{
-                "id": format!("{did}#k0"),
-                "type": "JsonWebKey2020",
-                "controller": did,
-                "publicKeyJwk": {
-                    "kty": "AKP",
-                    "alg": "ML-DSA-65",
-                    "pub": URL_SAFE_NO_PAD.encode(key.public_key()),
-                },
-            }],
-        });
-        let data = serde_json::to_vec(&doc).unwrap();
-        let mut record = [0u8; 12].to_vec();
-        record[..RECORD_ALGORITHM.len()].copy_from_slice(RECORD_ALGORITHM.as_bytes());
-        record.extend_from_slice(&key.sign(&data).unwrap());
-        record.extend_from_slice(&data);
-        (digest(&uuid), record)
+        let chain = test_chain::Chain::new();
+        (chain.key, chain.version(0).to_vec())
     }
 
     /// A complete ML-DSA-65 record passes the check a node runs before storing

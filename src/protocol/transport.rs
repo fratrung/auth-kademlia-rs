@@ -96,8 +96,24 @@ impl Drop for PendingGuard {
 }
 
 impl KademliaProtocol {
+    /// A message id for a new request: drawn by `draw` until it is one no
+    /// pending request holds (ADR 0005, open point 25).
+    pub(super) fn fresh_id<V>(pending: &HashMap<u32, V>, mut draw: impl FnMut() -> u32) -> u32 {
+        loop {
+            let id = draw();
+            if !pending.contains_key(&id) {
+                return id;
+            }
+        }
+    }
+
+    /// An unpredictable message id, from the thread-local generator of
+    /// `rand`, seeded by the operating system: a node that learns the id of
+    /// one request cannot tell the ids of the others, and answer them in
+    /// another node's name (ADR 0005, open point 25). A request waiting for an
+    /// answer takes its id through `fresh_id` instead.
     pub(super) fn next_id(&self) -> u32 {
-        self.next_msg_id.fetch_add(1, Ordering::Relaxed)
+        rand::random()
     }
 
     fn next_frag_id_val(&self) -> u32 {
@@ -195,7 +211,29 @@ impl KademliaProtocol {
     /// the request arrived and is being handled: the next copy waits longer,
     /// and only asks again for an answer that may have been lost.
     pub(super) async fn call(&self, addr: SocketAddr, message: RpcMessage) -> Option<RpcMessage> {
-        let msg_id = self.next_id();
+        let (reply, mut answer) = oneshot::channel();
+        let received = Arc::new(Notify::new());
+        let expected = ExpectedResponse::for_request(&message);
+        // The id is drawn at random, under the lock of the pending requests,
+        // so that no two pending requests share one; resends keep it.
+        let msg_id = {
+            let mut pending = self.pending.lock().await;
+            let msg_id = Self::fresh_id(&pending, rand::random);
+            pending.insert(
+                msg_id,
+                PendingCall {
+                    peer: addr,
+                    expected,
+                    reply,
+                    received: Arc::clone(&received),
+                },
+            );
+            msg_id
+        };
+        let _guard = PendingGuard {
+            pending: Arc::clone(&self.pending),
+            msg_id,
+        };
         let frame = Frame {
             msg_id,
             is_request: true,
@@ -206,22 +244,6 @@ impl KademliaProtocol {
         let answer_measures = carried_record(&frame.message).is_none();
         let kind = rpc_message_name(&frame.message);
         let datagrams = self.encode_frame(addr, &frame)?;
-
-        let (reply, mut answer) = oneshot::channel();
-        let received = Arc::new(Notify::new());
-        self.pending.lock().await.insert(
-            msg_id,
-            PendingCall {
-                peer: addr,
-                expected: ExpectedResponse::for_request(&frame.message),
-                reply,
-                received: Arc::clone(&received),
-            },
-        );
-        let _guard = PendingGuard {
-            pending: Arc::clone(&self.pending),
-            msg_id,
-        };
 
         let first_sent = tokio::time::Instant::now();
         let deadline = first_sent + RPC_TIMEOUT;
@@ -490,6 +512,35 @@ mod tests {
         }
     }
 
+    /// Message ids are unpredictable: a node that learns the id of one request
+    /// cannot tell the ids of the others, and answer them in other nodes' names.
+    #[tokio::test]
+    async fn a_thousand_requests_in_a_row_do_not_get_consecutive_ids() {
+        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        let ids: Vec<u32> = (0..1000).map(|_| protocol.next_id()).collect();
+        let consecutive = ids
+            .windows(2)
+            .filter(|pair| pair[1] == pair[0].wrapping_add(1))
+            .count();
+        assert_eq!(consecutive, 0, "{:?}", &ids[..5]);
+    }
+
+    /// An id a pending request holds is drawn again.
+    #[test]
+    fn an_id_a_pending_request_holds_is_not_given_out_again() {
+        let pending: HashMap<u32, ()> = HashMap::from([(7, ()), (8, ())]);
+        let mut draws = [7u32, 8, 7, 9].into_iter();
+        assert_eq!(
+            KademliaProtocol::fresh_id(&pending, || draws.next().unwrap()),
+            9
+        );
+        let mut draws = [3u32].into_iter();
+        assert_eq!(
+            KademliaProtocol::fresh_id(&pending, || draws.next().unwrap()),
+            3
+        );
+    }
+
     /// The first copy of a STORE is lost: the sender sends the same request
     /// again, and does not wait for the RPC timeout.
     #[tokio::test]
@@ -635,13 +686,26 @@ mod tests {
             .add_contact(contact_at([5; ID_LEN], silent.local_addr().unwrap().port()));
         let (client, _) = raw_peer([9; ID_LEN]).await;
         let node = protocol.socket.local_addr().unwrap();
+        let chain = crate::auth_handler::test_chain::Chain::new();
+        let (one, two) = (
+            chain.version(0).to_vec(),
+            crate::auth_handler::test_chain::sign(
+                &chain.doc(
+                    0,
+                    None,
+                    chain.keys[0].public_key(),
+                    chain.keys[1].public_key(),
+                ),
+                &chain.keys[0],
+            ),
+        );
         let store = |value: &[u8]| RpcMessage::Store {
             sender_id: [9; ID_LEN],
-            key: [7; ID_LEN],
+            key: chain.key,
             value: value.to_vec(),
         };
 
-        send_raw(&client, node, 5, true, store(b"one")).await;
+        send_raw(&client, node, 5, true, store(&one)).await;
         let (receipt, _) = timeout(
             Duration::from_millis(200),
             read_frame_of_kind(&client, false),
@@ -652,7 +716,7 @@ mod tests {
         assert!(matches!(receipt.message, RpcMessage::Received));
         assert_eq!(protocol.store_lookups.load(Ordering::Acquire), 1);
 
-        send_raw(&client, node, 5, true, store(b"one")).await;
+        send_raw(&client, node, 5, true, store(&one)).await;
         let (receipt, _) = timeout(
             Duration::from_millis(200),
             read_frame_of_kind(&client, false),
@@ -662,7 +726,7 @@ mod tests {
         assert!(matches!(receipt.message, RpcMessage::Received));
         assert_eq!(protocol.store_lookups.load(Ordering::Acquire), 1);
 
-        send_raw(&client, node, 5, true, store(b"two")).await;
+        send_raw(&client, node, 5, true, store(&two)).await;
         timeout(
             Duration::from_millis(200),
             read_frame_of_kind(&client, false),

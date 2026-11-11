@@ -88,7 +88,6 @@ pub trait SpiderProtocol: Send + Sync {
     /// (`schedule_welcome_if_new`).
     async fn call_find_node(self: Arc<Self>, peer: Node, target: Node) -> RawResponse;
     async fn call_find_value(self: Arc<Self>, peer: Node, target: Node) -> RawResponse;
-    async fn call_store(&self, peer: &Node, key: [u8; ID_LEN], value: Vec<u8>) -> bool;
     /// Those of `nodes` that this node already knows are not responding.
     async fn failing_among(&self, nodes: &[Node]) -> HashSet<[u8; ID_LEN]>;
     /// `nodes` did not answer before a lookup gave up on them, so their
@@ -136,6 +135,8 @@ pub struct SpiderCrawl<P: SpiderProtocol> {
     ask_everyone: bool,
     /// Rounds that asked at least one peer.
     rounds: usize,
+    /// Peers asked so far.
+    asked: usize,
 }
 
 impl<P: SpiderProtocol> SpiderCrawl<P> {
@@ -158,6 +159,7 @@ impl<P: SpiderProtocol> SpiderCrawl<P> {
             skipped: HashSet::new(),
             ask_everyone: false,
             rounds: 0,
+            asked: 0,
         }
     }
 
@@ -261,17 +263,17 @@ impl<P: SpiderProtocol> SpiderCrawl<P> {
         if !peers.is_empty() {
             self.rounds += 1;
         }
+        self.asked += peers.len();
         peers
     }
 }
 
 /// Iterative lookup that terminates when a value is found or the network is
-/// exhausted.
+/// exhausted. It only reads: unlike Kademlia §2.3, it stores no copy of the
+/// value it found at the nearest node that lacked it (ADR 0005, open point
+/// 15), since that copy would be one the reader neither chose nor verified.
 pub struct ValueSpiderCrawl<P: SpiderProtocol> {
     pub base: SpiderCrawl<P>,
-    /// The single nearest node that did *not* have the value (used for
-    /// post-lookup caching).
-    pub nearest_without_value: NodeHeap,
 }
 
 /// Return the unique value that has a strict majority, provided it also meets
@@ -302,10 +304,8 @@ fn strict_quorum_value(values: &[Vec<u8>], minimum_votes: usize) -> Option<Vec<u
 
 impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
     pub fn new(protocol: Arc<P>, node: Node, peers: Vec<Node>, ksize: usize, alpha: usize) -> Self {
-        let nearest_without_value = NodeHeap::new(node.clone(), 1);
         Self {
             base: SpiderCrawl::new(protocol, node, peers, ksize, alpha),
-            nearest_without_value,
         }
     }
 
@@ -324,6 +324,11 @@ impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
     /// Rounds of this lookup so far that asked at least one peer.
     pub fn rounds(&self) -> usize {
         self.base.rounds
+    }
+
+    /// Peers this lookup asked so far.
+    pub fn asked(&self) -> usize {
+        self.base.asked
     }
 
     /// Run the lookup. Returns the found value and the k-closest nodes discovered.
@@ -352,9 +357,6 @@ impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
                         found_values.push(v);
                     }
                 } else {
-                    if let Some(peer) = self.base.nearest.get_node(peer_id) {
-                        self.nearest_without_value.push_one(peer);
-                    }
                     self.base.add_reported(r.get_node_list()).await;
                 }
             }
@@ -368,14 +370,6 @@ impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
                         self.base.node.long_id
                     );
                     return (None, self.base.lookup_nodes());
-                }
-                if let Some(ref v) = value {
-                    if let Some(peer) = self.nearest_without_value.popleft() {
-                        self.base
-                            .protocol
-                            .call_store(&peer, self.base.node.id, v.clone())
-                            .await;
-                    }
                 }
                 return (value, LookupNodes::default());
             }
@@ -396,15 +390,19 @@ impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
         Fut: std::future::Future<Output = Option<Vec<u8>>>,
     {
         let find_value = |protocol: Arc<P>, peer, target| protocol.call_find_value(peer, target);
-        match self.search(None, find_value, accept).await {
+        match self
+            .search(None, find_value, |_, value| accept(value))
+            .await
+        {
             ValueSearch::Found(value) => Some(value),
             ValueSearch::NotFound | ValueSearch::Incomplete => None,
         }
     }
 
     /// Like `find_first_valid`, but asks each peer through `rpc` (a
-    /// `FindValue` or a `FindHash` call), tells a lookup in which every peer
-    /// asked answered from one in which some did not, and stops waiting for
+    /// `FindValue` or a `FindHash` call), gives `accept` the peer that
+    /// answered with each value, tells a lookup in which every peer asked
+    /// answered from one in which some did not, and stops waiting for
     /// answers at `deadline`. Peers known not to respond are not asked, so
     /// they do not count. The peers silent for `SILENT_AFTER` at the deadline
     /// count as not responding, as after a timeout, so the next lookup does
@@ -426,7 +424,7 @@ impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
     where
         R: Fn(Arc<P>, Node, Node) -> RFut,
         RFut: std::future::Future<Output = RawResponse> + Send + 'static,
-        A: Fn(Vec<u8>) -> Fut,
+        A: Fn(Node, Vec<u8>) -> Fut,
         Fut: std::future::Future<Output = Option<Vec<u8>>>,
     {
         let mut incomplete = false;
@@ -475,13 +473,15 @@ impl<P: SpiderProtocol + 'static> ValueSpiderCrawl<P> {
                     // while the set is alive.
                     Some(Err(_)) => continue,
                 };
-                waiting.remove(&peer_id);
+                let peer = waiting
+                    .remove(&peer_id)
+                    .unwrap_or_else(|| Node::from_id(peer_id));
                 let response = RPCFindResponse::new(raw);
                 if !response.happened() {
                     to_remove.push(peer_id);
                     incomplete = true;
                 } else if let Some(value) = response.get_value() {
-                    if let Some(accepted) = accept(value).await {
+                    if let Some(accepted) = accept(peer, value).await {
                         return ValueSearch::Found(accepted);
                     }
                 } else {
@@ -625,10 +625,6 @@ mod tests {
             RawResponse(true, FindPayload::Empty)
         }
 
-        async fn call_store(&self, _peer: &Node, _key: [u8; ID_LEN], _value: Vec<u8>) -> bool {
-            false
-        }
-
         async fn failing_among(&self, _nodes: &[Node]) -> HashSet<[u8; ID_LEN]> {
             HashSet::new()
         }
@@ -660,10 +656,6 @@ mod tests {
 
         async fn call_find_value(self: Arc<Self>, _peer: Node, _target: Node) -> RawResponse {
             RawResponse(true, FindPayload::Empty)
-        }
-
-        async fn call_store(&self, _peer: &Node, _key: [u8; ID_LEN], _value: Vec<u8>) -> bool {
-            false
         }
 
         async fn failing_among(&self, nodes: &[Node]) -> HashSet<[u8; ID_LEN]> {
@@ -708,10 +700,6 @@ mod tests {
                 .map(|node| (node.id.to_vec(), node.ip, node.port))
                 .collect();
             RawResponse(true, FindPayload::Nodes(tuples))
-        }
-
-        async fn call_store(&self, _peer: &Node, _key: [u8; ID_LEN], _value: Vec<u8>) -> bool {
-            false
         }
 
         async fn failing_among(&self, _nodes: &[Node]) -> HashSet<[u8; ID_LEN]> {
@@ -762,7 +750,7 @@ mod tests {
             let search = crawl.search(
                 None,
                 |protocol, peer, target| protocol.call_find_value(peer, target),
-                |_| async { None },
+                |_, _| async { None },
             );
             let outcome = tokio::time::timeout(Duration::from_secs(2), search)
                 .await
@@ -792,7 +780,7 @@ mod tests {
             let search = crawl.search(
                 Some(deadline),
                 |protocol, peer, target| protocol.call_find_value(peer, target),
-                |_| async { None },
+                |_, _| async { None },
             );
             let outcome = tokio::time::timeout(Duration::from_secs(3), search)
                 .await

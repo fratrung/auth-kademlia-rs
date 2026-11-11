@@ -20,12 +20,21 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use serde_json::{json, Value};
-use uuid::Uuid;
 
 use auth_kademlia_rs::auth_handler::{DIDSignatureVerifierHandler, SignatureVerifierHandler};
 use auth_kademlia_rs::crypto::factory::{SignatureVerifierFactory, SignerFactory};
 use auth_kademlia_rs::crypto::signature_verifier::resolve_alg_and_length;
 use auth_kademlia_rs::utils::digest;
+
+mod common;
+
+use common::{key_of, new_did_record};
+
+/// A DID of the right shape, for tests that verify only a signature and read
+/// nothing of the DID.
+fn some_did() -> String {
+    format!("did:iiot:{}", base64url(&rand::random::<[u8; 32]>()))
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -315,7 +324,7 @@ fn test_ed25519_wrong_key_rejected() {
 fn test_did_handler_accepts_valid_self_signed_record() {
     let sk = MlDsa65KeyPair::generate().unwrap();
     let pk = sk.public_key().to_vec();
-    let did = format!("did:iiot:{}", Uuid::new_v4());
+    let did = some_did();
     let doc = build_did_doc(&did, &pk);
     let record = build_record_mldsa65(&doc, &sk);
 
@@ -329,87 +338,64 @@ fn test_did_handler_accepts_valid_self_signed_record() {
 
 #[test]
 fn test_did_handler_accepts_record_bound_to_requested_key() {
-    let sk = MlDsa65KeyPair::generate().unwrap();
-    let pk = sk.public_key().to_vec();
-    let uuid = Uuid::new_v4().to_string();
-    let doc = build_did_doc(&format!("did:iiot:{uuid}"), &pk);
-    let record = build_record_mldsa65(&doc, &sk);
+    let (did, record) = new_did_record();
     let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
 
     assert!(
         handler
-            .handle_key_binding_verification(&digest(&uuid), &record)
+            .handle_key_binding_verification(&key_of(&did), &record)
             .unwrap(),
-        "the DID UUID digest must match the requested DHT key"
+        "version 0 must bind to the key of its DID, the hash of its document"
     );
 }
 
 #[test]
 fn test_did_handler_rejects_record_bound_to_another_key() {
-    let sk = MlDsa65KeyPair::generate().unwrap();
-    let pk = sk.public_key().to_vec();
-    let record_uuid = Uuid::new_v4().to_string();
-    let requested_uuid = Uuid::new_v4().to_string();
-    let doc = build_did_doc(&format!("did:iiot:{record_uuid}"), &pk);
-    let record = build_record_mldsa65(&doc, &sk);
+    let (_, record) = new_did_record();
+    let (requested_did, _) = new_did_record();
     let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
 
     assert!(
         !handler
-            .handle_key_binding_verification(&digest(&requested_uuid), &record)
+            .handle_key_binding_verification(&key_of(&requested_did), &record)
             .unwrap(),
-        "a valid record must not be publishable under another DID UUID"
+        "a valid record must not be publishable under another DID"
     );
 }
 
+/// A DID whose suffix is not the canonical base64url of 32 bytes binds to no
+/// key.
 #[test]
-fn test_did_handler_rejects_non_uuid_did_identifier() {
+fn test_did_handler_rejects_a_did_that_is_not_a_canonical_suffix() {
     let sk = MlDsa65KeyPair::generate().unwrap();
     let pk = sk.public_key().to_vec();
-    let doc = build_did_doc("did:iiot:not-a-uuid", &pk);
+    let doc = build_did_doc("did:iiot:not-a-suffix", &pk);
     let record = build_record_mldsa65(&doc, &sk);
     let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
 
     assert!(
-        handler
-            .handle_key_binding_verification(&digest("not-a-uuid"), &record)
-            .is_err(),
-        "did:iiot identifiers must contain a UUID"
+        !matches!(
+            handler.handle_key_binding_verification(&digest("not-a-suffix"), &record),
+            Ok(true)
+        ),
+        "a did:iiot DID must have a canonical suffix"
     );
 }
 
-/// One UUID is one DID (ADR 0004): a DID whose UUID is not in the canonical
-/// form of RFC 9562 (lower case, hyphenated) binds to no key, neither the key
-/// of its own text nor the key of the canonical form.
+/// A DID that is a UUID (ADR 0004) binds to no key since ADR 0005: neither the
+/// SHA-256 of the UUID nor anything else.
 #[test]
-fn test_did_handler_rejects_a_uuid_not_in_canonical_form() {
+fn test_did_handler_rejects_a_uuid_did() {
     let sk = MlDsa65KeyPair::generate().unwrap();
     let pk = sk.public_key().to_vec();
     let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
-    let binds = |uuid: &str, key: &str| {
-        let doc = build_did_doc(&format!("did:iiot:{uuid}"), &pk);
-        let record = build_record_mldsa65(&doc, &sk);
-        matches!(
-            handler.handle_key_binding_verification(&digest(key), &record),
-            Ok(true)
-        )
-    };
-    let canonical = "3f2b1c4e-8a6d-4e2b-9c1a-5d7e8f9a0b1c";
-    assert!(binds(canonical, canonical));
-    for other in [
-        "3F2B1C4E-8A6D-4E2B-9C1A-5D7E8F9A0B1C",
-        "3f2b1c4e-8A6D-4e2b-9c1a-5d7e8f9a0b1c",
-        "3f2b1c4e8a6d4e2b9c1a5d7e8f9a0b1c",
-        "{3f2b1c4e-8a6d-4e2b-9c1a-5d7e8f9a0b1c}",
-        "urn:uuid:3f2b1c4e-8a6d-4e2b-9c1a-5d7e8f9a0b1c",
-    ] {
-        assert_eq!(Uuid::parse_str(other).unwrap().to_string(), canonical);
-        assert!(!binds(other, other), "{other} binds to the key of its text");
-        assert!(
-            !binds(other, canonical),
-            "{other} binds to the key of the canonical form"
-        );
-    }
+    let uuid = "3f2b1c4e-8a6d-4e2b-9c1a-5d7e8f9a0b1c";
+    let doc = build_did_doc(&format!("did:iiot:{uuid}"), &pk);
+    let record = build_record_mldsa65(&doc, &sk);
+    assert!(!matches!(
+        handler.handle_key_binding_verification(&digest(uuid), &record),
+        Ok(true)
+    ));
 }
 
 /// A record whose signature was produced with a DIFFERENT key than the one
@@ -418,7 +404,7 @@ fn test_did_handler_rejects_a_uuid_not_in_canonical_form() {
 fn test_did_handler_rejects_mismatched_key_in_record() {
     let pk = MlDsa65KeyPair::generate().unwrap().public_key().to_vec();
     let wrong_sk = MlDsa65KeyPair::generate().unwrap(); // key mismatch
-    let did = format!("did:iiot:{}", Uuid::new_v4());
+    let did = some_did();
     let doc = build_did_doc(&did, &pk); // public key from keypair A
     let record = build_record_mldsa65(&doc, &wrong_sk); // signed with keypair B's secret key
 
@@ -433,7 +419,7 @@ fn test_did_handler_rejects_mismatched_key_in_record() {
 fn test_did_handler_rejects_tampered_did_document() {
     let sk = MlDsa65KeyPair::generate().unwrap();
     let pk = sk.public_key().to_vec();
-    let did = format!("did:iiot:{}", Uuid::new_v4());
+    let did = some_did();
     let doc = build_did_doc(&did, &pk);
     let mut record = build_record_mldsa65(&doc, &sk);
 
@@ -464,100 +450,6 @@ fn test_did_handler_rejects_malformed_record() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Key-rotation verification (update flow)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// The update verification flow:
-/// - old record is signed with old keypair (self-signed)
-/// - new record is signed with new keypair (self-signed)
-/// - auth_signature = Sign(new_record, old_secret_key) proves the rotation
-#[test]
-fn test_did_handler_accepts_valid_key_rotation() {
-    let old_sk = MlDsa65KeyPair::generate().unwrap();
-    let old_pk = old_sk.public_key().to_vec();
-    let new_sk = MlDsa65KeyPair::generate().unwrap();
-    let new_pk = new_sk.public_key().to_vec();
-    let did = format!("did:iiot:{}", Uuid::new_v4());
-
-    let old_doc = build_did_doc(&did, &old_pk);
-    let old_record = build_record_mldsa65(&old_doc, &old_sk);
-
-    let new_doc = build_did_doc(&did, &new_pk);
-    let new_record = build_record_mldsa65(&new_doc, &new_sk);
-
-    // auth_signature = Sign(new_record_bytes, old_secret_key)
-    let auth_sig_detached = old_sk.sign(&new_record).unwrap();
-    let auth_sig = auth_sig_detached.clone();
-
-    let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
-    assert!(
-        handler
-            .handle_update_verification(&new_record, &old_record, &auth_sig)
-            .unwrap(),
-        "valid key-rotation update must be accepted"
-    );
-}
-
-/// Update where new_record has a valid auth_sig but an invalid self-signature
-/// (the DID Document embeds key A's public key but was signed with key B) is
-/// rejected at step 3 of verify_key_rotation.
-#[test]
-fn test_did_handler_rejects_update_with_invalid_new_record_self_sig() {
-    let old_sk = MlDsa65KeyPair::generate().unwrap();
-    let old_pk = old_sk.public_key().to_vec();
-    let new_pk = MlDsa65KeyPair::generate().unwrap().public_key().to_vec();
-    let wrong_new_sk = MlDsa65KeyPair::generate().unwrap(); // key mismatch for self-sig
-    let did = format!("did:iiot:{}", Uuid::new_v4());
-
-    let old_doc = build_did_doc(&did, &old_pk);
-    let old_record = build_record_mldsa65(&old_doc, &old_sk);
-
-    // new_record: doc embeds new_pk but is signed with wrong_new_sk → invalid self-sig
-    let new_doc = build_did_doc(&did, &new_pk);
-    let new_record = build_record_mldsa65(&new_doc, &wrong_new_sk);
-
-    // auth_sig is produced correctly with old_sk
-    let auth_sig = old_sk.sign(&new_record).unwrap();
-
-    let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
-    assert!(
-        !handler
-            .handle_update_verification(&new_record, &old_record, &auth_sig)
-            .unwrap(),
-        "update must be rejected when the new record's self-signature is invalid"
-    );
-}
-
-/// Key rotation with a wrong auth signature (not produced with the old key) fails.
-#[test]
-fn test_did_handler_rejects_invalid_auth_signature_on_update() {
-    let old_sk = MlDsa65KeyPair::generate().unwrap();
-    let old_pk = old_sk.public_key().to_vec();
-    let new_sk = MlDsa65KeyPair::generate().unwrap();
-    let new_pk = new_sk.public_key().to_vec();
-    let unrelated_sk = MlDsa65KeyPair::generate().unwrap(); // wrong key for auth_sig
-    let did = format!("did:iiot:{}", Uuid::new_v4());
-
-    let old_doc = build_did_doc(&did, &old_pk);
-    let old_record = build_record_mldsa65(&old_doc, &old_sk);
-
-    let new_doc = build_did_doc(&did, &new_pk);
-    let new_record = build_record_mldsa65(&new_doc, &new_sk);
-
-    // Sign with WRONG key — should fail step 2 of key-rotation verification.
-    let bad_sig = unrelated_sk.sign(&new_record).unwrap();
-    let bad_sig_bytes = bad_sig.clone();
-
-    let handler = DIDSignatureVerifierHandler::new(PathBuf::from("irrelevant.bin"));
-    assert!(
-        !handler
-            .handle_update_verification(&new_record, &old_record, &bad_sig_bytes)
-            .unwrap(),
-        "update with wrong auth signature must be rejected"
-    );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // ML-DSA-65 records (ADR 0003)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -575,15 +467,11 @@ fn ml_dsa_65_signature_length_is_the_crates() {
 #[test]
 fn an_ml_dsa_65_record_verifies_and_binds_to_its_key() {
     let handler = DIDSignatureVerifierHandler::new(PathBuf::from("unused"));
-    let sk = MlDsa65KeyPair::generate().unwrap();
-    let pk = sk.public_key().to_vec();
-    let uuid = Uuid::new_v4().to_string();
-    let did = format!("did:iiot:{uuid}");
-    let record = build_record_mldsa65(&build_did_doc_mldsa65(&did, mldsa65_jwk(&pk)), &sk);
+    let (did, record) = new_did_record();
 
     assert!(handler.handle_signature_verification(&record).unwrap());
     assert!(handler
-        .handle_key_binding_verification(&digest(&uuid), &record)
+        .handle_key_binding_verification(&key_of(&did), &record)
         .unwrap());
 }
 
@@ -594,7 +482,7 @@ fn an_ml_dsa_65_record_whose_key_says_otherwise_is_refused() {
     let handler = DIDSignatureVerifierHandler::new(PathBuf::from("unused"));
     let sk = MlDsa65KeyPair::generate().unwrap();
     let pk = sk.public_key().to_vec();
-    let did = format!("did:iiot:{}", Uuid::new_v4());
+    let did = some_did();
     let pub_b64 = base64url(&pk);
     for jwk in [
         json!({ "kty": "AKP", "alg": "ML-DSA-44", "pub": pub_b64 }),
@@ -616,7 +504,7 @@ fn an_ml_dsa_65_record_whose_key_says_otherwise_is_refused() {
 fn records_with_another_algorithm_are_refused() {
     let handler = DIDSignatureVerifierHandler::new(PathBuf::from("unused"));
     let signing_key = SigningKey::generate(&mut OsRng);
-    let did = format!("did:iiot:{}", Uuid::new_v4());
+    let did = some_did();
     let jwk = json!({ "kty": "OKP", "crv": "Ed25519",
                       "x": base64url(signing_key.verifying_key().as_bytes()) });
     let doc = build_did_doc_mldsa65(&did, jwk);

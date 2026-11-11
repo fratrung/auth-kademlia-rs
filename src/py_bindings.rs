@@ -22,11 +22,12 @@
 //!     # Bootstrap from a known peer
 //!     peers = await node.bootstrap([("192.168.1.10", 5678)])
 //!
-//!     # Store a signed DID record (bytes)
-//!     ok = await node.set("my-did-uuid", signed_record_bytes)
+//!     # Publish version 0 of a DID record (bytes), under its DID
+//!     # ("did:iiot:" + base64url of the SHA-256 of the first document)
+//!     ok = await node.set(did, signed_record_bytes)
 //!
 //!     # Retrieve it from any node in the network
-//!     record = await node.get("my-did-uuid")   # bytes or None
+//!     record = await node.get(did)   # bytes or None
 //!
 //!     await node.stop()
 //!
@@ -74,6 +75,8 @@ fn rejection_name(reason: SetRejection) -> &'static str {
         SetRejection::CapacityExceeded => "capacity_exceeded",
         SetRejection::Unavailable => "unavailable",
         SetRejection::NoResponsibleNodes => "no_responsible_nodes",
+        SetRejection::NewerVersion => "newer_version",
+        SetRejection::UseUpdate => "use_update",
     }
 }
 
@@ -87,6 +90,8 @@ fn set_report_to_py<'py>(py: Python<'py>, report: &SetReport) -> PyResult<Bound<
     result.set_item("unavailable_nodes", report.unavailable_nodes)?;
     result.set_item("conflict_rejections", report.conflict_rejections)?;
     result.set_item("invalid_rejections", report.invalid_rejections)?;
+    result.set_item("stale_rejections", report.stale_rejections)?;
+    result.set_item("newer_claimed", report.newer_claimed)?;
     Ok(result)
 }
 
@@ -246,7 +251,7 @@ impl PyServer {
         })
     }
 
-    /// Look up ``key`` in the DHT.
+    /// Look up ``key``, a DID, in the DHT.
     ///
     /// Checks local storage first, then performs an iterative network lookup.
     /// The signature embedded in the stored record is verified before returning.
@@ -264,11 +269,12 @@ impl PyServer {
         })
     }
 
-    /// Store ``value`` under ``key`` in the DHT.
+    /// Publish version 0 of a DID record, ``value``, under its DID ``key``
+    /// (ADR 0005). Later versions go through ``update``.
     ///
-    /// The record is rejected if the key already exists, if the signature
-    /// embedded in ``value`` does not verify against its own DID Document, or
-    /// if the Document's ``did:iiot:<uuid>`` does not map to ``key``.
+    /// The record is rejected if the key already holds another record, if
+    /// the signature embedded in ``value`` does not verify against its own
+    /// DID Document, or if the Document is not version 0 of the DID ``key``.
     ///
     /// ``value`` must follow the AuthKademlia record format:
     ///
@@ -296,13 +302,17 @@ impl PyServer {
         })
     }
 
-    /// Store ``value`` and return exact replica-level publication details.
+    /// Publish version 0, as ``set``, and return exact replica-level
+    /// publication details.
     ///
     /// Returns:
     ///     dict: ``status`` is ``complete``, ``degraded``, or ``rejected``;
-    ///     ``reason`` is set for rejected publications; ``report`` contains
-    ///     expected, acknowledged, unavailable, conflicting, invalid, and
-    ///     capacity-rejected replica counts.
+    ///     ``reason`` is set for rejected publications (``newer_version``
+    ///     when a replica holds or reports a later version, ``use_update``
+    ///     for a version after 0); ``report`` contains expected,
+    ///     acknowledged, unavailable, conflicting, invalid, stale and
+    ///     capacity-rejected replica counts, and ``newer_claimed``, the
+    ///     replicas that refused because a node reported a later version.
     fn set_detailed<'py>(
         &self,
         py: Python<'py>,
@@ -317,16 +327,16 @@ impl PyServer {
         })
     }
 
-    /// Update an existing record (DID key-rotation flow).
+    /// Publish version N ≥ 1 of a DID record (ADR 0005).
     ///
-    /// ``auth_signature`` must be a signature of the full ``value`` bytes
-    /// produced with the **old** DID Document's private key.  This proves
-    /// that the owner of the current record authorises the rotation.
-    /// ``value`` must also carry a valid self-signature under the **new** key.
-    /// Its top-level DID UUID must continue to map to ``key``.
+    /// ``value`` is the new version, signed by the key the version before
+    /// committed to, and ``earlier`` the owner's saved versions 0 to N−1,
+    /// used only to replay the chain to replicas that miss versions. Resend
+    /// the same saved bytes on every retry, and call it again at least once
+    /// every 24 hours.
     ///
-    /// For the special status-list key, pass ``auth_signature=None``; the
-    /// issuer signature embedded in ``value`` is used instead.
+    /// For the special status-list key, ``value`` is the issuer-signed list
+    /// and ``earlier`` is empty.
     ///
     /// Returns:
     ///     bool | None: ``True`` on success, ``None`` if rejected.
@@ -335,14 +345,14 @@ impl PyServer {
         py: Python<'py>,
         key: String,
         value: Vec<u8>,
-        auth_signature: Option<Vec<u8>>,
+        earlier: Vec<Vec<u8>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             // Read lock: same rationale as set — Server::update takes &self and
             // the storage (a DashMap) synchronises its own writes.
             let s = inner.read().await;
-            Ok(s.update(&key, value, auth_signature).await)
+            Ok(s.update(&key, value, earlier).await)
         })
     }
 
@@ -438,6 +448,26 @@ impl PyMlDsaKeyManager {
         py: Python<'py>,
     ) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
         py.allow_threads(|| self.inner.generate_keypair())
+            .map(|(pk, sk)| (PyBytes::new_bound(py, &pk), PyBytes::new_bound(py, &sk)))
+            .map_err(km_err)
+    }
+
+    /// The ML-DSA-65 ``(public_key, private_key)`` pair of a 32-byte
+    /// ``seed`` (FIPS 204): the same seed always gives the same pair.
+    ///
+    /// The application generates the seed of the next key and keeps only
+    /// the seed, in a secure element where the device has one, until the
+    /// rotation that reveals it (ADR 0005). Its ``nextKeyHash`` is the
+    /// SHA-256 of the ``public_key`` returned here.
+    ///
+    /// Raises:
+    ///     RuntimeError: ``seed`` is not 32 bytes long.
+    fn keypair_from_seed<'py>(
+        &self,
+        py: Python<'py>,
+        seed: Vec<u8>,
+    ) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
+        py.allow_threads(|| self.inner.keypair_from_seed(&seed))
             .map(|(pk, sk)| (PyBytes::new_bound(py, &pk), PyBytes::new_bound(py, &sk)))
             .map_err(km_err)
     }

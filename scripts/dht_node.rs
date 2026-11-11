@@ -6,52 +6,42 @@
 /// IS_SEED         if set, skip bootstrap and act as permanent seed
 /// BOOTSTRAP_ADDR  <ip>:<port> of the seed to bootstrap from
 /// ROLE            "publisher" (default) | "retriever"
-///                   publisher  → generate + publish a DID Document then keep running
-///                   retriever  → wait, then fetch a key from the DHT and print it
-/// FIXED_DID_UUID  if set, use this string as the DID UUID so the key is deterministic
-///                 (pass the same value to the retriever via RETRIEVE_KEY)
-/// RETRIEVE_KEY    DHT key to look up (required when ROLE=retriever)
+///                   publisher  → generate its keys, publish version 0 of a new
+///                                DID, write the DID to /shared/did when that
+///                                directory exists, then keep running
+///                   retriever  → read the DID from /shared/did (or RETRIEVE_KEY),
+///                                fetch its record from the DHT and print it
+/// RETRIEVE_KEY    DID to look up instead of the one in /shared/did (optional)
 /// MAX_STORAGE_BYTES  per-node key/value budget (default: 536870912 = 512 MiB)
 /// RUST_LOG        log filter, e.g. "info", "debug", "auth_kademlia_rs=trace"
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use auth_kademlia_rs::auth_handler::did::{canonical_bytes, derive_did, PLACEHOLDER};
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::Server;
 use auth_kademlia_rs::storage::{ForgetfulStorage, DEFAULT_MAX_STORAGE_BYTES, DEFAULT_TTL};
 
 use auth_kademlia_rs::crypto::mldsa::{self as mldsa, MlDsa65KeyPair};
+use auth_kademlia_rs::utils::digest_bytes;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
-use uuid::Uuid;
+
+/// Where the publisher writes the DID it published, and the retriever reads
+/// it: a volume the two containers share (ADR 0005).
+const DID_FILE: &str = "/shared/did";
+
+/// How long the retriever waits for the DID file.
+const DID_FILE_WAIT: Duration = Duration::from_secs(120);
 
 fn base64url_encode(pk: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(pk)
 }
 
-fn sort_json_keys(v: &Value) -> Value {
-    match v {
-        Value::Object(map) => {
-            let sorted: serde_json::Map<String, Value> = map
-                .iter()
-                .collect::<std::collections::BTreeMap<_, _>>()
-                .into_iter()
-                .map(|(k, v)| (k.clone(), sort_json_keys(v)))
-                .collect();
-            Value::Object(sorted)
-        }
-        Value::Array(arr) => Value::Array(arr.iter().map(sort_json_keys).collect()),
-        other => other.clone(),
-    }
-}
-
-fn encode_did_document(doc: &Value) -> Vec<u8> {
-    serde_json::to_vec(&sort_json_keys(doc)).expect("DID Document serialization failed")
-}
-
 /// Wire format: [algorithm: 12 B][ML-DSA-65 signature][DID Document JSON]
 fn build_signed_record(doc: &Value, secret_key: &MlDsa65KeyPair, algorithm: &str) -> Vec<u8> {
-    let doc_bytes = encode_did_document(doc);
+    let doc_bytes = canonical_bytes(doc).expect("a DID Document in canonical form");
 
     let mut alg_field = [0u8; 12];
     let copy_len = algorithm.len().min(12);
@@ -67,10 +57,12 @@ fn build_signed_record(doc: &Value, secret_key: &MlDsa65KeyPair, algorithm: &str
     record
 }
 
-fn build_did_document(did: &str, signing_pk: &[u8]) -> Value {
+/// The draft of version 0 of a new DID (ADR 0005): its own DID written as
+/// the placeholder, no `id`, and the hash of the next public key.
+fn version_zero_draft(signing_pk: &[u8], next_pk: &[u8]) -> Value {
+    let did = PLACEHOLDER;
     json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
-        "id": did,
         "verificationMethod": [
             {
                 "id": format!("{}#k0", did),
@@ -85,8 +77,48 @@ fn build_did_document(did: &str, signing_pk: &[u8]) -> Value {
             "id":              format!("{}#device", did),
             "type":            "DeviceAgent",
             "serviceEndpoint": "http://example.com/device"
-        }]
+        }],
+        "seq": 0,
+        "nextKeyHash": base64url_encode(&digest_bytes(next_pk)),
     })
+}
+
+/// Write `did` to the DID file through a temporary file and a rename, so the
+/// retriever never reads half of it. Without the shared directory (a
+/// publisher with no volume, or a run outside Docker) it writes nothing.
+fn write_did_file(did: &str) {
+    let path = Path::new(DID_FILE);
+    let Some(dir) = path.parent().filter(|dir| dir.is_dir()) else {
+        log::info!("Publisher: no {} volume, DID not written", DID_FILE);
+        return;
+    };
+    let partial = dir.join("did.partial");
+    match std::fs::write(&partial, did).and_then(|()| std::fs::rename(&partial, path)) {
+        Ok(()) => log::info!("Publisher: DID written to {}", DID_FILE),
+        Err(error) => log::error!("Publisher: cannot write {}: {}", DID_FILE, error),
+    }
+}
+
+/// The DID to look up: `RETRIEVE_KEY`, or the DID file once the publisher
+/// has written it.
+async fn did_to_retrieve() -> Option<String> {
+    if let Ok(did) = std::env::var("RETRIEVE_KEY") {
+        return Some(did);
+    }
+    log::info!("Retriever: waiting for the publisher's DID in {}", DID_FILE);
+    let deadline = Instant::now() + DID_FILE_WAIT;
+    while Instant::now() < deadline {
+        if let Ok(text) = std::fs::read_to_string(DID_FILE) {
+            return Some(text.trim().to_string());
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    log::error!(
+        "Retriever: no DID in {} after {} s",
+        DID_FILE,
+        DID_FILE_WAIT.as_secs()
+    );
+    None
 }
 
 /// Decode a signed record and return the pretty-printed DID Document JSON.
@@ -158,18 +190,17 @@ async fn bootstrap_with_retries(server: &Server, ip: &str, port: u16) -> bool {
 }
 
 async fn run_publisher(server: &Server) {
-    let uuid = std::env::var("FIXED_DID_UUID").unwrap_or_else(|_| Uuid::new_v4().to_string());
-    let did = format!("did:iiot:{}", uuid);
-    let dht_key = uuid.clone();
-
-    log::info!("Publisher: DID  = {}", did);
-    log::info!("Publisher: key  = {}", dht_key);
-
+    // The current key signs version 0; the next one only commits to the
+    // version after it, which this demo does not publish.
     let dsk = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
-    let dpk = dsk.public_key().to_vec();
+    let next = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
     log::debug!("Publisher: keypairs generated");
 
-    let doc = build_did_document(&did, &dpk);
+    let draft = version_zero_draft(dsk.public_key(), next.public_key());
+    let (did, doc) = derive_did(&draft).expect("version 0 gives its DID");
+    let dht_key = did.clone();
+    log::info!("Publisher: DID  = {}", did);
+
     let record = build_signed_record(&doc, &dsk, "ML-DSA-65");
 
     log::info!(
@@ -187,6 +218,7 @@ async fn run_publisher(server: &Server) {
                     "Publisher: DID Document published successfully (key={})",
                     dht_key
                 );
+                write_did_file(&did);
 
                 // Immediate local round-trip to confirm.
                 match server.get(&dht_key).await {
@@ -220,17 +252,10 @@ async fn run_publisher(server: &Server) {
 }
 
 async fn run_retriever(server: &Server) {
-    let key = match std::env::var("RETRIEVE_KEY") {
-        Ok(k) => k,
-        Err(_) => {
-            log::error!("Retriever: RETRIEVE_KEY env var is not set — nothing to retrieve");
-            return;
-        }
+    let Some(key) = did_to_retrieve().await else {
+        return;
     };
-
     log::info!("Retriever: will look up key={}", key);
-    log::info!("Retriever: waiting 5 s for publisher to propagate…");
-    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
     let max_attempts = 10;
     for attempt in 1..=max_attempts {

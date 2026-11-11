@@ -107,6 +107,15 @@ impl MlDsaKeyManager {
         Self { keys_dir }
     }
 
+    /// The `(public_key, private_key)` pair of a 32-byte ML-DSA-65 seed
+    /// (FIPS 204, Algorithm 6): the same seed gives the same pair, so the
+    /// owner keeps only the seed of its next key (ADR 0005, open point 22).
+    /// The private key is the expanded one `sign` takes.
+    pub fn keypair_from_seed(&self, seed: &[u8]) -> Result<(Vec<u8>, Vec<u8>), KeyManagerError> {
+        let key = MlDsa65KeyPair::from_seed(seed)?;
+        Ok((key.public_key().to_vec(), key.private_key()?))
+    }
+
     /// Sign `message` with the ML-DSA-65 `private_key`.
     pub fn sign(&self, private_key: &[u8], message: &[u8]) -> Result<Vec<u8>, KeyManagerError> {
         Ok(MlDsa65Signer.sign(private_key, message)?)
@@ -494,6 +503,32 @@ mod tests {
         assert_eq!(jose["kty"], "AKP");
         assert_eq!(jose["alg"], "ML-DSA-65");
         assert_eq!(b64decode_key(&jose["pub"]).unwrap(), pk);
+    }
+
+    #[test]
+    fn ml_dsa_a_seed_gives_the_same_pair_and_it_signs() {
+        let km = MlDsaKeyManager::new(tmp_dir());
+        let seed = [3u8; MlDsa65KeyPair::SEED_LEN];
+        let (pk, sk) = km.keypair_from_seed(&seed).unwrap();
+        assert_eq!(
+            km.keypair_from_seed(&seed).unwrap(),
+            (pk.clone(), sk.clone())
+        );
+        assert_eq!(pk.len(), crate::crypto::mldsa::public_key_len());
+        let sig = km.sign(&sk, b"next version").unwrap();
+        assert!(km.verify_signature(&pk, b"next version", &sig).unwrap());
+
+        let (other, _) = km
+            .keypair_from_seed(&[4u8; MlDsa65KeyPair::SEED_LEN])
+            .unwrap();
+        assert_ne!(other, pk);
+        for wrong in [
+            0,
+            MlDsa65KeyPair::SEED_LEN - 1,
+            MlDsa65KeyPair::SEED_LEN + 1,
+        ] {
+            assert!(km.keypair_from_seed(&vec![3u8; wrong]).is_err(), "{wrong}");
+        }
     }
 
     #[test]

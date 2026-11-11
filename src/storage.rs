@@ -22,6 +22,17 @@ pub enum StorageWriteStatus {
     CapacityExceeded,
 }
 
+/// Result of `IStorage::replace_if`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplaceStatus {
+    /// The stored value was the expected one, and is now the new one.
+    Replaced,
+    /// The key holds another value, an expired one, or none: nothing written.
+    Changed,
+    /// The new value does not fit in the storage budget: nothing written.
+    CapacityExceeded,
+}
+
 /// Abstract key-value store interface.
 ///
 /// All methods take `&self` — implementations must be internally synchronized
@@ -33,6 +44,12 @@ pub trait IStorage: Send + Sync {
     /// Atomically insert `key → value` only if the key is absent.
     /// An identical live value is idempotent; a different value is a conflict.
     fn insert_if_absent(&self, key: Vec<u8>, value: Vec<u8>) -> StorageWriteStatus;
+
+    /// Atomically replace `expected` with `new` under `key`, only if `key`
+    /// still holds `expected` and it has not expired: a compare-and-swap, so
+    /// that a replica replaces only the record it checked (ADR 0005, open
+    /// point 14). The new value gets a fresh expiry.
+    fn replace_if(&self, key: &[u8], expected: &[u8], new: Vec<u8>) -> ReplaceStatus;
 
     /// Retrieve a value, returning `default` if the key is absent.
     fn get_default(&self, key: &[u8], default: Option<Vec<u8>>) -> Option<Vec<u8>>;
@@ -214,6 +231,26 @@ impl IStorage for ForgetfulStorage {
                 }
             }
         }
+    }
+
+    fn replace_if(&self, key: &[u8], expected: &[u8], new: Vec<u8>) -> ReplaceStatus {
+        // Under the lock of this one entry, with no `.await`, as
+        // `insert_if_absent`: nothing else writes the key in between.
+        let Some(mut entry) = self.data.get_mut(key) else {
+            return ReplaceStatus::Changed;
+        };
+        if self.is_expired(entry.1) || entry.0 != expected {
+            return ReplaceStatus::Changed;
+        }
+        let old_len = entry.0.len();
+        if new.len() > old_len && !self.reserve_bytes(new.len() - old_len) {
+            return ReplaceStatus::CapacityExceeded;
+        }
+        if old_len > new.len() {
+            self.release_bytes(old_len - new.len());
+        }
+        *entry = (new, Instant::now());
+        ReplaceStatus::Replaced
     }
 
     fn get_default(&self, key: &[u8], default: Option<Vec<u8>>) -> Option<Vec<u8>> {
