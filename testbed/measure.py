@@ -272,10 +272,11 @@ def store_quorum(k):
     return max(2, min(n, math.ceil((n + f + 1) / 2)))
 
 
-def set_liars(liars, lying):
-    """Make `liars` lie in FindHash (`ctl <node> lie on`), or stop."""
+def set_liars(liars, lying, lie="on"):
+    """Make `liars` lie in FindHash, or stop: `lie` is `on` (a version far
+    ahead) or `v0` (another version 0 they cannot show, open point 27)."""
     for liar in liars:
-        ctl(liar, "lie", "on" if lying else "off", check=lying)
+        ctl(liar, "lie", lie if lying else "off", check=lying)
 
 
 def cmd_update(args):
@@ -302,7 +303,7 @@ def cmd_update(args):
             replicas = [n for n in closest(nodes, dht_key(did), config["k"]) if n != args.owner]
             # The replicas closest to the key lie, the ones every check asks.
             liars = replicas[: args.liars]
-            set_liars(liars, True)
+            set_liars(liars, True, args.lie)
             published = ctl(args.owner, "publish")
             versions = [published["record"]["signing_key"]]
             time.sleep(args.settle)
@@ -342,10 +343,11 @@ def cmd_update(args):
             entry = {
                 "did": did,
                 "liars": liars,
+                "lie": args.lie,
                 "publish": published["outcome"],
                 "publish_report": {field: published.get(field) for field in
                                    ("stored", "already_present", "unavailable", "conflicts", "stale",
-                                    "newer_claimed", "invalid")},
+                                    "newer_claimed", "unproven_refusals", "invalid")},
                 "versions": versions,
                 "rotations": rotations,
                 "victims": victims,
@@ -435,7 +437,7 @@ def cmd_churn(args):
         f"owner {args.owner}, {config['nodes']} nodes, k={k} (quorum {quorum}), profile {config['profile']}, "
         f"image {config.get('image', IMAGE)}"
     )
-    set_liars(liars, True)
+    set_liars(liars, True, args.lie)
     try:
         published = ctl(args.owner, "publish")
         versions = [published["record"]["signing_key"]]
@@ -496,7 +498,7 @@ def cmd_churn(args):
     GENERATED.mkdir(exist_ok=True)
     out = GENERATED / f"churn-{config['profile']}-{time.strftime('%Y%m%d-%H%M%S')}.json"
     out.write_text(json.dumps({"config": config, "args": vars(args) | {"func": None}, "did": did,
-                               "replicas": replicas, "liars": liars, "versions": versions,
+                               "replicas": replicas, "liars": liars, "lie": args.lie, "versions": versions,
                                "samples": samples, "crashes": crashes,
                                "republications": republications}, indent=2) + "\n")
     print(f"  details: {out}")
@@ -704,12 +706,16 @@ def main():
     up.add_argument("--liars", type=int, default=0,
                     help="replicas closest to the key that lie in FindHash during the round (image built "
                          "from ADR 0005)")
+    up.add_argument("--lie", choices=["on", "v0"], default="on",
+                    help="what the liars claim: a version far ahead (on) or another version 0 (v0)")
     up.set_defaults(func=cmd_update)
     ch = sub.add_parser("churn", help="copies of a record over time while nodes crash, with liars")
     ch.add_argument("--owner", default="node-1")
     ch.add_argument("--duration", type=float, default=600, help="seconds of churn")
     ch.add_argument("--rotations", type=int, default=1, help="rotations after the publication, before the churn")
     ch.add_argument("--liars", type=int, default=0, help="replicas closest to the key that lie in FindHash")
+    ch.add_argument("--lie", choices=["on", "v0"], default="on",
+                    help="what the liars claim: a version far ahead (on) or another version 0 (v0)")
     ch.add_argument("--churn-every", type=float, default=10, help="seconds between two crashes")
     ch.add_argument("--churn-among", choices=["replicas", "all"], default="replicas",
                     help="nodes that may crash: the k closest to the key, or every node (never the owner or a liar)")

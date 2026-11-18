@@ -16,7 +16,7 @@
 //! RUST_LOG    log filter (default `warn,testbed_node=info`)
 //!
 //! Commands: `info`, `new`, `publish`, `update`, `republish`, `discard`,
-//! `forget`, `get <did>`, `watch <did> <ms>`, `push <did>`, `lie on|off`,
+//! `forget`, `get <did>`, `watch <did> <ms>`, `push <did>`, `lie on|v0|off`,
 //! `stats`, `storage`, `routing`. A DID may be given as its suffix, without
 //! `did:iiot:`.
 //! Each answers with one JSON line. Times named `*_unix_ms` are wall-clock
@@ -35,6 +35,7 @@ use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::crawling::NodeSpiderCrawl;
 use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
 use auth_kademlia_rs::network::{Server, SetOutcome};
+use auth_kademlia_rs::protocol::Lie;
 use auth_kademlia_rs::storage::IStorage;
 use auth_kademlia_rs::utils::digest;
 use serde_json::{json, Value};
@@ -131,9 +132,10 @@ async fn handle(node: &Node, line: &str) -> Value {
             None => json!({ "error": "usage: push <did>" }),
         },
         "lie" => match words.next() {
-            Some("on") => lie(node, true).await,
-            Some("off") => lie(node, false).await,
-            _ => json!({ "error": "usage: lie on|off" }),
+            Some("on") => lie(node, Lie::LaterVersion).await,
+            Some("v0") => lie(node, Lie::OtherVersionZero).await,
+            Some("off") => lie(node, Lie::Honest).await,
+            _ => json!({ "error": "usage: lie on|v0|off" }),
         },
         "stats" => stats(node).await,
         "counters" => counters(node).await,
@@ -142,7 +144,7 @@ async fn handle(node: &Node, line: &str) -> Value {
         other => json!({
             "error": format!("unknown command '{other}'"),
             "commands": ["info", "new", "publish", "update", "republish", "discard", "forget",
-                         "get <did>", "watch <did> <ms>", "push <did>", "lie on|off", "stats",
+                         "get <did>", "watch <did> <ms>", "push <did>", "lie on|v0|off", "stats",
                          "counters",
                          "storage", "routing"],
         }),
@@ -207,7 +209,7 @@ async fn publish(node: &Node) -> Value {
     };
     log::info!(
         "publish {} key {}: {} - stored {}, already present {}, unavailable {}, \
-         conflicts {}, stale {}, newer claimed {}, full {} ({} ms)",
+         conflicts {}, stale {}, newer claimed {}, unproven {}, full {} ({} ms)",
         id.did,
         signing_key_of(&version_zero),
         status,
@@ -217,6 +219,7 @@ async fn publish(node: &Node) -> Value {
         report.conflict_rejections,
         report.stale_rejections,
         report.newer_claimed,
+        report.unproven_refusals,
         report.capacity_rejections,
         ms
     );
@@ -231,6 +234,7 @@ async fn publish(node: &Node) -> Value {
         "conflicts": report.conflict_rejections,
         "stale": report.stale_rejections,
         "newer_claimed": report.newer_claimed,
+        "unproven_refusals": report.unproven_refusals,
         "capacity_rejections": report.capacity_rejections,
         "invalid": report.invalid_rejections,
         "ms": ms,
@@ -406,15 +410,13 @@ async fn push(node: &Node, target: &str) -> Value {
 }
 
 /// Testbed only: make this node answer every `FindHash` with a made-up
-/// version far ahead, or stop (ADR 0005, Validation). A node that restarts
-/// answers honestly again.
-async fn lie(node: &Node, lying: bool) -> Value {
-    let listening = node.server.read().await.set_lying(lying);
-    log::info!(
-        "FindHash answers: {}",
-        if lying { "lying" } else { "honest" }
-    );
-    json!({ "lying": lying, "listening": listening })
+/// version far ahead (`on`), another version 0 it cannot show (`v0`), or
+/// honestly again (`off`) (ADR 0005, Validation, open point 27). A node that
+/// restarts answers honestly again.
+async fn lie(node: &Node, lie: Lie) -> Value {
+    let listening = node.server.read().await.set_lying(lie);
+    log::info!("FindHash answers: {lie:?}");
+    json!({ "lying": lie != Lie::Honest, "lie": format!("{lie:?}"), "listening": listening })
 }
 
 /// Drop the pending rotation. The next `update` signs another version with

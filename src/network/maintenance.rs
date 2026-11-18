@@ -67,10 +67,10 @@ impl Server {
     /// Testbed only: make this node lie in `FindHash`, or stop
     /// (`KademliaProtocol::set_lying`). False when it is not listening.
     #[cfg(feature = "testbed")]
-    pub fn set_lying(&self, lying: bool) -> bool {
+    pub fn set_lying(&self, lie: crate::protocol::Lie) -> bool {
         self.protocol
             .as_ref()
-            .map(|protocol| protocol.set_lying(lying))
+            .map(|protocol| protocol.set_lying(lie))
             .is_some()
     }
 

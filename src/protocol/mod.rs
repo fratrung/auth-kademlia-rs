@@ -89,10 +89,23 @@ pub struct KademliaProtocol {
     tasks: StdMutex<Option<JoinSet<()>>>,
     /// Bootstrap addresses, kept so that an isolated node can rejoin.
     seeds: StdMutex<Vec<(String, u16)>>,
-    /// Testbed only: answer every `FindHash` with a made-up newer version
-    /// (`set_lying`). Not in any other build.
+    /// Testbed only: how this node lies in `FindHash` (`set_lying`, a `Lie`
+    /// as a number). Not in any other build.
     #[cfg(feature = "testbed")]
-    lying: std::sync::atomic::AtomicBool,
+    lie: std::sync::atomic::AtomicU8,
+}
+
+/// Testbed only: how a node answers `FindHash` (`KademliaProtocol::set_lying`).
+#[cfg(feature = "testbed")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lie {
+    /// The version and hash of the record it holds, as every node.
+    Honest = 0,
+    /// A version far ahead and a made-up hash, for any key.
+    LaterVersion = 1,
+    /// Another version 0: a made-up hash, for any key, and no record to show
+    /// for it (open point 27).
+    OtherVersionZero = 2,
 }
 
 impl KademliaProtocol {
@@ -129,7 +142,7 @@ impl KademliaProtocol {
             tasks: StdMutex::new(Some(JoinSet::new())),
             seeds: StdMutex::new(Vec::new()),
             #[cfg(feature = "testbed")]
-            lying: std::sync::atomic::AtomicBool::new(false),
+            lie: std::sync::atomic::AtomicU8::new(Lie::Honest as u8),
         }
     }
 
@@ -188,18 +201,22 @@ impl KademliaProtocol {
     }
 
     /// Testbed only: from now on, answer every `FindHash`, for any key, with
-    /// a version far ahead and a made-up hash this node never serves, to
-    /// measure what nodes that lie in `FindHash` block (ADR 0005,
-    /// Validation). Records are stored and served as usual.
+    /// `lie`: a version far ahead, or another version 0, under a made-up hash
+    /// this node never serves, to measure what nodes that lie in `FindHash`
+    /// block (ADR 0005, Validation). Records are stored and served as usual.
     #[cfg(feature = "testbed")]
-    pub fn set_lying(&self, lying: bool) {
-        self.lying
-            .store(lying, std::sync::atomic::Ordering::Relaxed);
+    pub fn set_lying(&self, lie: Lie) {
+        self.lie
+            .store(lie as u8, std::sync::atomic::Ordering::Relaxed);
     }
 
     #[cfg(feature = "testbed")]
-    pub(crate) fn is_lying(&self) -> bool {
-        self.lying.load(std::sync::atomic::Ordering::Relaxed)
+    pub(crate) fn lie(&self) -> Lie {
+        match self.lie.load(std::sync::atomic::Ordering::Relaxed) {
+            1 => Lie::LaterVersion,
+            2 => Lie::OtherVersionZero,
+            _ => Lie::Honest,
+        }
     }
 }
 

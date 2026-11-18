@@ -159,7 +159,7 @@ default; Y.1541 bounds delay variation at 50 ms for classes 0 and 1.
 | `ctl NODE republish` | Send the current version again with the saved bytes, as the owner does at least every 24 hours |
 | `ctl NODE discard` | Drop a rotation that was not confirmed; the next `update` signs another version with the same key, which replicas that took the first refuse |
 | `ctl NODE push DID` | Send the record this node holds for a DID to the `k` nodes closest to its key, as the hourly republication does, and count the answers |
-| `ctl NODE lie on` / `lie off` | Answer every `FindHash` with a made-up version far ahead, or stop (testbed builds only) |
+| `ctl NODE lie on` / `lie v0` / `lie off` | Answer every `FindHash` with a made-up version far ahead, or with another version 0 it cannot show (ADR 0005, open point 27), or stop (testbed builds only) |
 | `ctl NODE get DID` | Read a DID; `get TARGET --from NODE` also takes a node name |
 | `ctl NODE storage` | Records this node holds, with their signing key |
 | `ctl NODE routing` | This node's closest contacts |
@@ -375,7 +375,8 @@ other node hold or read (current, older, other, none), and with `--counters`
 the traffic of the last rotation, the checks by outcome and the checks that
 fetched the version before, with their duration. `--liars N` makes the `N`
 replicas closest to the key lie in `FindHash` (`ctl <node> lie on`) for the
-round. The key rule covers both UUID and ADR 0005 DIDs, so the same mode
+round; with `--lie v0` they claim another version 0 instead (`lie v0`), which
+an empty replica now asks them to show (ADR 0005, open point 27). The key rule covers both UUID and ADR 0005 DIDs, so the same mode
 measures images from before and after ADR 0005.
 
 ```

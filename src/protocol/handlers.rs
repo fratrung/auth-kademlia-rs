@@ -330,11 +330,20 @@ impl KademliaProtocol {
     ) -> RpcMessage {
         let found = self.rpc_find_value(sender_id, sender_addr, key).await;
         #[cfg(feature = "testbed")]
-        if self.is_lying() {
-            return RpcMessage::FindHashHit {
-                seq: crate::auth_handler::did::MAX_INTEGER,
-                hash: rand::random(),
-            };
+        match self.lie() {
+            super::Lie::Honest => {}
+            super::Lie::LaterVersion => {
+                return RpcMessage::FindHashHit {
+                    seq: crate::auth_handler::did::MAX_INTEGER,
+                    hash: rand::random(),
+                };
+            }
+            super::Lie::OtherVersionZero => {
+                return RpcMessage::FindHashHit {
+                    seq: 0,
+                    hash: rand::random(),
+                };
+            }
         }
         match found {
             // The Status List has no version: it answers 0.
@@ -395,21 +404,28 @@ mod tests {
 
     use super::*;
 
-    /// The testbed switch: a lying node claims a version far ahead for a key
-    /// it does not hold, and answers honestly again once it is switched off.
+    /// The testbed switch: a lying node claims a version far ahead, or
+    /// another version 0, for a key it does not hold, and answers honestly
+    /// again once it is switched off.
     #[cfg(feature = "testbed")]
     #[tokio::test]
-    async fn a_lying_node_claims_a_version_far_ahead_for_any_key() {
+    async fn a_lying_node_claims_a_version_for_any_key() {
+        use super::super::Lie;
         let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
         let ask = || protocol.rpc_find_hash([2; ID_LEN], ("127.0.0.1".into(), 9000), [7; ID_LEN]);
 
         assert!(matches!(ask().await, RpcMessage::FindValueNodes { .. }));
-        protocol.set_lying(true);
+        protocol.set_lying(Lie::LaterVersion);
         assert!(matches!(
             ask().await,
             RpcMessage::FindHashHit { seq, .. } if seq == crate::auth_handler::did::MAX_INTEGER
         ));
-        protocol.set_lying(false);
+        protocol.set_lying(Lie::OtherVersionZero);
+        assert!(matches!(
+            ask().await,
+            RpcMessage::FindHashHit { seq: 0, .. }
+        ));
+        protocol.set_lying(Lie::Honest);
         assert!(matches!(ask().await, RpcMessage::FindValueNodes { .. }));
     }
 
