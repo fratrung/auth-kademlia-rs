@@ -220,14 +220,17 @@ routing untouched, as today (`AGENTS.md`, `src/protocol/store_check.rs`).
   | Answers | Outcome |
   |---|---|
   | at least `store_quorum(n)` answers with `seq ≥ 1` | `NewerClaimed`: the DID has moved on; the replica takes the current version by R5 |
-  | any `(0, h)` with `h ≠ record_hash(v0)` | `Conflict`: another record of version 0, signed again; logged with both hashes |
+  | a `(0, h)` with `h ≠ record_hash(v0)` whose node shows that record when asked: the same document signed again, with a valid signature (open point 27) | `Conflict`: another record of version 0, signed again; logged with both hashes |
   | every node asked has answered, no row above | verify the self-signature, then accept |
   | no refusal, and silence or nobody to ask | no answer, as R5: never accept on silence |
 
   The first refusal needs the quorum, not one answer. Below the quorum R5
   cannot accept the current version at an empty replica, so the owner's
   replay from version 0 is the only way to bring copies back, and a single
-  holder of a later version must not stop it. The owner's own node does not
+  holder of a later version must not stop it. The second needs the record:
+  the replica fetches it from each node that claims another version 0, the
+  `k − 1` closest at most, and drops a claim whose node does not show it in
+  time (open point 27). The owner's own node does not
   ask about its own version 0: `set` writes it locally, as today
   (`src/network/publish.rs`). A first publication pays one round of
   `FindHash` per empty replica, as every STORE does today.
@@ -454,10 +457,12 @@ point 22.
     and 20);
   - `StoreStatus` gains `Stale`, `NewerClaimed` and `MissingPrevious` (open
     points 13, 20 and 21), and `SetReport` counts `Stale` in
-    `stale_rejections`, apart from `conflict_rejections`. `set` publishes
-    only version 0, which never meets R5, so `NewerClaimed` reaches only
-    `update`, which logs it and replays (section 3), and the STOREs of
-    republication and `replicate_to`, which ignore every answer as today;
+    `stale_rejections`, apart from `conflict_rejections`, `NewerClaimed` in
+    `newer_claimed`, and the refusals no replica showed in
+    `unproven_refusals` (open point 27). `set` publishes only version 0,
+    which meets `NewerClaimed` only from R2's quorum; `update` logs it and
+    replays (section 3), and the STOREs of republication and
+    `replicate_to` ignore every answer as today;
   - every document grows by its `nextKeyHash`, about 60 bytes.
 
   Nodes before and after this change cannot talk. No network runs these
@@ -501,14 +506,15 @@ point 22.
   or above the quorum the replay from version 0 is refused (R2) and is not
   needed, since R5 fills the replica.
 - **One node can keep new replicas empty**, at any number of holders, by a
-  refusing answer or by silence, as today. Below the quorum too: one answer
-  `(0, h)` with a made-up `h`, or one silent node, stops the owner's replay
-  at its first step (R2), so the replay needs no votes but does need every
-  node asked to answer truthfully. With one persistent liar near a DID the
-  number of copies can only fall. `store_quorum(n)` liars that claim
-  `seq ≥ 1` block the owner's replay to every empty replica; the same number
-  already gets a forgery through R5. A refusal that must show its evidence
-  would remove the single liar's veto, and is item 4 of "Not in this ADR".
+  refusing answer or by silence, as today. Below the quorum too: one silent
+  node stops the owner's replay at its first step (R2), so the replay needs
+  no votes but does need every node asked to answer. A made-up `(0, h)` no
+  longer does, since another version 0 must be shown (open point 27). With
+  one persistent liar near a DID the number of copies can only fall.
+  `store_quorum(n)` liars that claim `seq ≥ 1` block the owner's replay to
+  every empty replica; the same number already gets a forgery through R5. A
+  claim of a later version that must show its evidence would remove the
+  rest of the single liar's veto, and is item 4 of "Not in this ADR".
 - **What the check at an empty replica assumes.** R2 and R5 count answers,
   so their safety holds only while:
   - an answer comes from the node it names. Malkhi and Reiter assume "an
@@ -636,7 +642,8 @@ Separate ADRs, in this order of urgency:
    disjoint paths"), then the condition "answers from at least two paths" in
    R5.
 4. **Signed `FindHash` answers, proof requests for a claimed higher `seq`, and
-   disputes settled by walking back `prev` through an archive.**
+   disputes settled by walking back `prev` through an archive.** A claimed
+   other version 0 is already shown on request (open point 27).
 5. **Reads that choose the highest verifiable `seq`.**
 6. **Deterministic CBOR** (RFC 8949, section 4.2) for documents, to explore
    and possibly adopt if they leave JSON, for example on very constrained
@@ -1117,7 +1124,8 @@ Raised while reviewing this ADR against the code:
     every `set`. Missing copies come through the paths that verify: an
     identical `set` retry, which already finds the nodes and completes the
     replicas; `replicate_to` for a node that joins; the hourly republication;
-    and the `update_digest` STORE after `MissingPrevious`. No cache for
+    and the `update_digest` STORE after `MissingPrevious`. Since open point
+    27 `set` runs no value lookup at all. No cache for
     popular keys: DID records of devices are not the hot spots it was made
     for, and `get` never used it. One would be a separate decision, with the
     short expiry of the paper.
@@ -1169,6 +1177,8 @@ Raised while reviewing this ADR against the code:
 
     Revised by open point 20: `update` also takes the owner's earlier saved
     versions, used only to replay the chain to replicas that miss versions.
+    Revised by open point 27: `set` reads no copy first either, for the same
+    reason.
 17. **Scope.** Every DID document builder changes (tests, examples, scripts,
     the testbed), and the Docker demo cannot fix the DID in `.env`
     (`DEMO_DID_UUID`, `FIXED_DID_UUID`, `RETRIEVE_KEY`): the DID now depends on
@@ -1491,6 +1501,81 @@ Raised by the analysis of the design after the reviews (2026-11-11):
     the version in the trusted root metadata (version N) incremented by
     one"); [SALTZER], I-A-3 b, fail-safe defaults; `AGENTS.md`, today's
     check ("Another hash: `Conflict`").
+27. **A refusal that is only claimed.** Found in review (2026-11-12, the
+    third case on 2026-11-18). Three places took a claim for a fact:
+    - `set` read the key first (`check_publish_state`) and stopped at the
+      first record that verified with its own key. A node on the lookup path
+      learns the DID from the request, serves a version 1 signed by a key of
+      its own, and `set` answered `ExistingRecord` without sending anything:
+      the DID was never created, and the application was told it had signed
+      version 0 twice. The genuine version 1 got the same answer.
+    - `set` rejected the whole publication on one `Stale`, `NewerClaimed`,
+      `Conflict` or `InvalidRecord`, even with every other replica holding
+      it.
+    - R2 refused version 0 on one answer `(0, h)` with another hash, which
+      cannot be verified: one node near the key that claims a version 0 it
+      does not have keeps every empty replica that asks it from storing the
+      DID.
+
+    None lets an attacker take the DID: a holder of version 0 refuses a
+    forged version 1 (R3), and an empty replica needs version 0 to accept
+    one (R5). Each lets one node stop a DID from being created.
+
+    Proposed: a refusal counts only with a record that the version 0 one
+    holds proves (`shown_against`, the steps of a replica holding that
+    version 0): another version 0 is the same document signed again, a
+    version 1 names it in `prev` and is signed by the key it commits to,
+    each with a valid signature. Version 0 alone proves nothing about a
+    version 2 or later.
+    - `set` reads no copy first: it finds the closest nodes and sends the
+      STORE, as `update` does (open point 16) and as [KAD] stores; the
+      replicas ask the network themselves (R2). Its own copy, if any, is
+      checked like any other.
+    - `set` asks each replica that refuses for its record (`FindValue`), all
+      at once. Another version 0 shown is `ExistingRecord`; a version 1
+      shown, or claims of a later version from at least `store_quorum(n)` of
+      the `n` replicas, R2's quorum, is `NewerVersion`. Any other refusal,
+      and `InvalidRecord`, is a replica that did not store: `Degraded`, or
+      `ReplicaConflict` when no replica stored. `SetReport` counts the
+      refusals not shown in `unproven_refusals`.
+    - R2 fetches the record of each node that claims another version 0
+      (`Verdict::Show`), the `k − 1` closest at most, at once, within the
+      deadline of the check, and refuses only when one shows the same
+      document signed again, hashing to the claim, with a valid signature
+      (`check_claimed`). A claim not shown, or not in time, is dropped;
+      silence is still no answer.
+
+    **Decided (2026-11-18):** as proposed. A claimed later version still
+    counts by the quorum in R2: a single genuine holder of version 1 must
+    not stop the owner's replay, and version 0 alone cannot prove a version
+    2 or later (item 4 of "Not in this ADR"). Dropping a claim not shown
+    keeps the fail-safe default, since the permission to store version 0 is
+    version 0 itself, whose hash is the DID and whose signature verifies:
+    the check only looks for a reason to refuse, and that reason must be a
+    fact. A node cannot make one up: another version 0 of the DID is the
+    same document, so it needs a second signature by the first key on the
+    same message, which ML-DSA rules out. The cost is one `FindValue`, about
+    6.5 KB, per refusal or claim, and nothing when nobody refuses; `set`
+    saves the value lookup it no longer runs. Rejected: carrying the record
+    in `StoreResult` or `FindHashHit`, which changes the wire and puts a
+    record in every answer, the fragmented answers a burst made a replica
+    drop (`AGENTS.md`, the STORE check); and counting refusals, which one
+    node with made-up ids can fill ([DOUCEUR]).
+
+    Sources: [KAD], section 2.3 ("To store a ⟨key,value⟩ pair, a
+    participant locates the k closest nodes to the key and sends them STORE
+    RPCs"); [KERI-GLOSSARY], "duplicity" ("duplicity is provable via the
+    presentation of a set of two or more mutually inconsistent but
+    independently verifiable instances of a KEL"); [SIDETREE], "Operation
+    Verification" ("Signatures on operations may be valid, but operations
+    may be deemed invalid for other reasons"); [FIPS204], section 3.1 (SUF-CMA:
+    the adversary "cannot create any additional valid signatures based on
+    the signer's public key, including on messages for which the signer has
+    already provided a signature"); [DOUCEUR], abstract ("if a single faulty
+    entity can present multiple identities, it can control a substantial
+    fraction of the system, thereby undermining this redundancy");
+    [SALTZER], I-A-3 b ("Base access decisions on permission rather than
+    exclusion").
 
 ## Validation
 
@@ -1524,7 +1609,9 @@ Tests written before the code, failing on the current one:
 - **R2** (open point 23): one test per row of its table, with mock
   neighbours. `store_quorum(n)` answers with `seq ≥ 1` give `NewerClaimed`,
   one fewer lets version 0 in; one answer `(0, h)` with another hash gives
-  `Conflict`; silence or nobody to ask gives no answer; the owner's `set`
+  `Conflict` once its node shows the record, and is dropped when it shows
+  nothing, another record or nothing in time (open point 27); silence or
+  nobody to ask gives no answer; the owner's `set`
   writes its own version 0 locally with no `FindHash`. The same document
   signed a second time, sent to a replica holding the first copy, is
   `Conflict`, logged as signed twice, and the first copy stays.
@@ -1560,7 +1647,16 @@ Tests written before the code, failing on the current one:
   empty replica while version 0 arrives by R2 is then checked by R3 and
   stored.
 - **No cache STORE:** a `set` whose lookup finds a record already stored
-  sends no STORE to the nearest node without it (open point 15).
+  sends no STORE to the nearest node without it (open point 15). Replaced
+  by open point 27: `set` runs no value lookup, and version 0 signed twice
+  is refused by the replicas and leaves no copy.
+- **Refusals shown** (open point 27): a replica holding a version 1 signed
+  by another key, which it would serve to a lookup and which makes it
+  answer `Stale`, does not stop `set`, which reports `Degraded`; a replica
+  holding the genuine version 1 makes it `NewerVersion`; a node that claims
+  another version 0 and shows nothing, garbage, a forged version 1 or
+  nothing in time does not stop an empty replica, and one that shows an
+  invalid copy does not either.
 - **Create and update** (open point 16): `set` refuses a version N ≥ 1
   without sending anything; `update` refuses a version 0, sends no value
   lookup, and completes even when the first replica asked serves a forged
@@ -1645,7 +1741,8 @@ Tests written before the code, failing on the current one:
 
 ## References
 
-Checked on the sources on 2026-11-10. Specifications built with Spec-Up
+Checked on the sources on 2026-11-10, and those of open point 27 on
+2026-11-18. Specifications built with Spec-Up
 (CESR, KERI, did:webvh, did:peer, Sidetree) have no section numbers, so they
 are cited by heading.
 
@@ -1671,6 +1768,9 @@ are cited by heading.
   https://trustoverip.github.io/kswg-cesr-specification/#self-addressing-identifier-said
 - [DIDCORE] W3C, "Decentralized Identifiers (DIDs) v1.0", Recommendation, 19
   July 2022. https://www.w3.org/TR/2022/REC-did-core-20220719/
+- [DOUCEUR] J. R. Douceur, "The Sybil Attack", IPTPS 2002,
+  doi:10.1007/3-540-45748-8_24.
+  https://courses.csail.mit.edu/6.895/fall02/papers/Douceur/iptps02-douceur.pdf
 - [FIPS180] NIST FIPS 180-4, "Secure Hash Standard", 2015.
 - [FIPS204] NIST FIPS 204, "Module-Lattice-Based Digital Signature Standard",
   2024. https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.204.pdf
@@ -1681,6 +1781,8 @@ are cited by heading.
   https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia-lncs.pdf
 - [KERI] Trust over IP, "Key Event Receipt Infrastructure (KERI)", v1.1.
   https://trustoverip.github.io/kswg-keri-specification/
+- [KERI-GLOSSARY] WebOfTrust, WOT-terms glossary, "duplicity".
+  https://weboftrust.github.io/WOT-terms/docs/glossary/duplicity
 - [KERIPY] WebOfTrust keripy, `src/keri/core/eventing.py`, `ample()`.
   https://github.com/WebOfTrust/keripy/blob/main/src/keri/core/eventing.py
 - [KERIPY-DB] WebOfTrust keripy, `src/keri/db/basing.py`, `Baser.dels`.

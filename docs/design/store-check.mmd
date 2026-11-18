@@ -10,8 +10,13 @@ sequenceDiagram
     end
     R->>C: FindHash(key), all of them at once, deadline 2 s
     C-->>R: seq and SHA-256 of their record, or closer nodes
-    alt version 0 (R2): a quorum claims a later version, or one holds another version 0
-        R-->>S: NewerClaimed or Conflict (nothing verified or stored)
+    opt version 0 (R2), no quorum for a later version, and nodes claim another version 0
+        R->>C: FindValue(key) to the k-1 closest that claim one, at once
+        C-->>R: their record, or nothing
+        Note over R: a claim counts only if shown: the same document signed again,<br/>hashing to the claim, with a valid signature<br/>a claim not shown, or not in time, is dropped
+    end
+    alt version 0 (R2): a quorum claims a later version, or another version 0 was shown
+        R-->>S: NewerClaimed or Conflict (nothing stored)
     else version N >= 1 (R5): one answer is enough to refuse
         Note over R: a later version: NewerClaimed<br/>another version N, a version N-1 that is not its prev,<br/>or a version older than N-1: Conflict
         R-->>S: NewerClaimed or Conflict (nothing verified or stored)

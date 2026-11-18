@@ -21,9 +21,9 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 335 tests
-cargo test --features counters       # 339: also the counters' own tests
-cargo test --features testbed        # 340: also the testbed's FindHash lie switch
+cargo test                           # all 342 tests
+cargo test --features counters       # 346: also the counters' own tests
+cargo test --features testbed        # 347: also the testbed's FindHash lie switch
 cargo test <name>                    # single test, e.g. test_update_did_record_key_rotation
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -52,8 +52,12 @@ maturin develop --features python
 - `Server.set()` and `Server.set_detailed()` publish only a version 0.
   `set_detailed()` returns the publication status/reason and replica counters
   as a Python `dict`: `stale_rejections` and `newer_claimed` are the replicas
-  that hold or were told of a later version (reason `newer_version`); a later
-  version passed to them is refused locally (reason `use_update`).
+  that hold or were told of a later version, and `unproven_refusals` those
+  that refused without showing a record that proves it (ADR 0005, open point
+  27); the reason is `newer_version` only when a replica shows version 1 or
+  most claim a later version, `existing_record` only when one shows version 0
+  signed again. A later version passed to them is refused locally (reason
+  `use_update`).
 - `Server.update(key, value, earlier)` publishes a version N >= 1: `earlier`
   are the owner's saved versions 0 to N-1, used only to replay the chain to
   replicas that miss versions. Retries resend the same saved bytes; the owner
@@ -104,14 +108,14 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/protocol/messages.rs` | `RpcMessage` (the wire format: variants are encoded by position, so new ones go at the end), `Frame`, `ExpectedResponse` |
 | `src/protocol/transport.rs` | Sending and receiving: KADF fragments and reassembly, `call` with its resends, `handle_datagram`, `InProgress` |
 | `src/protocol/handlers.rs` | `dispatch_request` and the handlers of every request except STORE (`rpc_update`, `rpc_find_node`, `rpc_find_value`, `rpc_find_hash`, ...); verification of a record for a key |
-| `src/protocol/store_check.rs` | `rpc_store` and the network check of an empty replica (`network_check`: R2 for a version 0, R5 with the fetch of the version before for a later one) |
+| `src/protocol/store_check.rs` | `rpc_store` and the network check of an empty replica (`network_check`: R2 for a version 0, with the fetch of a claimed other version 0 (`show_claims`), R5 with the fetch of the version before for a later one) |
 | `src/protocol/acceptance_tests.rs` | Tests of the STORE and UPDATE rules against neighbours that hold, claim, serve or keep silent |
 | `src/protocol/client.rs` | Outgoing calls (`call_*`) and `SpiderProtocol`, the requests of the lookups |
 | `src/protocol/contacts.rs` | Failing and returning contacts, pings of failing contacts, refresh ids |
 | `src/protocol/welcome.rs` | Nodes met through a message: inline routing insert, bounded replication queue |
 | `src/protocol/test_support.rs` | Helpers shared by the protocol tests |
 | `src/network/mod.rs` | Public `Server` API: the struct, `new`, `listen`, `stop`, `bootstrap`; the other files of `network/` each hold one operation |
-| `src/network/publish.rs` | SET of a version 0 (`set`, `set_detailed`) and its report (`SetReport`, `SetOutcome`) |
+| `src/network/publish.rs` | SET of a version 0 (`set`, `set_detailed`): a node lookup, the STOREs, the records of the replicas that refused, checked against version 0 (`prove`), and its report (`SetReport`, `SetOutcome`) |
 | `src/network/read.rs` | GET |
 | `src/network/update.rs` | UPDATE of a version N >= 1 (`update`, `update_digest`): the owner's chain (`OwnerChain`), the local vote, and the replay to replicas that miss versions (`replay`, `fill_empty_replica`) |
 | `src/network/maintenance.rs` | Refresh and republication, recovery tick, stats (`ServerStats`), saved state |
@@ -124,7 +128,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/counters.rs` | Datagrams, bytes, resends and STORE checks counted for measurements (feature `counters`, off by default; empty without it) |
 | `src/auth_handler/mod.rs` | `SignatureVerifierHandler` trait + `DIDSignatureVerifierHandler` (DID record verification); `verify_record`, `verify_issuer_signed`: how a node runs it (binding first, signature cache, blocking thread), shared by protocol and network |
 | `src/auth_handler/did.rs` | The `did:iiot` DID (ADR 0005): canonical suffix, `key_of_did`, canonical JSON, the hashed form of version 0 (`derive_did`), and step 1 of the rules, the form of a record for a key (`record_form`: `seq`, `prev`, `nextKeyHash`) |
-| `src/auth_handler/rules.rs` | The STORE and UPDATE rules as pure functions: `decide_locally` against the stored copy (R1, R3, R4), `decide_version_zero` (R2), `decide_successor` and `check_fetched` (R5), `store_quorum` |
+| `src/auth_handler/rules.rs` | The STORE and UPDATE rules as pure functions: `decide_locally` against the stored copy (R1, R3, R4), `decide_version_zero` and `check_claimed` (R2), `decide_successor` and `check_fetched` (R5), `store_quorum`, and `shown_against`, what a record proves against a version 0 (open point 27) |
 | `src/auth_handler/test_chain.rs` | Chains of versions for the unit tests, the DID computed as the Python application computes it |
 | `src/crypto/signature_verifier.rs` | `SignatureVerifier` trait, `resolve_alg_and_length()`, algorithm registry |
 | `src/crypto/factory.rs` | `SignatureVerifierFactory` + `SignerFactory` — dispatch by algorithm string |
@@ -226,7 +230,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 
 ## Key invariants
 - **One record per key, replaced only by a verified successor** (ADR 0005, `decide_locally`): byte-identical bytes return `AlreadyStored` (R1); a version N+1 whose `prev` is the hash of the stored record and whose signing key hashes to the stored `nextKeyHash` replaces it once its signature verifies (R3); an older version is `Stale`; another version with the stored `seq` is `Conflict` (R4: signed twice, proven duplicity by the same key, or another key); a version further ahead is `MissingPrevious` and nothing is asked. The network check fills only a replica that holds nothing.
-- A new `set()` reuses the nodes from one `ValueSpiderCrawl`. An identical retry performs node discovery so missing replicas can be completed. Remote candidates plus the local node are XOR-sorted and truncated to `k`, preventing `k+1` copies.
+- `set()` reads no copy first (ADR 0005, open point 27): it runs one node lookup and sends the STOREs, so an identical retry completes missing replicas. Remote candidates plus the local node are XOR-sorted and truncated to `k`, preventing `k+1` copies. A replica that refuses (`Conflict`, `Stale`, `NewerClaimed`) counts only once it shows its record (`FindValue`, all at once): `shown_against` the version 0 being published, then its signature. Another version 0 shown is `ExistingRecord`, a version 1 shown `NewerVersion`; any other refusal, and `InvalidRecord`, is a replica that did not store (`unproven_refusals`), and claims of a later version give `NewerVersion` only from `store_quorum(n)` replicas. Do not bring back a value lookup before the STOREs, nor a rejection on one unshown refusal: a node that learns the DID from the request serves a version 1 signed by its own key, or refuses, and the DID is never created.
 - A remote DID GET takes no vote: `find_first_valid` returns the first record
   that passes DID binding and signature verification (Kademlia §2.3), discards
   any that fail, and cancels the requests still in flight. This does not prove
@@ -286,8 +290,14 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
     `InvalidRecord` and starts no lookup.
   - **Version 0 (R2):** refused with `NewerClaimed` only when a quorum claims a
     later version, so that one holder of a later version cannot stop the owner's
-    replay; refused with `Conflict` on another version 0; accepted, after its
-    signature, when every node asked answered.
+    replay; refused with `Conflict` on another version 0 only once its node
+    shows it: the replica fetches the record of the `k − 1` closest claimants
+    at once (`show_claims`, `join_all`), within the deadline, and only the same
+    document signed again, hashing to the claim, with a valid signature,
+    refuses (`check_claimed`, open point 27). A claim not shown, or not in time,
+    is dropped: the permission to store version 0 is version 0 itself, and a
+    reason to refuse must be a fact. Accepted, after its signature, when every
+    node asked answered.
   - **Version N >= 1 (R5):** one answer is enough to refuse: a `seq` above N
     (`NewerClaimed`), another version N, a version N-1 that is not its `prev`
     (`Conflict`), or a `seq` below N-1, a holder behind (open point 26). Without
@@ -359,8 +369,8 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/scenarios/worker_pool.rs` | 1 | 40-client burst, all responses delivered |
 | `tests/scenarios/crypto.rs` | 4 | End-to-end crypto invariants (tamper, injection, downgrade, revocation) |
 | `tests/quorum_tests.rs` | 19 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum, delayed UPDATE commit, retry of an applied UPDATE, UPDATE to replicas without the record, and the network check of a STORE to an empty replica |
-| `tests/chain_tests.rs` | 11 | Chains of versions over real UDP (ADR 0005): `set` refuses a later version, forged versions at empty replicas, the replay below the quorum and to replicas behind, the closed gap, no cache STORE |
-| `src/**` (inline) | 212 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID derivation with a Python test vector, the STORE and UPDATE rules, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 4 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
+| `tests/chain_tests.rs` | 13 | Chains of versions over real UDP (ADR 0005): `set` refuses a later version, forged versions at empty replicas, the replay below the quorum and to replicas behind, the closed gap, version 0 signed twice, refusals of `set` that count only once shown |
+| `src/**` (inline) | 217 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID derivation with a Python test vector, the STORE and UPDATE rules, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 4 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 
@@ -397,9 +407,9 @@ All tests are network-clean (loopback only) and run in parallel without interfer
 | 15928–15932 | retry of an already applied UPDATE |
 | 15933–15937 | UPDATE to replicas without the record |
 | 15938–15953 | STORE to an empty replica: network check |
-| 15954–16017 | chains of versions (`tests/chain_tests.rs`) |
+| 15954–16025 | chains of versions (`tests/chain_tests.rs`) |
 
-When adding a new integration test use ports **16018+** and document them here (15900 is reserved below).
+When adding a new integration test use ports **16026+** and document them here (15900 is reserved below).
 
 | 15900 | resilience test: Node A victim (host-exposed UDP, Docker only) |
 
@@ -475,7 +485,7 @@ N nodes in Docker with configurable `k`, `alpha`, seeds and `tc netem` profiles
 (LAN, WAN Europe, WAN Trans-Atlantic, from Verizon's published latencies).
 ```
 testbed/testbed.py up --nodes 10 --k 3 --profile wan-eu
-testbed/testbed.py ctl node-3 publish        # also: update, republish, push, get, lie on|off, storage, routing
+testbed/testbed.py ctl node-3 publish        # also: update, republish, push, get, lie on|v0|off, storage, routing
 testbed/testbed.py get node-3 --from node-5
 testbed/testbed.py pause node-10             # also: netem, stop, start, logs
 testbed/testbed.py down
@@ -490,7 +500,8 @@ A node keeps its DID's chain of versions: `publish` sends version 0,
 `update` signs the next version with the committed key and sends it with the
 earlier ones, `republish` sends the current version again with the saved
 bytes. `lie on` (testbed builds only, `KademliaProtocol::set_lying`) makes it
-answer every `FindHash` with a made-up version far ahead.
+answer every `FindHash` with a made-up version far ahead, `lie v0` with
+another version 0 it cannot show (`measure.py update|churn --lie v0`).
 `testbed/attack.py` adds an attacker that reads the traffic and sends forged
 versions (the owner's DID and `prev`, its own key): `start --mode
 race|burst|successor|spoof|persist`, then the `race` or `restart` scenario.
@@ -523,9 +534,10 @@ and resends together, KADF header included); resends, split by whether the
 peer's round trip was measured when the request was first sent; and the STORE
 checks of empty replicas, by outcome (`invalid`, `nobody_to_ask`, `accepted`,
 `newer_claimed`, `other_version`, `not_following`, `holder_behind`,
-`fetch_refused`, `too_few_votes`, `no_answer`: the rows of R2 and R5), lookup
-rounds and duration, and the checks that fetched the version before with
-their whole duration (`fetches`, `fetch_duration_ms`).
+`fetch_refused`, `too_few_votes`, `no_answer`: the rows of R2 and R5), the
+claims of another version 0 that R2 dropped because they were not shown
+(`unshown_claims`), lookup rounds and duration, and the checks that fetched
+the version before with their whole duration (`fetches`, `fetch_duration_ms`).
 `KademliaProtocol::counters` and `Server::counters` return a
 `CounterSnapshot`; counters only grow, so a measurement is the difference of
 two snapshots. Keep `MESSAGE_TYPES` in step with `rpc_message_name` when adding

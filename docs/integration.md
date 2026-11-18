@@ -254,16 +254,22 @@ result = await node.set_detailed(did, record_0)
 `result["status"]` is `complete`, `degraded` or `rejected`; `result["reason"]`
 explains a rejection, and `result["report"]` counts the answers of the
 replicas (`expected_replicas`, `acknowledged_replicas`, `unavailable_nodes`,
-`conflict_rejections`, `stale_rejections`, `newer_claimed`, and others).
+`conflict_rejections`, `stale_rejections`, `newer_claimed`,
+`unproven_refusals`, and others). A replica that refuses the record counts
+only once it shows why: `set_detailed` asks it for its record and checks it
+against version 0. A refusal it cannot back up, such as one from a node that
+lies, only means that replica did not store the record, and is counted in
+`unproven_refusals`.
 
 | Outcome | Meaning | Action |
 |---|---|---|
 | `complete` | Every replica that answered holds the record | None |
-| `degraded` | Some replicas did not acknowledge it | Retry later with the same bytes |
+| `degraded` | Some replicas did not acknowledge it, or refused it without showing why | Retry later with the same bytes |
 | `rejected`, `unavailable`, `no_responsible_nodes` or `capacity_exceeded` | No replica took it | Retry later with the same bytes |
-| `rejected`, `invalid_record` | The record is malformed or does not bind to the DID | Fix the construction of the document |
-| `rejected`, `existing_record` or `replica_conflict` | Another record is held under this DID | Version 0 was signed twice: publish the saved record only |
-| `rejected`, `newer_version` | Replicas hold or report a later version | Publish the current version with `update` |
+| `rejected`, `invalid_record` | The record is malformed or does not bind to the DID, or no replica stored it and replicas called it invalid | Fix the construction of the document |
+| `rejected`, `existing_record` | A replica showed version 0 of this DID signed again | Version 0 was signed twice: publish the saved record only |
+| `rejected`, `replica_conflict` | No replica stored it, and the replicas that refused it showed nothing to back up the refusal | Retry later with the same bytes; if it persists, a node near the DID may be lying |
+| `rejected`, `newer_version` | A replica showed version 1, or most replicas report a later version | Publish the current version with `update` |
 | `rejected`, `use_update` | The record is not a version 0 | Use `update` |
 
 `set(did, record)` is the short form: `True` for complete, `False` for
@@ -425,7 +431,7 @@ to the old one are issued again.
 | Documents without `seq`, `prev` and `nextKeyHash` | Canonical JSON, checked by every node, with `seq`, `prev` and `nextKeyHash` |
 | `update(key, value, auth_signature)`, the new record signed again with the old key | `update(did, value, earlier)`: the chain authorizes the update, and every update rotates the key |
 | `set` and `set_detailed` for any record | Only for version 0; later versions with `update` |
-| `set_detailed` report without stale counts | `stale_rejections`, `newer_claimed`; reasons `newer_version` and `use_update` |
+| `set_detailed` report without stale counts | `stale_rejections`, `newer_claimed`, `unproven_refusals`; reasons `newer_version` and `use_update`; `existing_record` only when a replica shows version 0 signed again |
 | `update("status-list", value, None)` | `update("status-list", value, [])` |
 | — | `MlDsaKeyManager.keypair_from_seed(seed)` |
 

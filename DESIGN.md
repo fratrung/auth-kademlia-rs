@@ -277,19 +277,23 @@ node has no live contact, retries its bootstrap seeds.
 *Source: [`docs/design/publish.mmd`](docs/design/publish.mmd).*
 
 SET publishes version 0 of a new DID; a later version passed to it is refused
-locally, and goes through UPDATE (section 9). The owner first looks the key
-up. If the network already holds a different valid record, publication is
-refused. Otherwise the record is sent as STORE to the `k` closest nodes that
-answered the lookup, the owner included if it is one of them. The lookup
-leaves no copy on the nodes it asked. The outcome is reported per replica:
+locally, and goes through UPDATE (section 9). The owner finds the `k` closest
+nodes with a node lookup and sends them the record as STORE, the owner
+included if it is one of them. It reads no copy first: a record served by any
+node would prove nothing, and the replicas check the network themselves
+(section 7; ADR 0005, open point 27). A replica that refuses counts only once
+it shows why: the owner asks it for its record, checks it against version 0
+as a replica holding version 0 would, then verifies its signature. The
+outcome is reported per replica:
 
 - **Complete:** every replica stored the record. Replicas are the nodes that
   answered the lookup; a node that did not is not counted as one.
 - **Degraded:** at least one replica stored it, but some did not answer the
-  STORE or had no room.
-- **Rejected:** a replica holds a different record or a later version of the
-  DID (counted apart, `stale_rejections`, `newer_claimed`), the record is
-  invalid, or no replica stored it.
+  STORE, had no room, or refused it without showing why
+  (`unproven_refusals`).
+- **Rejected:** a replica showed version 0 signed again (`existing_record`) or
+  version 1 (`newer_version`), at least a quorum of the replicas claim a later
+  version (`newer_version`), the record is invalid, or no replica stored it.
 
 A retry of the same record is safe: replicas that already hold it answer
 `AlreadyStored`, and the retry completes the ones that missed it.
@@ -338,9 +342,12 @@ before storing:
    time.
 3. **Version 0 (R2):** it refuses when a quorum of the nodes asked holds a later
    version (`NewerClaimed`), so that a single holder of a later version cannot
-   stop the owner's replay, and when one holds another version 0 (`Conflict`).
-   Otherwise, once every node asked has answered, it verifies the signature and
-   stores the record.
+   stop the owner's replay, and when a node shows another version 0
+   (`Conflict`). A hash cannot be verified, so it asks the nodes that claim one
+   for the record, at once, and only the same document signed again, hashing
+   to the claim, with a valid signature, counts; a claim not backed up in time
+   is dropped (ADR 0005, open point 27). Otherwise, once every node asked has
+   answered, it verifies the signature and stores the record.
 4. **Version N ≥ 1 (R5):** one answer is enough to refuse: a later version,
    another version N, a version N−1 that is not its `prev`, or a version older
    than N−1, a holder that is behind. Otherwise it fetches version N−1 from the
@@ -552,8 +559,9 @@ exempt from the STORE check of section 7, which is about self-signed records.
   answer that claims a later version, or one silent node, refuses a later
   version at an empty replica, at any number of holders; with one persistent
   liar near a DID the number of copies can only fall (`EXPERIMENTS.md`, A4
-  and L1). A refusal that had to show its evidence would remove this veto; it
-  is a later ADR.
+  and L1). A refusal that had to show its evidence would remove this veto:
+  another version 0 already must be shown (ADR 0005, open point 27), a later
+  version is a later ADR.
 - **The check counts answers, so its safety assumes** that an answer comes
   from the node it names (a node that reads the traffic sees every message id
   and can answer for another), that node ids cannot be chosen (a quorum of

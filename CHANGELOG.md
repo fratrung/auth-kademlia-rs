@@ -38,11 +38,13 @@ application.
   - `Server::update(key, value, earlier)` replaces
     `Server::update(key, value, auth_signature)`: `earlier` holds the owner's
     previous versions;
-  - `SetReport` adds `stale_rejections` and `newer_claimed`, and
-    `SetRejection` adds `NewerVersion` and `UseUpdate`;
+  - `SetReport` adds `stale_rejections`, `newer_claimed` and
+    `unproven_refusals`, and `SetRejection` adds `NewerVersion` and
+    `UseUpdate`;
   - `SignatureVerifierHandler::handle_update_verification` is removed.
 - **Python API:** `Server.update(key, value, earlier)`; the `set_detailed`
-  report adds `stale_rejections` and `newer_claimed`, and the reasons
+  report adds `stale_rejections`, `newer_claimed` and `unproven_refusals`,
+  and the reasons
   `newer_version` and `use_update`; keys are DIDs. The Status List is
   updated with `update("status-list", value, [])`.
 
@@ -63,12 +65,16 @@ application.
 - Replay of the owner's chain to replicas that are behind or empty.
 - Testbed: chains of versions on each node; attack modes that forge a
   successor of every first version (`successor`) and spoof `FindHash` answers
-  (`spoof`); a testbed-only switch that makes a node lie in `FindHash`;
+  (`spoof`); a testbed-only switch that makes a node lie in `FindHash`,
+  claiming a later version (`lie on`) or another first version (`lie v0`,
+  `--lie v0` in the measurements);
   measurement modes for rotations with liars (`update --liars`), copies under
   churn (`churn`), and replicas lost while the owner is offline (`outage`,
   with the `push` command), with what readers in the network and joining
   readers get then (`--reads`, `--joiners`).
-- Counters for the new outcomes of the network check.
+- Counters for the new outcomes of the network check, and for the claims of
+  another first version dropped because they were not shown
+  (`unshown_claims`).
 - Documentation: an integration guide, the evaluation of this release in
   `EXPERIMENTS.md` with its raw data in `experiments/`, and new diagrams in
   `DESIGN.md`.
@@ -82,6 +88,17 @@ application.
   about 9.8 KB in 8: 31% less traffic, as measured on 127 nodes.
 - The Docker demonstration shares the new DID between publisher and retriever
   through a temporary volume.
+- `set` and `set_detailed` no longer read the DID from the network before
+  publishing: they find the closest nodes and send the record, as `update`
+  does. A replica that refuses it counts only once it shows its record and
+  that record proves the refusal against version 0: `existing_record` means
+  a replica showed version 0 signed twice, `newer_version` that one showed
+  version 1 or most replicas claim a later version. Any other refusal, or an
+  `InvalidRecord` answer, makes the outcome `degraded`, or `replica_conflict`
+  when no replica stored the record.
+- An empty replica refuses a first version because of another first version
+  only once the node that claims it shows it: the same document signed again,
+  with a valid signature.
 
 ### Removed
 
@@ -96,6 +113,11 @@ application.
 - An earlier version cannot be replayed as the current one at a replica that
   holds the DID, nor at an empty replica while at least a quorum of the nodes
   it asks hold the DID.
+- One node can no longer stop a DID from being created: not by serving a
+  version 1 signed by its own key to the owner's lookup, nor by refusing the
+  first version without showing why, nor by claiming another first version
+  it does not have. Before, each of these blocked the publication and told
+  the application it had signed its first version twice.
 - Known limits: one node that claims a later version, or does not answer,
   keeps an empty replica empty; below a quorum of holders only the owner can
   restore copies; a quorum of colluding nodes near a DID controls what it
