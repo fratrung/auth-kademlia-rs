@@ -8,9 +8,13 @@
 //!
 //! - `decide_locally`: steps 1 to 3, by what the replica holds.
 //! - `decide_version_zero`: R2, a version 0 at a replica that holds nothing.
+//! - `check_claimed`: the record R2 fetches from a node that claims another
+//!   version 0.
 //! - `decide_successor`: R5, a version N ≥ 1 at a replica that holds nothing.
 //!   Its rows that trust answers are all there (open point 5).
 //! - `check_fetched`: the version N−1 R5 fetches from a node that voted for it.
+//! - `shown_against`: what a record proves against the version 0 one holds,
+//!   for R2 and for the owner's `set` (open point 27).
 
 use crate::utils::{digest_bytes, ID_LEN};
 
@@ -110,10 +114,48 @@ pub enum Verdict {
     /// R5: fetch version N−1 from these voters, in this order (the closest to
     /// the key first, as the answers are given), then decide again.
     Fetch(Vec<usize>),
+    /// R2: fetch the record of these nodes, which claim another version 0
+    /// (indices into the answers, the closest to the key first), then decide
+    /// again with what they showed (open point 27).
+    Show(Vec<usize>),
     /// Verify the record's signature, then store it.
     Accept,
     /// No answer to the sender: never accept on silence.
     NoAnswer,
+}
+
+/// How far R2 got with the records of the nodes that claim another version 0
+/// (open point 27).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimsShown {
+    /// Not fetched yet.
+    NotYet,
+    /// The node of this answer (an index into the answers) gave another
+    /// version 0 of the DID, and its signature verified.
+    OtherVersionZero(usize),
+    /// None of them did: their claims are dropped.
+    Nothing,
+}
+
+/// What a record proves against the version 0 of its DID that one holds
+/// (open point 27). A claim proves nothing; a record proves only what the
+/// steps of a replica holding that version 0 find in it, and only once its
+/// signature verifies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shown {
+    /// The same bytes as that version 0.
+    Same,
+    /// The same document signed again (R4): once its signature verifies,
+    /// that version 0 was signed twice.
+    OtherVersionZero,
+    /// A version 1 whose `prev` is that version 0 and whose key it commits to
+    /// (R3): once its signature verifies, the DID has moved on.
+    Successor,
+    /// A version 2 or later: version 0 alone cannot tell it from a forgery.
+    Unprovable,
+    /// Nothing: not a record of the DID, or one that does not follow that
+    /// version 0, as a version 1 signed by another key.
+    Nothing,
 }
 
 /// What a fetched version N−1 proves.
@@ -205,13 +247,16 @@ pub fn decide_locally(
 
 /// R2: a version 0 (`incoming` its `record_hash`) at a replica that holds
 /// nothing. `asked` nodes were asked, `answers` are those that hold a record,
-/// `everyone_answered` whether every node asked answered.
+/// the closest to the key first, `everyone_answered` whether every node asked
+/// answered. Called first with `ClaimsShown::NotYet`, and again with what the
+/// claimants showed when it answers `Verdict::Show`.
 pub fn decide_version_zero(
     k: usize,
     asked: usize,
     incoming: &[u8; ID_LEN],
     answers: &[Answer],
     everyone_answered: bool,
+    shown: ClaimsShown,
 ) -> Verdict {
     if asked == 0 {
         return Verdict::NoAnswer;
@@ -227,16 +272,66 @@ pub fn decide_version_zero(
         let seq = newer.iter().copied().max().unwrap_or(1);
         return Verdict::Refuse(Refusal::NewerClaimed { seq });
     }
-    if let Some(other) = answers.iter().find(|a| a.seq == 0 && a.hash != *incoming) {
-        return Verdict::Refuse(Refusal::OtherVersion {
-            seq: 0,
-            hash: other.hash,
-        });
+    // Another version 0 refuses only once shown (open point 27): it can only
+    // be the same document signed again, which the replica checks against
+    // the version 0 it was sent. The closest claimants are enough: only the
+    // k replicas can hold the DID.
+    let claimants: Vec<usize> = (0..answers.len())
+        .filter(|index| answers[*index].seq == 0 && answers[*index].hash != *incoming)
+        .take(replicas_asked(k, asked))
+        .collect();
+    match shown {
+        ClaimsShown::NotYet if !claimants.is_empty() => return Verdict::Show(claimants),
+        ClaimsShown::OtherVersionZero(index) => {
+            if let Some(other) = answers.get(index) {
+                return Verdict::Refuse(Refusal::OtherVersion {
+                    seq: 0,
+                    hash: other.hash,
+                });
+            }
+        }
+        ClaimsShown::NotYet | ClaimsShown::Nothing => {}
     }
     if everyone_answered {
         Verdict::Accept
     } else {
         Verdict::NoAnswer
+    }
+}
+
+/// The record fetched from a node that claimed `(0, claimed)` for the
+/// version 0 `incoming` sent under `key`: it shows another version 0 when it
+/// hashes to `claimed` and is the same document signed again. The caller then
+/// verifies its signature.
+pub fn check_claimed(
+    key: &[u8; ID_LEN],
+    incoming: &[u8],
+    claimed: &[u8; ID_LEN],
+    fetched: &[u8],
+) -> bool {
+    digest_bytes(fetched) == *claimed
+        && shown_against(key, incoming, fetched) == Shown::OtherVersionZero
+}
+
+/// What `record`, under `key`, proves against `version_zero`, the version 0
+/// of the DID that the caller holds: what the steps of a replica holding
+/// `version_zero` find in it (`decide_locally`). Verifies no signature: for
+/// `OtherVersionZero` and `Successor` the caller verifies the record's.
+pub fn shown_against(key: &[u8; ID_LEN], version_zero: &[u8], record: &[u8]) -> Shown {
+    if record_form(key, version_zero).ok().map(|form| form.seq) != Some(0) {
+        return Shown::Nothing;
+    }
+    match decide_locally(Request::Store, key, Some(version_zero), record) {
+        Local::AlreadyStored => Shown::Same,
+        Local::Conflict(LocalConflict::SignedTwice) => Shown::OtherVersionZero,
+        Local::VerifyAndReplace => Shown::Successor,
+        Local::MissingPrevious(Some(_)) => Shown::Unprovable,
+        Local::Invalid(_)
+        | Local::AskNetwork(_)
+        | Local::VerifyDuplicity
+        | Local::Stale { .. }
+        | Local::Conflict(_)
+        | Local::MissingPrevious(None) => Shown::Nothing,
     }
 }
 
@@ -708,29 +803,27 @@ mod tests {
             .map(|i| answer(1 + (i % 2), chain.version(1 + (i as usize % 2))))
             .collect();
         assert_eq!(
-            decide_version_zero(20, 19, &v0, &newer, true),
+            decide_version_zero(20, 19, &v0, &newer, true, ClaimsShown::NotYet),
             Verdict::Refuse(Refusal::NewerClaimed { seq: 2 })
         );
         assert_eq!(
-            decide_version_zero(20, 19, &v0, &newer[..12], true),
+            decide_version_zero(20, 19, &v0, &newer[..12], true, ClaimsShown::NotYet),
             Verdict::Accept
         );
         // k = 3: the other two replicas.
         let two = [answer(1, chain.version(1)), answer(2, chain.version(2))];
         assert!(matches!(
-            decide_version_zero(3, 2, &v0, &two, true),
+            decide_version_zero(3, 2, &v0, &two, true, ClaimsShown::NotYet),
             Verdict::Refuse(Refusal::NewerClaimed { .. })
         ));
         assert_eq!(
-            decide_version_zero(3, 2, &v0, &two[..1], true),
+            decide_version_zero(3, 2, &v0, &two[..1], true, ClaimsShown::NotYet),
             Verdict::Accept
         );
     }
 
-    #[test]
-    fn r2_refuses_a_version_0_when_a_node_holds_another_one() {
-        let chain = Chain::new();
-        let again = sign(
+    fn signed_again(chain: &Chain) -> Vec<u8> {
+        sign(
             &chain.doc(
                 0,
                 None,
@@ -738,21 +831,75 @@ mod tests {
                 chain.keys[1].public_key(),
             ),
             &chain.keys[0],
-        );
-        let mine = hash(&again);
+        )
+    }
+
+    /// Another version 0 refuses only once shown (open point 27): R2 first
+    /// asks to see it, then refuses if it was shown and accepts if not.
+    #[test]
+    fn r2_refuses_another_version_0_only_once_shown() {
+        let chain = Chain::new();
+        let mine = hash(&signed_again(&chain));
         let answers = [answer(0, chain.version(0))];
         assert_eq!(
-            decide_version_zero(20, 5, &mine, &answers, true),
+            decide_version_zero(20, 5, &mine, &answers, true, ClaimsShown::NotYet),
+            Verdict::Show(vec![0])
+        );
+        assert_eq!(
+            decide_version_zero(
+                20,
+                5,
+                &mine,
+                &answers,
+                true,
+                ClaimsShown::OtherVersionZero(0)
+            ),
             Verdict::Refuse(Refusal::OtherVersion {
                 seq: 0,
                 hash: hash(chain.version(0))
             })
         );
-        // The same version 0 is no refusal.
         assert_eq!(
-            decide_version_zero(20, 5, &hash(chain.version(0)), &answers, true),
+            decide_version_zero(20, 5, &mine, &answers, true, ClaimsShown::Nothing),
             Verdict::Accept
         );
+        // The same version 0 is no claim.
+        assert_eq!(
+            decide_version_zero(
+                20,
+                5,
+                &hash(chain.version(0)),
+                &answers,
+                true,
+                ClaimsShown::NotYet
+            ),
+            Verdict::Accept
+        );
+    }
+
+    /// The quorum that claims a later version refuses before anything is
+    /// fetched, and only the claimants that can be replicas are fetched from.
+    #[test]
+    fn r2_fetches_only_from_the_closest_claimants_and_after_the_quorum() {
+        let chain = Chain::with_versions(1);
+        let v0 = hash(chain.version(0));
+        let claims: Vec<Answer> = (1..=3)
+            .map(|byte| Answer {
+                seq: 0,
+                hash: [byte; ID_LEN],
+            })
+            .collect();
+        // k = 3 and 5 asked: the 2 other replicas at most.
+        assert_eq!(
+            decide_version_zero(3, 5, &v0, &claims, true, ClaimsShown::NotYet),
+            Verdict::Show(vec![0, 1])
+        );
+        let newer = [answer(1, chain.version(1)), answer(1, chain.version(1))];
+        let mixed: Vec<Answer> = newer.iter().chain(&claims).copied().collect();
+        assert!(matches!(
+            decide_version_zero(3, 2, &v0, &mixed, true, ClaimsShown::NotYet),
+            Verdict::Refuse(Refusal::NewerClaimed { .. })
+        ));
     }
 
     #[test]
@@ -760,23 +907,97 @@ mod tests {
         let chain = Chain::new();
         let v0 = hash(chain.version(0));
         assert_eq!(
-            decide_version_zero(20, 5, &v0, &[], false),
+            decide_version_zero(20, 5, &v0, &[], false, ClaimsShown::NotYet),
             Verdict::NoAnswer
         );
         assert_eq!(
-            decide_version_zero(20, 0, &v0, &[], true),
+            decide_version_zero(20, 0, &v0, &[], true, ClaimsShown::NotYet),
             Verdict::NoAnswer
         );
-        assert_eq!(decide_version_zero(20, 5, &v0, &[], true), Verdict::Accept);
-        // A refusal still wins over a silent node.
+        assert_eq!(
+            decide_version_zero(20, 5, &v0, &[], true, ClaimsShown::NotYet),
+            Verdict::Accept
+        );
+        // A version 0 shown still wins over a silent node, and a claim not
+        // shown leaves the silence.
         let other = [Answer {
             seq: 0,
             hash: [9; ID_LEN],
         }];
         assert!(matches!(
-            decide_version_zero(20, 5, &v0, &other, false),
+            decide_version_zero(20, 5, &v0, &other, false, ClaimsShown::OtherVersionZero(0)),
             Verdict::Refuse(_)
         ));
+        assert_eq!(
+            decide_version_zero(20, 5, &v0, &other, false, ClaimsShown::Nothing),
+            Verdict::NoAnswer
+        );
+    }
+
+    #[test]
+    fn a_claimed_version_0_must_hash_to_the_claim_and_be_signed_again() {
+        let chain = Chain::new();
+        let again = signed_again(&chain);
+        let forged = sign(
+            &chain.doc(
+                1,
+                Some(chain.version(0)),
+                new_key().public_key(),
+                new_key().public_key(),
+            ),
+            &new_key(),
+        );
+        let sent = chain.version(0);
+        assert!(check_claimed(&chain.key, sent, &hash(&again), &again));
+        assert!(!check_claimed(&chain.key, sent, &[7; ID_LEN], &again));
+        assert!(!check_claimed(&chain.key, sent, &hash(sent), sent));
+        assert!(!check_claimed(&chain.key, sent, &hash(&forged), &forged));
+        assert!(!check_claimed(
+            &chain.key,
+            sent,
+            &hash(b"garbage"),
+            b"garbage"
+        ));
+    }
+
+    // ---- What a record shows against version 0 ---------------------------------------
+
+    /// Against the version 0 one holds, a record proves another version 0 or
+    /// a successor only as a holder of that version 0 would find it; a
+    /// version 2 or later cannot be told from a forgery (open point 27).
+    #[test]
+    fn a_record_shows_against_version_0_what_a_holder_finds() {
+        let chain = Chain::with_versions(2);
+        let v0 = chain.version(0);
+        let attacker = new_key();
+        let forged = sign(
+            &chain.doc(1, Some(v0), attacker.public_key(), new_key().public_key()),
+            &attacker,
+        );
+        assert_eq!(shown_against(&chain.key, v0, v0), Shown::Same);
+        assert_eq!(
+            shown_against(&chain.key, v0, &signed_again(&chain)),
+            Shown::OtherVersionZero
+        );
+        assert_eq!(
+            shown_against(&chain.key, v0, chain.version(1)),
+            Shown::Successor
+        );
+        assert_eq!(
+            shown_against(&chain.key, v0, chain.version(2)),
+            Shown::Unprovable
+        );
+        assert_eq!(shown_against(&chain.key, v0, &forged), Shown::Nothing);
+        assert_eq!(shown_against(&chain.key, v0, b"garbage"), Shown::Nothing);
+        assert_eq!(
+            shown_against(&chain.key, v0, Chain::new().version(0)),
+            Shown::Nothing
+        );
+        // Only against a version 0.
+        assert_eq!(
+            shown_against(&chain.key, chain.version(1), chain.version(2)),
+            Shown::Nothing
+        );
     }
 
     // ---- R5 ------------------------------------------------------------------

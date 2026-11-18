@@ -6,8 +6,9 @@
 //! same place, or a version too far ahead. A replica that holds nothing asks
 //! the nodes closest to the key for the version and hash of their record
 //! (`FindHash`) and applies R2 to a version 0 and R5 to a later one, fetching
-//! the version before from a node that voted for it when R5 says so. It never
-//! accepts on silence.
+//! the version before from a node that voted for it when R5 says so, and the
+//! record of a node that claims another version 0 when R2 says so (open point
+//! 27). It never accepts on silence.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,8 +16,8 @@ use std::time::{Duration, Instant};
 
 use crate::auth_handler::did::RecordForm;
 use crate::auth_handler::rules::{
-    check_fetched, decide_locally, decide_successor, decide_version_zero, Answer, Fetch,
-    FetchCheck, Local, LocalConflict, Refusal, Request, Verdict,
+    check_claimed, check_fetched, decide_locally, decide_successor, decide_version_zero, Answer,
+    ClaimsShown, Fetch, FetchCheck, Local, LocalConflict, Refusal, Request, Verdict,
 };
 use crate::counters::CheckEnd;
 use crate::crawling::{RPCFindResponse, SpiderProtocol, ValueSearch, ValueSpiderCrawl};
@@ -135,7 +136,7 @@ impl KademliaProtocol {
                             );
                             return Some(refused(refusal));
                         }
-                        Verdict::NoAnswer | Verdict::Fetch(_) => {
+                        Verdict::NoAnswer | Verdict::Fetch(_) | Verdict::Show(_) => {
                             log::warn!(
                                 "rpc_store: no answer for version {} of {} from {}",
                                 form.seq,
@@ -312,7 +313,23 @@ impl KademliaProtocol {
 
         let mut fetched = false;
         let verdict = if form.seq == 0 {
-            decide_version_zero(self.ksize, asked, &own, &answers, everyone_answered)
+            let first = decide_version_zero(
+                self.ksize,
+                asked,
+                &own,
+                &answers,
+                everyone_answered,
+                ClaimsShown::NotYet,
+            );
+            match first {
+                Verdict::Show(claimants) => {
+                    let shown = self
+                        .show_claims(key, value, &voters, &answers, &claimants, deadline)
+                        .await;
+                    decide_version_zero(self.ksize, asked, &own, &answers, everyone_answered, shown)
+                }
+                other => other,
+            }
         } else {
             let first = decide_successor(
                 self.ksize,
@@ -352,14 +369,63 @@ impl KademliaProtocol {
             Verdict::Refuse(Refusal::NotFollowing { .. }) => CheckEnd::NotFollowing,
             Verdict::Refuse(Refusal::HolderBehind { .. }) => CheckEnd::HolderBehind,
             Verdict::Refuse(Refusal::FetchedDoesNotHold) => CheckEnd::FetchRefused,
-            Verdict::NoAnswer | Verdict::Fetch(_) if everyone_answered && !fetched => {
+            Verdict::NoAnswer | Verdict::Fetch(_) | Verdict::Show(_)
+                if everyone_answered && !fetched =>
+            {
                 CheckEnd::TooFewVotes
             }
-            Verdict::NoAnswer | Verdict::Fetch(_) => CheckEnd::NoAnswer,
+            Verdict::NoAnswer | Verdict::Fetch(_) | Verdict::Show(_) => CheckEnd::NoAnswer,
         };
         self.counters
             .check(end, crawl.rounds(), started.elapsed(), fetched);
         verdict
+    }
+
+    /// R2: fetch the record of each node that claims another version 0
+    /// (`claimants`, indices into `voters` and `answers`), all at once, within
+    /// the deadline of the whole check, and find the closest to the key that
+    /// shows one: the same document as `value` signed again, hashing to its
+    /// claim, whose signature verifies (open point 27). A node that gives no
+    /// record, another one, or nothing in time has its claim dropped: a claim
+    /// is no reason to refuse, and the permission to store a version 0 is the
+    /// version 0 itself. `join_all` polls every fetch, so none waits for the
+    /// router while unpolled (Futurelock, `AGENTS.md`).
+    async fn show_claims(
+        self: &Arc<Self>,
+        key: [u8; ID_LEN],
+        value: &[u8],
+        voters: &[Node],
+        answers: &[Answer],
+        claimants: &[usize],
+        deadline: tokio::time::Instant,
+    ) -> ClaimsShown {
+        let fetches = claimants.iter().filter_map(|&index| {
+            let peer = voters.get(index)?.clone();
+            let claimed = answers.get(index)?.hash;
+            let call = Arc::clone(self).call_find_value(peer, Node::from_id(key));
+            Some(async move {
+                let raw = tokio::time::timeout_at(deadline, call).await.ok()?;
+                let record = RPCFindResponse::new(raw).get_value()?;
+                check_claimed(&key, value, &claimed, &record).then_some((index, record))
+            })
+        });
+        let shown: Vec<(usize, Vec<u8>)> = futures::future::join_all(fetches)
+            .await
+            .into_iter()
+            .flatten()
+            .collect();
+        for (index, record) in shown {
+            if self.verify_for_key(&key, &record).await {
+                return ClaimsShown::OtherVersionZero(index);
+            }
+        }
+        log::warn!(
+            "rpc_store: {} claims of another version 0 of {} not shown, dropped",
+            claimants.len(),
+            hex::encode(key)
+        );
+        self.counters.unshown_claims(claimants.len());
+        ClaimsShown::Nothing
     }
 
     /// Fetch version N−1 from the nodes that voted for it, in `order` (the

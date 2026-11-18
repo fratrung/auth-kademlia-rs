@@ -97,6 +97,9 @@ pub struct CheckCounts {
     pub fetch_refused: u64,
     pub too_few_votes: u64,
     pub no_answer: u64,
+    /// Claims of another version 0 dropped by R2: the node that made the
+    /// claim did not show that version 0 when asked for it (open point 27).
+    pub unshown_claims: u64,
     /// Checks that fetched the version before (R5).
     pub fetches: u64,
     /// Durations of those checks, whole check included
@@ -158,6 +161,15 @@ impl Counters {
         let _ = (end, rounds, elapsed, fetched);
     }
 
+    /// `claims` claims of another version 0 dropped by R2, not shown.
+    #[inline]
+    pub(crate) fn unshown_claims(&self, claims: usize) {
+        #[cfg(feature = "counters")]
+        self.inner.unshown_claims(claims);
+        #[cfg(not(feature = "counters"))]
+        let _ = claims;
+    }
+
     #[cfg(feature = "counters")]
     pub(crate) fn snapshot(&self) -> CounterSnapshot {
         self.inner.snapshot()
@@ -180,6 +192,7 @@ mod enabled {
         ends: [AtomicU64; CHECK_ENDS],
         rounds: [AtomicU64; CHECK_ROUND_BUCKETS],
         durations: [AtomicU64; CHECK_DURATION_BOUNDS_MS.len() + 1],
+        unshown_claims: AtomicU64,
         fetches: AtomicU64,
         fetch_durations: [AtomicU64; CHECK_DURATION_BOUNDS_MS.len() + 1],
         duration_total_us: AtomicU64,
@@ -222,6 +235,10 @@ mod enabled {
                 .fetch_add(elapsed.as_micros() as u64, Relaxed);
         }
 
+        pub(super) fn unshown_claims(&self, claims: usize) {
+            self.unshown_claims.fetch_add(claims as u64, Relaxed);
+        }
+
         pub(super) fn snapshot(&self) -> CounterSnapshot {
             let load = |counter: &AtomicU64| counter.load(Relaxed);
             let sent = MESSAGE_TYPES
@@ -251,6 +268,7 @@ mod enabled {
                     fetch_refused: load(&self.ends[CheckEnd::FetchRefused as usize]),
                     too_few_votes: load(&self.ends[CheckEnd::TooFewVotes as usize]),
                     no_answer: load(&self.ends[CheckEnd::NoAnswer as usize]),
+                    unshown_claims: load(&self.unshown_claims),
                     fetches: load(&self.fetches),
                     fetch_duration_ms: self.fetch_durations.iter().map(load).collect(),
                     rounds: self.rounds.iter().map(load).collect(),

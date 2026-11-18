@@ -638,12 +638,11 @@ fn empty_replica_takes_a_record_no_node_holds() {
 }
 
 /// The nodes answer the check with the version and SHA-256 of the record they
-/// hold, and a hash cannot be verified: a node holding another version 0
-/// blocks the STORE even when that record is invalid. Honest nodes store only
-/// verified records, so only a dishonest node holds an invalid one, and it
-/// could block the STORE anyway by not answering.
+/// hold, and a hash cannot be verified: another version 0 refuses the STORE
+/// only once its holder shows it (open point 27). A node holding one whose
+/// signature does not verify shows nothing, and the replica stores version 0.
 #[test]
-fn a_node_holding_an_invalid_copy_blocks_the_store() {
+fn a_node_holding_an_invalid_copy_does_not_block_the_store() {
     runtime().block_on(async {
         let issuer = Path::new("issuer_pub_key.bin");
         let chain = Chain::new();
@@ -664,10 +663,10 @@ fn a_node_holding_an_invalid_copy_blocks_the_store() {
             protocol
                 .call_store_rpc(&target, dkey, chain.version(0))
                 .await,
-            Some(StoreStatus::Conflict),
-            "a different hash in the network must block the STORE"
+            Some(StoreStatus::Stored),
+            "a version 0 not shown must not block the STORE"
         );
-        assert_eq!(replica.storage.get(&dkey), None);
+        assert_eq!(replica.storage.get(&dkey), Some(chain.version(0)));
     });
 }
 

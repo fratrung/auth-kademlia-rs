@@ -352,7 +352,9 @@ async fn version_0_is_refused_when_the_quorum_claims_a_later_version() {
 }
 
 /// One node holding another version 0, the same document signed again (or
-/// signed by whoever stole the first key), refuses it.
+/// signed by whoever stole the first key), refuses it once it shows it: the
+/// replica fetches it and verifies its signature, and never verifies the
+/// record it refuses (open point 27).
 #[tokio::test]
 async fn version_0_is_refused_when_a_node_holds_another_version_0() {
     let chain = Chain::new();
@@ -366,7 +368,7 @@ async fn version_0_is_refused_when_a_node_holds_another_version_0() {
         &chain.keys[0],
     );
     let (protocol, handler) = replica().await;
-    neighbours(
+    let seen = neighbours(
         &protocol,
         chain.key,
         vec![Neighbour::Holder(0, again), Neighbour::Empty],
@@ -377,7 +379,43 @@ async fn version_0_is_refused_when_a_node_holds_another_version_0() {
         Some(StoreStatus::Conflict)
     );
     assert_eq!(protocol.storage.get(&chain.key), None);
-    assert_eq!(handler.verified(), 0);
+    assert!(asked(&seen[..1]).contains(&"FindValue"));
+    assert_eq!(handler.verified(), 1);
+}
+
+/// A claimed version 0 counts only once shown (open point 27): the replica
+/// fetches the record of the node that claims it, and a claim with no record
+/// behind it, with a record that is not another version 0 of the DID, or
+/// followed by silence is dropped, so one node cannot stop a DID from being
+/// created.
+#[tokio::test]
+async fn a_claimed_version_0_counts_only_once_shown() {
+    let chain = Chain::new();
+    let garbage = b"not a version 0".to_vec();
+    let forged = fork(&chain, 1, chain.version(0), &new_key());
+    for claim in [
+        Neighbour::Claims(0, [7; ID_LEN]),
+        Neighbour::ClaimsServing(0, record_hash(&garbage), garbage.clone()),
+        Neighbour::ClaimsServing(0, record_hash(&forged), forged.clone()),
+        Neighbour::ClaimsThenSilent(0, [7; ID_LEN]),
+    ] {
+        let (protocol, _) = replica().await;
+        let seen = neighbours(&protocol, chain.key, vec![claim, Neighbour::Empty]).await;
+        assert_eq!(
+            store(&protocol, chain.key, chain.version(0)).await,
+            Some(StoreStatus::Stored)
+        );
+        assert_eq!(
+            protocol.storage.get(&chain.key),
+            Some(chain.version(0).to_vec())
+        );
+        assert!(asked(&seen).contains(&"FindValue"), "{:?}", asked(&seen));
+        #[cfg(feature = "counters")]
+        {
+            let checks = protocol.counters().checks;
+            assert_eq!((checks.unshown_claims, checks.accepted), (1, 1));
+        }
+    }
 }
 
 /// Never accept on silence: a node that does not answer, or nobody to ask,
