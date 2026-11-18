@@ -92,6 +92,7 @@ fn set_report_to_py<'py>(py: Python<'py>, report: &SetReport) -> PyResult<Bound<
     result.set_item("invalid_rejections", report.invalid_rejections)?;
     result.set_item("stale_rejections", report.stale_rejections)?;
     result.set_item("newer_claimed", report.newer_claimed)?;
+    result.set_item("unproven_refusals", report.unproven_refusals)?;
     Ok(result)
 }
 
@@ -307,12 +308,16 @@ impl PyServer {
     ///
     /// Returns:
     ///     dict: ``status`` is ``complete``, ``degraded``, or ``rejected``;
-    ///     ``reason`` is set for rejected publications (``newer_version``
-    ///     when a replica holds or reports a later version, ``use_update``
-    ///     for a version after 0); ``report`` contains expected,
-    ///     acknowledged, unavailable, conflicting, invalid, stale and
-    ///     capacity-rejected replica counts, and ``newer_claimed``, the
-    ///     replicas that refused because a node reported a later version.
+    ///     ``reason`` is set for rejected publications (``existing_record``
+    ///     when a replica shows version 0 signed again, ``newer_version``
+    ///     when one shows version 1 or the quorum claims a later version,
+    ///     ``replica_conflict`` when nothing was stored and replicas refused
+    ///     without showing why, ``use_update`` for a version after 0);
+    ///     ``report`` contains expected, acknowledged, unavailable,
+    ///     conflicting, invalid, stale and capacity-rejected replica counts,
+    ///     ``newer_claimed``, the replicas that refused because a node
+    ///     reported a later version, and ``unproven_refusals``, the replicas
+    ///     that refused without showing a record that proves it.
     fn set_detailed<'py>(
         &self,
         py: Python<'py>,

@@ -5,7 +5,7 @@
 //!
 //! Each node's id is placed at a chosen distance from the DID's key, so the
 //! replicas are known, and each replica's state is written into its storage
-//! before the operation. Ports: 15954-16017.
+//! before the operation. Ports: 15954-16025.
 
 mod common;
 
@@ -427,12 +427,12 @@ fn an_update_succeeds_while_an_old_version_is_still_on_a_replica() {
 
 // ---- Publication -----------------------------------------------------------------------
 
-/// The lookup of `set` only reads. Here it finds another record at the same
-/// place (version 0 signed again), so `set` refuses before sending anything,
-/// and the nearest node that lacked the record gets no copy of what the
-/// lookup found.
+/// Version 0 signed again, sent while two replicas hold the first: they
+/// refuse it (R4) and show theirs, so `set` reports version 0 signed twice,
+/// and the empty replica refuses it too, once a holder shows it the first
+/// one (R2, open point 27). No copy of the second is left anywhere.
 #[test]
-fn the_lookup_of_set_leaves_no_copy_behind() {
+fn version_0_signed_twice_is_refused_and_leaves_no_copy() {
     runtime().block_on(async {
         let chain = Chain::new();
         let nodes = network(chain.key, 16005, &[1, 2, 3, 200], 3).await;
@@ -451,8 +451,58 @@ fn the_lookup_of_set_leaves_no_copy_behind() {
             ),
             "{outcome:?}"
         );
-        tokio::time::sleep(Duration::from_millis(500)).await;
         assert_eq!(held(&nodes[2], &chain), None);
+    });
+}
+
+/// A replica holds a version 1 signed by another key, as an attacker who
+/// learnt the DID from the owner's lookup serves it, and answers the owner's
+/// version 0 with `Stale`. Neither stops the publication: `set` reads no copy
+/// first, and a refusal counts only with a record the owner's version 0 shows
+/// to be another version 0 or its successor (open point 27).
+#[test]
+fn a_forged_version_1_on_a_replica_does_not_stop_the_publication() {
+    runtime().block_on(async {
+        let chain = Chain::new();
+        let nodes = network(chain.key, 16018, &[200, 1, 2, 3], 3).await;
+        let attacker = MlDsa65KeyPair::generate().expect("key pair");
+        hold(
+            &nodes[1],
+            &chain,
+            &chain.forge(1, &chain.version(0), &attacker),
+        );
+        let outcome = nodes[0].set_detailed(&chain.did, chain.version(0)).await;
+        let SetOutcome::Degraded(report) = &outcome else {
+            panic!("{outcome:?}");
+        };
+        assert_eq!(report.stored_replicas, 2, "{report:?}");
+        assert_eq!(report.stale_rejections, 1, "{report:?}");
+        assert_eq!(report.unproven_refusals, 1, "{report:?}");
+        assert_eq!(held(&nodes[2], &chain), v(0));
+        assert_eq!(held(&nodes[3], &chain), v(0));
+        assert_eq!(held(&nodes[1], &chain), other());
+    });
+}
+
+/// A replica holding the genuine version 1 shows it: `set` of version 0 is a
+/// newer version, not version 0 signed twice.
+#[test]
+fn a_genuine_version_1_on_a_replica_is_a_newer_version() {
+    runtime().block_on(async {
+        let chain = Chain::with_versions(1);
+        let nodes = network(chain.key, 16022, &[200, 1, 2, 3], 3).await;
+        hold(&nodes[1], &chain, &chain.version(1));
+        let outcome = nodes[0].set_detailed(&chain.did, chain.version(0)).await;
+        assert!(
+            matches!(
+                outcome,
+                SetOutcome::Rejected {
+                    reason: SetRejection::NewerVersion,
+                    ..
+                }
+            ),
+            "{outcome:?}"
+        );
     });
 }
 
