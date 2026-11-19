@@ -89,12 +89,30 @@ enum ReplayEnd {
 
 /// The vote of the owner's own copy, when the owner is a replica.
 enum LocalVote {
-    /// It holds the new version, or will once it is written after the
-    /// quorum over `expected`.
-    Yes {
-        expected: Option<Vec<u8>>,
-    },
+    AlreadyStored,
+    Pending(Vec<u8>),
     No,
+}
+
+impl LocalVote {
+    /// A pending vote counts once the exact record is written or observed.
+    fn confirm(self, storage: &impl IStorage, key: &[u8], current: &[u8]) -> bool {
+        match self {
+            Self::AlreadyStored => true,
+            Self::No => false,
+            Self::Pending(expected) => match storage.replace_if(key, &expected, current.to_vec()) {
+                ReplaceStatus::Replaced => true,
+                ReplaceStatus::Changed if storage.get(key).as_deref() == Some(current) => true,
+                status => {
+                    log::warn!(
+                        "update: local commit for {} returned {status:?}",
+                        hex::encode(key)
+                    );
+                    false
+                }
+            },
+        }
+    }
 }
 
 impl Server {
@@ -213,13 +231,15 @@ impl Server {
             return false;
         }
         let required = group_size / 2 + 1;
-        let local_yes = usize::from(matches!(local, Some(LocalVote::Yes { .. })));
-        let acknowledgements = local_yes
-            + votes
-                .iter()
-                .take(primary_remote_count)
-                .filter(|ok| **ok)
-                .count();
+        let remote_yes = votes
+            .iter()
+            .take(primary_remote_count)
+            .filter(|ok| **ok)
+            .count();
+        let local_yes = remote_yes + 1 >= required
+            && local
+                .is_some_and(|vote| vote.confirm(self.storage.as_ref(), &dkey, chain.current()));
+        let acknowledgements = remote_yes + usize::from(local_yes);
         if acknowledgements < required {
             log::warn!(
                 "update_digest {}: quorum not reached ({}/{})",
@@ -228,26 +248,6 @@ impl Server {
                 required
             );
             return false;
-        }
-        if let Some(LocalVote::Yes {
-            expected: Some(expected),
-        }) = local
-        {
-            match self
-                .storage
-                .replace_if(&dkey, &expected, chain.current().to_vec())
-            {
-                ReplaceStatus::Replaced => {}
-                ReplaceStatus::CapacityExceeded => {
-                    log::warn!("update_digest {}: local storage capacity exceeded", key);
-                    return false;
-                }
-                ReplaceStatus::Changed => {
-                    if self.storage.get(&dkey).as_deref() != Some(chain.current()) {
-                        log::warn!("update_digest {}: the local copy changed meanwhile", key);
-                    }
-                }
-            }
         }
         true
     }
@@ -283,8 +283,8 @@ impl Server {
         let stored = self.storage.get(&dkey);
         let start = match decide_locally(Request::Update, &dkey, stored.as_deref(), chain.current())
         {
-            Local::AlreadyStored => return LocalVote::Yes { expected: None },
-            Local::VerifyAndReplace => return LocalVote::Yes { expected: stored },
+            Local::AlreadyStored => return LocalVote::AlreadyStored,
+            Local::VerifyAndReplace => return stored.map_or(LocalVote::No, LocalVote::Pending),
             Local::MissingPrevious(None) => 0,
             Local::MissingPrevious(Some(seq)) => seq + 1,
             other => {
@@ -317,7 +317,7 @@ impl Server {
             }
             held = Some(record.to_vec());
         }
-        LocalVote::Yes { expected: held }
+        held.map_or(LocalVote::No, LocalVote::Pending)
     }
 
     /// The Status List: verified against the issuer's key, as before ADR 0005.
@@ -442,5 +442,24 @@ async fn fill_empty_replica(
             proto.call_store_rpc(node, dkey, current).await,
             Some(StoreStatus::Stored | StoreStatus::AlreadyStored)
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::ForgetfulStorage;
+
+    #[test]
+    fn a_pending_vote_counts_only_the_requested_bytes_after_a_race() {
+        let storage = ForgetfulStorage::new(-1);
+        let key = b"key";
+        let vote = || LocalVote::Pending(b"previous".to_vec());
+        assert!(!vote().confirm(&storage, key, b"current"));
+        storage.set(key.to_vec(), b"concurrent".to_vec());
+        assert!(!vote().confirm(&storage, key, b"current"));
+        assert_eq!(storage.get(key).unwrap(), b"concurrent");
+        storage.set(key.to_vec(), b"current".to_vec());
+        assert!(vote().confirm(&storage, key, b"current"));
     }
 }

@@ -318,9 +318,13 @@ never signed again.
 
 | `update` returns | Meaning | Action |
 |---|---|---|
-| `True` | A majority of the closest replicas holds version N | Add it to the chain; erase the previous private key |
-| `False` | No majority yet | Keep it pending; retry later with the same arguments |
+| `True` | A strict majority of the consistency group acknowledged the exact record during this call | Add it to the chain; erase the previous private key |
+| `False` | Too few acknowledgements, even if some replicas applied the update | Keep it pending; retry later with the same arguments |
 | `None` | Refused before sending: a version 0, a record that does not bind or verify, or `earlier` that is not its chain | Fix the saved chain; do not sign another version N |
+
+The group includes the local replica when selected and the closest remote
+replicas, up to `alpha` members in total. A remote majority suffices even if
+the owner's DHT copy could not be written. The owner's saved chain is separate.
 
 `earlier` is used only to replay the chain to replicas that miss versions:
 a replica behind receives the versions it lacks, one at a time, and an empty

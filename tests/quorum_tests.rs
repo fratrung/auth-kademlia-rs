@@ -404,6 +404,32 @@ fn update_commits_locally_after_quorum() {
     });
 }
 
+#[test]
+fn a_remote_majority_confirms_an_update_that_exceeds_local_capacity() {
+    runtime().block_on(async {
+        let chain = common::Chain::with_versions(1);
+        let old = chain.version(0);
+        let budget = chain.key.len() + old.len();
+        assert!(chain.version(1).len() > old.len());
+        let owner = common::start_node_with_max_storage_bytes(16026, budget).await;
+        let a = common::start_node(16027).await;
+        let b = common::start_node(16028).await;
+        bootstrap_to(&owner, &[16027, 16028]).await;
+        for node in [&owner, &a, &b] {
+            node.storage.set(chain.key.to_vec(), old.clone());
+        }
+        let new = chain.version(1);
+        assert_eq!(
+            owner.update(&chain.did, new.clone(), vec![]).await,
+            Some(true)
+        );
+        assert_eq!(owner.storage.get(&chain.key), Some(old));
+        for remote in [&a, &b] {
+            assert_eq!(remote.storage.get(&chain.key).as_ref(), Some(&new));
+        }
+    });
+}
+
 /// A reply lost after the update was applied: the owner repeats the same
 /// update. It must succeed and complete the replicas that missed it, whichever
 /// copies already moved to the new version.
