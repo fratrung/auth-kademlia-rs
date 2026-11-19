@@ -5,7 +5,7 @@
 //!
 //! Each node's id is placed at a chosen distance from the DID's key, so the
 //! replicas are known, and each replica's state is written into its storage
-//! before the operation. Ports: 15954-16025.
+//! before the operation. Ports: 15954-16025 and 16029-16030.
 
 mod common;
 
@@ -384,6 +384,66 @@ fn the_owner_writes_its_chain_locally_and_the_new_version_after_the_quorum() {
             Some(false)
         );
         assert_eq!(held(&nodes[0], &chain), v(1));
+    });
+}
+
+#[test]
+fn local_replay_verifies_each_missing_record_against_the_stored_copy() {
+    runtime().block_on(async {
+        let mut damaged = Chain::with_versions(1);
+        damaged.records[1][12] ^= 1; // Damaged signature in the owner's archive.
+        damaged.grow();
+        let nodes = network(damaged.key, 16029, &[1, 2], 20).await;
+        let (owner, peer) = (&nodes[0], &nodes[1]);
+
+        // The peer already holds the requested bytes. In this two-member
+        // group the owner also has to confirm them.
+        let mut wrong_key = Chain::new();
+        wrong_key.keys[1] = MlDsa65KeyPair::generate().unwrap();
+        wrong_key.grow();
+        wrong_key.grow();
+        for chain in [&damaged, &wrong_key] {
+            hold(peer, chain, &chain.version(2));
+            assert_eq!(
+                owner
+                    .update(&chain.did, chain.version(2), chain.earlier(2))
+                    .await,
+                Some(false)
+            );
+            assert_eq!(held(owner, chain), v(0));
+        }
+
+        let mut bad_zero = Chain::new();
+        bad_zero.records[0][12] ^= 1;
+        bad_zero.grow();
+        hold(peer, &bad_zero, &bad_zero.version(1));
+        assert_eq!(
+            owner
+                .update(&bad_zero.did, bad_zero.version(1), bad_zero.earlier(1))
+                .await,
+            Some(false)
+        );
+        assert_eq!(held(owner, &bad_zero), None);
+
+        let chain = Chain::with_versions(2);
+        let different_zero = chain.signed_again(0);
+        hold(owner, &chain, &different_zero);
+        hold(peer, &chain, &chain.version(2));
+        // The saved suffix is valid but starts from different bytes.
+        let suffix = vec![chain.version(1)];
+        assert_eq!(
+            owner
+                .update(&chain.did, chain.version(2), suffix.clone())
+                .await,
+            Some(false)
+        );
+        assert_eq!(owner.storage.get(&chain.key), Some(different_zero));
+        hold(owner, &chain, &chain.version(0));
+        assert_eq!(
+            owner.update(&chain.did, chain.version(2), suffix).await,
+            Some(true)
+        );
+        assert_eq!(held(owner, &chain), v(2));
     });
 }
 

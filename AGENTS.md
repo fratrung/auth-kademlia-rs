@@ -21,9 +21,9 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 344 tests
-cargo test --features counters       # 348: also the counters' own tests
-cargo test --features testbed        # 349: also the testbed's FindHash lie switch
+cargo test                           # all 345 tests
+cargo test --features counters       # 349: also the counters' own tests
+cargo test --features testbed        # 350: also the testbed's FindHash lie switch
 cargo test <name>                    # single test, e.g. test_update_did_record_key_rotation
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -369,7 +369,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/scenarios/worker_pool.rs` | 1 | 40-client burst, all responses delivered |
 | `tests/scenarios/crypto.rs` | 4 | End-to-end crypto invariants (tamper, injection, downgrade, revocation) |
 | `tests/quorum_tests.rs` | 20 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum, delayed UPDATE commit, retry of an applied UPDATE, UPDATE to replicas without the record, and the network check of a STORE to an empty replica |
-| `tests/chain_tests.rs` | 13 | Chains of versions over real UDP (ADR 0005): `set` refuses a later version, forged versions at empty replicas, the replay below the quorum and to replicas behind, the closed gap, version 0 signed twice, refusals of `set` that count only once shown |
+| `tests/chain_tests.rs` | 14 | Chains of versions over real UDP (ADR 0005): `set` refuses a later version, forged versions at empty replicas, the replay below the quorum and to replicas behind, the closed gap, version 0 signed twice, refusals of `set` that count only once shown |
 | `src/**` (inline) | 218 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID derivation with a Python test vector, the STORE and UPDATE rules, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 4 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
@@ -409,8 +409,9 @@ All tests are network-clean (loopback only) and run in parallel without interfer
 | 15938–15953 | STORE to an empty replica: network check |
 | 15954–16025 | chains of versions (`tests/chain_tests.rs`) |
 | 16026–16028 | UPDATE with a remote majority and a full local store |
+| 16029–16030 | owner verifies saved records during local replay |
 
-When adding a new integration test use ports **16029+** and document them here (15900 is reserved below).
+When adding a new integration test use ports **16031+** and document them here (15900 is reserved below).
 
 | 15900 | resilience test: Node A victim (host-exposed UDP, Docker only) |
 

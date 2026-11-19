@@ -331,6 +331,11 @@ a replica behind receives the versions it lacks, one at a time, and an empty
 replica receives the chain from version 0 when the network check allows it.
 Passing fewer versions limits that replay.
 
+When the owner is itself a replica, it verifies each saved record it needs to
+install locally. Each successor must follow the stored bytes and use the key
+they authorize. If a step fails, earlier verified steps remain available for
+the next retry.
+
 A second, different version N signed by the same key is proof of duplicity:
 replicas holding the first refuse the second and log it.
 

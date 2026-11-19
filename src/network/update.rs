@@ -172,7 +172,7 @@ impl Server {
         // version N−1 it first writes the owner's chain up to N−1, without
         // asking the network: the chain is the owner's own.
         let local = if store_local {
-            Some(self.prepare_local_copy(dkey, chain))
+            Some(self.prepare_local_copy(key, dkey, chain).await)
         } else {
             None
         };
@@ -279,7 +279,12 @@ impl Server {
 
     /// The vote of the owner's copy for the new version, by the rules of any
     /// replica. The signature of the new version was verified by `update`.
-    fn prepare_local_copy(&self, dkey: [u8; ID_LEN], chain: &OwnerChain) -> LocalVote {
+    async fn prepare_local_copy(
+        &self,
+        key: &str,
+        dkey: [u8; ID_LEN],
+        chain: &OwnerChain,
+    ) -> LocalVote {
         let stored = self.storage.get(&dkey);
         let start = match decide_locally(Request::Update, &dkey, stored.as_deref(), chain.current())
         {
@@ -300,6 +305,20 @@ impl Server {
                 );
                 return LocalVote::No;
             };
+            // A saved suffix can be internally linked yet follow a different
+            // predecessor from the one we hold. Apply R3 to that actual copy.
+            if let Some(previous) = held.as_deref() {
+                if decide_locally(Request::Update, &dkey, Some(previous), record)
+                    != Local::VerifyAndReplace
+                {
+                    log::warn!("update_digest: saved version {seq} does not follow the local copy");
+                    return LocalVote::No;
+                }
+            }
+            if !self.verify_value(key, record).await {
+                log::warn!("update_digest: saved version {seq} failed local verification");
+                return LocalVote::No;
+            }
             let written = match &held {
                 None => matches!(
                     self.storage
@@ -317,6 +336,8 @@ impl Server {
             }
             held = Some(record.to_vec());
         }
+        // OwnerChain::new checked that these exact final predecessor bytes
+        // authorize N. The pending vote still needs the CAS on those bytes.
         held.map_or(LocalVote::No, LocalVote::Pending)
     }
 
