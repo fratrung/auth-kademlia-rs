@@ -240,6 +240,10 @@ maintainer. Architectural and protocol alternatives were discussed with AI,
 but every design decision was made and accepted by the human maintainer, who
 retains full responsibility for the result.
 
+The maintainer also uses **Opus 5.5** and **GPT Astra 6.2** to discuss
+protocol changes, compare security and reliability tradeoffs, implement
+agreed fixes, and write regression tests.
+
 The resulting code was reviewed at the functional and architectural level.
 Line-by-line human review was focused on critical paths, including protocol
 consistency, cryptographic verification, authenticated mutations, and storage
