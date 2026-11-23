@@ -798,7 +798,9 @@ impl PyCustody {
     ///
     /// Raises:
     ///     ValueError: ``position`` is not due, is already signed from
-    ///         another template, or the template is invalid.
+    ///         another template, or the template is invalid or makes a
+    ///         record longer than 255 KiB, the longest the network carries;
+    ///         the position is then not activated.
     ///     RuntimeError: the custody files cannot be read or written.
     fn prepare<'py>(
         &self,

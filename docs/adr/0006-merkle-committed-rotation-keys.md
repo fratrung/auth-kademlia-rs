@@ -214,6 +214,19 @@ state cannot do. The lock does not stop a copy of the store, nor an older
 state restored from a backup: for stateful schemes "simply copying the
 private key would create a risk of OTS key reuse" ([SP800-208], section 7).
 
+**Records the network can carry.** Decided, 2026-11-24. A record is at
+most 255 KiB, part of its form, so a STORE or an answer carrying it fits
+in the longest message the transport carries (256 KiB). The backend checks
+the form of the record it signed before it writes the position as
+activated, so a template too long refuses the request and activates
+nothing: the same position stays due for a shorter one. Without the bound
+the custody activated the position of a 307 KB record that no replica
+could receive, and the request again with a shorter template was
+`AlreadySigned` (found in a review). The receiver also took fewer
+fragments than the sender sent for a message of 261 801 to 262 144 bytes,
+counting a partial last fragment as full; both ends now take the
+fragments of a message of 256 KiB.
+
 **Acceptance cases.** Use controlled time in the custody tests.
 
 | Case | Expected result |
@@ -745,6 +758,7 @@ read 4 to 9% more. The latency of a publication does not change (E1).
 | The theft of the current key | Each later position needs its own key and its own code, which stay secret until it is published | `revoked_key_cannot_authorise_further_rotation`, `a_record_with_another_code_fails_the_tree_though_its_signature_verifies` | |
 | The owner reusing a position, after a restart or with the clock set back | The custody writes the highest activated position durably before it returns a record, and signs nothing below it (point 1) | `a_restart_in_slot_5_after_publishing_2_prepares_5_after_2`, `a_clock_set_back_reopens_no_position` | |
 | Two instances of the custody on one store, each signing the next position | An exclusive lock on the store, held while an instance lives (point 1) | `one_instance_at_a_time_holds_a_custody` | |
+| A position activated for a record too long to send | A record is at most 255 KiB, part of its form, checked before the position is written as activated (point 1) | `a_record_too_long_to_publish_activates_nothing`, `the_longest_record_fits_in_a_store_and_in_an_answer` | |
 | An early activation without authority | The application's verifier checks the issuer's authorization; it reaches only the next position that is not skipped | `a_position_is_never_signed_before_its_slot_without_an_authorization`, `an_authorization_holds_once_for_its_did_and_position`, `an_authorization_never_reaches_a_skipped_lower_or_reserved_position` | |
 | Reading the custody's files | Files readable by the owner's user only; the secrets below a published position are erased | `only_the_owner_can_read_the_custody`, `publishing_erases_the_secrets_below_the_published_position` | |
 | A replica losing its records in a crash or a power cut | A durable write before the replica acknowledges, no answer when the write fails (point 5) | `a_restarted_replica_serves_its_record_with_no_peer`, `a_replica_that_cannot_write_does_not_confirm_the_record` | D1: no copy lost |

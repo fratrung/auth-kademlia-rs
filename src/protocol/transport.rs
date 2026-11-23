@@ -15,8 +15,8 @@ use dashmap::DashMap;
 use tokio::sync::{oneshot, Mutex, Notify};
 
 use crate::fragmentation::{
-    accept_fragment, encode_fragments, parse_fragment, FRAG_CHUNK_SIZE, MAX_MESSAGE_SIZE,
-    REASSEMBLY_GC_INTERVAL, REASSEMBLY_TTL,
+    accept_fragment, encode_fragments, parse_fragment, MAX_MESSAGE_SIZE, REASSEMBLY_GC_INTERVAL,
+    REASSEMBLY_TTL,
 };
 use crate::node::Node;
 use crate::protocol::messages::{
@@ -328,18 +328,6 @@ impl KademliaProtocol {
         let payload: Vec<u8> = if header.total == 1 {
             chunk.to_vec()
         } else {
-            // Bound memory usage upfront: refuse fragments that would push the
-            // logical message over the size limit.
-            let projected = (header.total as usize).saturating_mul(FRAG_CHUNK_SIZE);
-            if projected > MAX_MESSAGE_SIZE {
-                log::warn!(
-                    "Discarded oversized fragmented message from {} ({} fragments)",
-                    peer,
-                    header.total
-                );
-                return;
-            }
-
             self.gc_reassembly().await;
 
             match accept_fragment(&self.reassembly, peer, &header, chunk).await {
@@ -490,7 +478,8 @@ mod tests {
 
     use tokio::time::timeout;
 
-    use crate::fragmentation::MAX_REASSEMBLY_ENTRIES;
+    use crate::auth_handler::tree::MAX_RECORD_LEN;
+    use crate::fragmentation::{FRAG_CHUNK_SIZE, MAX_REASSEMBLY_ENTRIES};
     use crate::protocol::messages::{ExpectedResponse, Frame, RpcMessage, StoreStatus};
     use crate::protocol::test_support::*;
     use crate::utils::ID_LEN;
@@ -968,5 +957,41 @@ mod tests {
             fresh_protocol.reassembly.lock().await.is_empty(),
             "an inconsistent fragment total must not poison the reassembly slot"
         );
+    }
+
+    /// The longest record a replica accepts fits, with its envelope, in a
+    /// STORE and in the answer that serves it: no record the custody signs
+    /// is too long to send.
+    #[test]
+    fn the_longest_record_fits_in_a_store_and_in_an_answer() {
+        let record = vec![0xff; MAX_RECORD_LEN];
+        for message in [
+            RpcMessage::Store {
+                sender_id: [0xff; ID_LEN],
+                key: [0xff; ID_LEN],
+                value: record.clone(),
+            },
+            RpcMessage::FindValueHit { value: record },
+        ] {
+            let frame = Frame {
+                msg_id: u32::MAX,
+                is_request: true,
+                message,
+            };
+            let len = bincode::serialize(&frame).unwrap().len();
+            assert!(len <= MAX_MESSAGE_SIZE, "{len}");
+        }
+    }
+
+    /// The receiver takes into reassembly the first fragment of a message
+    /// of `MAX_MESSAGE_SIZE` bytes, which the sender lets through. It counted
+    /// every fragment as full and dropped it.
+    #[tokio::test]
+    async fn the_receiver_takes_a_message_of_the_longest_length() {
+        let protocol = test_protocol(Arc::new(TestHandler::new(true, true)), false).await;
+        let peer: SocketAddr = "127.0.0.1:9600".parse().unwrap();
+        let fragments = encode_fragments(7, &vec![0; MAX_MESSAGE_SIZE]);
+        protocol.handle_datagram(fragments[0].clone(), peer).await;
+        assert!(!protocol.reassembly.lock().await.is_empty());
     }
 }

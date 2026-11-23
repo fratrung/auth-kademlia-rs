@@ -8,9 +8,11 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde_json::{json, Value};
 
+use crate::auth_handler::did::FormError;
 use crate::auth_handler::did::{canonical_bytes, document_of, PLACEHOLDER};
 use crate::auth_handler::owner::signed_record;
-use crate::auth_handler::tree::{document_at, tree_form, Genesis, RESERVED};
+use crate::auth_handler::owner::OwnerError;
+use crate::auth_handler::tree::{document_at, tree_form, Genesis, MAX_RECORD_LEN, RESERVED};
 use crate::auth_handler::{DIDSignatureVerifierHandler, SignatureVerifierHandler};
 use crate::crypto::mldsa::MlDsa65KeyPair;
 use crate::durable::test_dir::{set_read_only, TestDir};
@@ -582,4 +584,43 @@ fn the_verifier_may_call_back_into_the_custody() {
         .activate_early(3, &template(), b"", &Asking(&owner.custody))
         .unwrap();
     assert_eq!(owner.seq(&three), 3);
+}
+
+/// A record too long for the network to carry is refused before its
+/// position is activated: the position is still due, for a shorter
+/// template. At provisioning nothing is written, and the directory can be
+/// provisioned again.
+#[test]
+fn a_record_too_long_to_publish_activates_nothing() {
+    let mut long = template();
+    long["service"][0]["serviceEndpoint"] = json!(format!(
+        "https://device.example/{}",
+        "a".repeat(MAX_RECORD_LEN)
+    ));
+    let too_long = |result: Result<Vec<u8>, CustodyError>| {
+        matches!(
+            result,
+            Err(CustodyError::Owner(OwnerError::Form(FormError::TooLong)))
+        )
+    };
+
+    let owner = Owner::new();
+    owner.at(slot(1));
+    assert!(too_long(owner.custody.prepare(1, &long)));
+    assert_eq!(owner.custody.due(), Due::Position(1));
+    let one = owner.custody.prepare(1, &template()).unwrap();
+    assert_eq!(owner.seq(&one), 1);
+
+    let dir = TestDir::new();
+    let calendar = Calendar::new(START, INTERVAL).unwrap();
+    let provision = |template: &Value| {
+        FileCustody::provision_with(
+            dir.path().to_path_buf(),
+            calendar,
+            template,
+            clock(&owner.now),
+        )
+    };
+    assert!(too_long(provision(&long).map(|_| vec![])));
+    assert!(provision(&template()).is_ok());
 }

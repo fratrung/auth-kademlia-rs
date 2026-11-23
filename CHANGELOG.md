@@ -57,7 +57,8 @@ application.
   authorization checked by a verifier the application supplies. A position
   can be skipped for good. The application writes one template of the
   document, and no method returns a private key, a seed or an unreleased
-  code. Publishing a record erases the secrets below it. One instance at a
+  code. A template whose record would be longer than 255 KiB, the longest a
+  record may be, is refused before its position is activated. Publishing a record erases the secrets below it. One instance at a
   time holds a custody's directory, through an exclusive lock: another
   opening or provisioning of it fails with `CustodyError::Busy`
   (`RuntimeError` in Python) until the first is dropped or its process
@@ -117,6 +118,9 @@ application.
 
 ### Changed
 
+- A receiver takes every fragmented message the sender lets through, up to
+  256 KiB: it counted a partly filled last fragment as full and dropped
+  messages of 261 801 to 262 144 bytes.
 - Record expiries are wall clock times (milliseconds since the Unix epoch)
   instead of the process's monotonic clock, so that a record keeps its TTL
   across a restart. `StorageWriteStatus` and `ReplaceStatus` add

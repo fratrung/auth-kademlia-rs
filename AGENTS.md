@@ -21,9 +21,9 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 364 tests
-cargo test --features counters       # 367: also the counters' own tests
-cargo test --features testbed        # 368: also the testbed's FindHash lie switch
+cargo test                           # all 368 tests
+cargo test --features counters       # 371: also the counters' own tests
+cargo test --features testbed        # 372: also the testbed's FindHash lie switch
 cargo test <name>                    # single test, e.g. test_key_rotation_is_published_with_set
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -195,7 +195,12 @@ verifier refuses a key of another length, such as the DER `SubjectPublicKeyInfo`
 that `aws-lc-rs` would also take. A `kty` other than
 `AKP` or an `alg` other than the record's algorithm field is `KeyMismatch`
 (`InvalidRecord`). There is no `keyAgreement` key: key agreement is ephemeral
-ML-KEM, outside the DHT.
+ML-KEM, outside the DHT. A record is at most `MAX_RECORD_LEN` (255 KiB,
+`src/auth_handler/tree.rs`) bytes, checked first by `tree_form`
+(`FormError::TooLong`), so that a `Store` or a `FindValueHit` carrying it
+fits in `MAX_MESSAGE_SIZE` (`the_longest_record_fits_in_a_store_and_in_an_answer`);
+the custody checks the form before it writes the position as activated, so
+it refuses a template too long without consuming the position.
 
 Every DID Document (ADR 0006) has `seq`, its position, the index of its leaf
 (0 to 62; 63 is reserved), `prev` (the base64url SHA-256 of the record the
@@ -223,10 +228,14 @@ Wire format per UDP datagram (all integers big-endian):
 Total header: **12 bytes**. `frag_id` is unique per logical message per sender.
 `index` is 0-based; `total` is the number of fragments (≥ 1).
 Constants: `FRAG_CHUNK_SIZE=1400`, `FRAG_HEADER_LEN=12`,
-`MAX_MESSAGE_SIZE=256 KB`, `REASSEMBLY_TTL=10 s`.
+`MAX_MESSAGE_SIZE=256 KB`, `MAX_FRAGMENTS=188`, `REASSEMBLY_TTL=10 s`.
 `handle_datagram()` in `src/protocol/transport.rs` reassembles transparently before deserialising (`accept_fragment`).
-Oversized messages (projected size > `MAX_MESSAGE_SIZE`) are discarded before
-entering the reassembly buffer to bound memory usage.
+A fragment whose total is above `MAX_FRAGMENTS`, the fragments of a message of
+`MAX_MESSAGE_SIZE` bytes, is discarded before entering the reassembly buffer,
+and a whole message longer than `MAX_MESSAGE_SIZE` is dropped: the sender
+refuses longer messages, so both ends take the same ones. Do not count every
+fragment as full again: the receiver then dropped messages of 261 801 to
+262 144 bytes that the sender sent.
 
 ## RPC message types (`src/protocol/messages.rs`)
 | Variant | Direction | Purpose |
@@ -457,7 +466,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/quorum_tests.rs` | 16 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum and update, retry of a publication, a rotation that fills empty replicas, and the network check of a STORE to an empty replica |
 | `tests/repair_tests.rs` | 3 | Repair over real UDP: the expected record found, stored and served locally; no match without it; no answer |
 | `tests/chain_tests.rs` | 8 | Positions of one DID over real UDP: a rotation that reaches every replica, the owner restoring empty replicas, refusals of `set` that count only once shown, forged and old genuine records at empty replicas |
-| `src/**` (inline) | 246 | Module-level `#[test]` blocks (incl. the custody's acceptance cases and calendar, persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
+| `src/**` (inline) | 250 | Module-level `#[test]` blocks (incl. the custody's acceptance cases and calendar, persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 

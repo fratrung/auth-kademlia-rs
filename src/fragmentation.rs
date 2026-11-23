@@ -39,6 +39,11 @@ pub const REASSEMBLY_TTL: Duration = Duration::from_secs(10);
 pub const REASSEMBLY_GC_INTERVAL: Duration = Duration::from_secs(1);
 /// Hard cap on a logical message size to bound memory usage per peer.
 pub const MAX_MESSAGE_SIZE: usize = 256 * 1024;
+/// The most fragments of a message: those of one of `MAX_MESSAGE_SIZE`
+/// bytes, whose last fragment is partly filled. The receiver takes this
+/// many, and checks the length once the message is whole, so every message
+/// the sender lets through is reassembled.
+pub const MAX_FRAGMENTS: usize = MAX_MESSAGE_SIZE.div_ceil(FRAG_CHUNK_SIZE);
 /// Global cap on incomplete logical messages. At the message-size cap this
 /// bounds reassembly payload memory to 16 MiB before allocator overhead.
 pub const MAX_REASSEMBLY_ENTRIES: usize = 64;
@@ -150,16 +155,26 @@ pub fn parse_fragment(data: &[u8]) -> Option<(FragHeader, &[u8])> {
 
 /// Add one fragment of a message from `peer`, and return the message once its
 /// last fragment has arrived. `None` while fragments are missing, or when the
-/// fragment is discarded (and logged): the map is full, the peer already has
-/// `MAX_REASSEMBLY_ENTRIES_PER_PEER` messages in reassembly, or the fragment's
-/// total differs from the first fragment's, which drops the whole message.
-/// The lock on the map is released before the message is assembled.
+/// fragment is discarded (and logged): its total is above `MAX_FRAGMENTS`,
+/// the map is full, the peer already has `MAX_REASSEMBLY_ENTRIES_PER_PEER`
+/// messages in reassembly, or the fragment's total differs from the first
+/// fragment's, which drops the whole message. A whole message longer than
+/// `MAX_MESSAGE_SIZE` is dropped too. The lock on the map is released before
+/// the message is assembled.
 pub(crate) async fn accept_fragment(
     reassembly: &ReassemblyMap,
     peer: SocketAddr,
     header: &FragHeader,
     chunk: &[u8],
 ) -> Option<Vec<u8>> {
+    if usize::from(header.total) > MAX_FRAGMENTS {
+        log::warn!(
+            "Discarded oversized fragmented message from {} ({} fragments)",
+            peer,
+            header.total
+        );
+        return None;
+    }
     let key = (peer, header.frag_id);
     let mut map = reassembly.lock().await;
     if !map.contains_key(&key) {
@@ -229,12 +244,21 @@ pub(crate) async fn accept_fragment(
     };
     drop(map);
     let payload = entry.assemble();
-    if payload.is_none() {
-        log::warn!(
+    match &payload {
+        None => log::warn!(
             "Assembly failed for frag_id={} from {}",
             header.frag_id,
             peer
-        );
+        ),
+        Some(message) if message.len() > MAX_MESSAGE_SIZE => {
+            log::warn!(
+                "Discarded oversized message from {} ({} bytes)",
+                peer,
+                message.len()
+            );
+            return None;
+        }
+        Some(_) => {}
     }
     payload
 }
@@ -370,5 +394,46 @@ mod tests {
         let mut oversized_multi = multi;
         oversized_multi.push(0);
         assert!(parse_fragment(&oversized_multi).is_none());
+    }
+
+    /// Deliver `datagrams` from `peer` as the receiver does, and return the
+    /// message once whole.
+    async fn deliver(map: &ReassemblyMap, datagrams: &[Vec<u8>]) -> Option<Vec<u8>> {
+        let peer: SocketAddr = "127.0.0.1:9700".parse().unwrap();
+        let mut message = None;
+        for datagram in datagrams {
+            let (header, chunk) = parse_fragment(datagram)?;
+            message = accept_fragment(map, peer, &header, chunk).await;
+        }
+        message
+    }
+
+    /// Every message the sender lets through, up to `MAX_MESSAGE_SIZE`
+    /// bytes, is reassembled, whatever the length of its last fragment.
+    /// Counted as full, those fragments made the receiver drop messages of
+    /// 261 801 to 262 144 bytes. A message with more fragments, or longer
+    /// once whole, is dropped.
+    #[tokio::test]
+    async fn every_message_the_sender_lets_through_is_reassembled() {
+        let map: ReassemblyMap = Arc::default();
+        let full = (MAX_MESSAGE_SIZE / FRAG_CHUNK_SIZE) * FRAG_CHUNK_SIZE;
+        for (id, len) in [(1, full), (2, full + 1), (3, MAX_MESSAGE_SIZE)] {
+            let message = vec![7u8; len];
+            let datagrams = encode_fragments(id, &message);
+            assert_eq!(deliver(&map, &datagrams).await, Some(message), "{len}");
+        }
+
+        let too_many = encode_fragments(4, &vec![7u8; MAX_FRAGMENTS * FRAG_CHUNK_SIZE + 1]);
+        assert_eq!(deliver(&map, &too_many[..1]).await, None);
+        assert!(
+            map.lock().await.is_empty(),
+            "no entry for a message too long"
+        );
+
+        // A sender that fills the last fragment too goes past the limit.
+        let too_long = encode_fragments(5, &vec![7u8; MAX_FRAGMENTS * FRAG_CHUNK_SIZE]);
+        assert_eq!(too_long.len(), MAX_FRAGMENTS);
+        assert_eq!(deliver(&map, &too_long).await, None);
+        assert!(map.lock().await.is_empty());
     }
 }

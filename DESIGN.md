@@ -131,7 +131,9 @@ one key, a JWK of the type RFC 9964 defines [RFC 9964]: `{"kty": "AKP",
 Documents are in a canonical form, so that one document has one hash:
 printable ASCII only, integers within ±(2^53 − 1) without fraction or
 exponent, sorted keys and no whitespace, and the bytes must equal their
-re-serialization.
+re-serialization. A record is at most 255 KiB, so that a STORE carrying it
+fits in the longest message the transport carries (section 4); the custody
+refuses a longer one before it activates the position.
 
 ### The tree and the genesis
 
@@ -219,7 +221,8 @@ address it comes from.
 Post-quantum records are about 7 KB, more than one datagram, so every message
 is split into fragments of at most 1400 bytes with a 12-byte header (`KADF`,
 fragment id, index, total). Reassembly is bounded: at most 256 KB per message,
-64 partial messages in all, 8 per peer, kept 10 s. These limits protect memory.
+so at most 188 fragments, the last one partly filled, 64 partial messages in
+all, 8 per peer, kept 10 s. These limits protect memory.
 They also mean that a node receiving many large answers from the same peer at
 once drops some: section 7 explains why the STORE check asks for hashes.
 

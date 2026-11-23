@@ -37,6 +37,13 @@ pub const CODE_LEN: usize = 32;
 /// Bytes of a membership path: one 32-byte sibling per level, 192.
 pub const PATH_LEN: usize = HEIGHT * ID_LEN;
 
+/// The longest record, about 37 times one of today's: a STORE or an answer
+/// carrying it, with its envelope, fits in the longest message the
+/// transport carries (`fragmentation::MAX_MESSAGE_SIZE`), as a test of the
+/// transport checks. A longer record could never reach a replica, and the
+/// custody would have activated its position for nothing.
+pub const MAX_RECORD_LEN: usize = 255 * 1024;
+
 /// The format version committed in the genesis.
 pub const FORMAT_VERSION: u64 = 1;
 
@@ -296,13 +303,17 @@ pub struct TreeForm {
 }
 
 /// Step 1 for a record sent under `key`, without verifying any signature:
-/// the layout and algorithm, the canonical form, no placeholder, an `id`
+/// at most `MAX_RECORD_LEN` bytes, the layout and algorithm, the canonical
+/// form, no placeholder, an `id`
 /// whose suffix is `key`, `seq` from 0 to 62, `prev` absent at 0 and
 /// canonical after, a `treeProof` of exactly the genesis, the code and the
 /// path, a genesis that hashes to `key`, the leaf of the document's key and
 /// code at `seq` reaching the root through the path, and at 0 the initial
 /// body hash.
 pub fn tree_form(key: &Hash, record: &[u8]) -> Result<TreeForm, FormError> {
+    if record.len() > MAX_RECORD_LEN {
+        return Err(FormError::TooLong);
+    }
     let doc = parse_canonical(document_of(record)?)?;
     if holds_placeholder(&doc) {
         return Err(FormError::Placeholder);

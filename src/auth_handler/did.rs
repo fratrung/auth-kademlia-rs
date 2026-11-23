@@ -45,6 +45,11 @@ pub enum FormError {
     /// its genesis.
     #[error("the key and code are not those of the position in the tree")]
     NotInTree,
+    #[error(
+        "the record is longer than the {} bytes the network carries",
+        crate::auth_handler::tree::MAX_RECORD_LEN
+    )]
+    TooLong,
 }
 
 /// The canonical suffix of 32 bytes: base64url without padding, 43 characters.
