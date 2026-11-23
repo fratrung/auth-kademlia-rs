@@ -260,24 +260,7 @@ impl Server {
                     }
                     let mut dkey = [0u8; ID_LEN];
                     dkey.copy_from_slice(&key_vec);
-                    let target = Node::from_id(dkey);
-                    let neighbors = proto.router.read().await.find_neighbors(&target, None);
-                    if neighbors.is_empty() {
-                        continue;
-                    }
-                    let nodes =
-                        NodeSpiderCrawl::new(Arc::clone(&proto), target, neighbors, ksize, alpha)
-                            .find()
-                            .await;
-
-                    let mut store_futs = vec![];
-                    for n in &nodes {
-                        let p = Arc::clone(&proto);
-                        let n = n.clone();
-                        let v = value.clone();
-                        store_futs.push(async move { p.call_store_rpc(&n, dkey, v).await });
-                    }
-                    futures::future::join_all(store_futs).await;
+                    proto.republish(dkey, value).await;
                 }
             }
         });

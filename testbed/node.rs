@@ -34,7 +34,6 @@ use auth_kademlia_rs::auth_handler::did::{key_of_did, DID_PREFIX};
 use auth_kademlia_rs::auth_handler::owner::OwnerTree;
 use auth_kademlia_rs::auth_handler::tree::Genesis;
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
-use auth_kademlia_rs::crawling::NodeSpiderCrawl;
 use auth_kademlia_rs::network::{Server, SetOutcome};
 use auth_kademlia_rs::protocol::Lie;
 use auth_kademlia_rs::storage::IStorage;
@@ -335,7 +334,9 @@ async fn republish(node: &Node) -> Value {
 /// Send the record this node holds for a DID to the `k` nodes closest to it,
 /// as the hourly republication does with every record older than an hour,
 /// but at once, so that a measurement need not wait for the timer. Each
-/// replica decides by its own rules; the answers say what it did.
+/// replica decides by its own rules; the answers say what it did, and
+/// `repaired` whether this node took a higher record a replica showed when
+/// refusing it as stale.
 async fn push(node: &Node, target: &str) -> Value {
     let did = did_of_target(target);
     let Some(key) = key_of_did(&did) else {
@@ -349,27 +350,8 @@ async fn push(node: &Node, target: &str) -> Value {
         return json!({ "error": "the node is not listening" });
     };
     let started = Instant::now();
-    let target_node = auth_kademlia_rs::node::Node::from_id(key);
-    let neighbours = protocol
-        .router
-        .read()
-        .await
-        .find_neighbors(&target_node, None);
-    let replicas = NodeSpiderCrawl::new(
-        Arc::clone(&protocol),
-        target_node,
-        neighbours,
-        server.ksize,
-        server.alpha,
-    )
-    .find()
-    .await;
-    let answers = futures::future::join_all(
-        replicas
-            .iter()
-            .map(|replica| protocol.call_store_rpc(replica, key, record.clone())),
-    )
-    .await;
+    let answers = protocol.republish(key, record.clone()).await;
+    let repaired = server.storage.get(&key).is_some_and(|held| held != record);
     let mut tally = std::collections::BTreeMap::<String, usize>::new();
     for answer in &answers {
         let name = match answer {
@@ -383,7 +365,7 @@ async fn push(node: &Node, target: &str) -> Value {
         "push {did} to {} replicas: {tally:?} ({ms} ms)",
         answers.len()
     );
-    json!({ "did": did, "held": true, "sent": answers.len(), "answers": tally, "ms": ms })
+    json!({ "did": did, "held": true, "sent": answers.len(), "answers": tally, "repaired": repaired, "ms": ms })
 }
 
 /// Testbed only: make this node answer every `FindHash` with a made-up

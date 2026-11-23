@@ -2,6 +2,7 @@
 //! with fixed answers, protocols on loopback sockets, and raw peers that read
 //! and send frames.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -197,6 +198,31 @@ pub(super) async fn try_read_frame(
     let (header, chunk) = parse_fragment(&buffer[..len]).unwrap();
     assert_eq!(header.total, 1, "a test frame must fit in one datagram");
     Some((bincode::deserialize(chunk).unwrap(), from))
+}
+
+/// Next message that reaches `socket` within `wait`, its fragments put back
+/// together: a request carrying a record takes several datagrams.
+pub(super) async fn try_read_message(
+    socket: &UdpSocket,
+    wait: Duration,
+) -> Option<(Frame, SocketAddr)> {
+    let mut parts: HashMap<(SocketAddr, u32), Vec<Option<Vec<u8>>>> = HashMap::new();
+    let mut buffer = vec![0u8; 65_536];
+    loop {
+        let (len, from) = timeout(wait, socket.recv_from(&mut buffer))
+            .await
+            .ok()?
+            .ok()?;
+        let (header, chunk) = parse_fragment(&buffer[..len])?;
+        let slots = parts
+            .entry((from, header.frag_id))
+            .or_insert_with(|| vec![None; usize::from(header.total)]);
+        slots[usize::from(header.index)] = Some(chunk.to_vec());
+        if slots.iter().all(Option::is_some) {
+            let bytes: Vec<u8> = slots.iter().flatten().flatten().copied().collect();
+            return Some((bincode::deserialize(&bytes).ok()?, from));
+        }
+    }
 }
 
 /// Next frame that reaches `socket`. A test waiting for a frame that never

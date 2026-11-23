@@ -17,6 +17,7 @@ mod client;
 mod contacts;
 mod handlers;
 mod messages;
+mod republish;
 mod store_check;
 #[cfg(test)]
 mod test_support;
