@@ -158,7 +158,7 @@ default; Y.1541 bounds delay variation at 50 ms for classes 0 and 1.
 | `ctl NODE update` | Rotate the ML-DSA-65 key: publish the next position, signed by its own key, with `set` |
 | `ctl NODE republish` | Send the current record again with the saved bytes, as the owner does at least every 24 hours |
 | `ctl NODE discard` | Drop a rotation that was not confirmed; the next `update` signs the same position again, which replicas that took the first refuse as a conflict |
-| `ctl NODE push DID` | Send the record this node holds for a DID to the `k` nodes closest to its key, as the hourly republication does, and count the answers |
+| `ctl NODE push DID` | Send the record this node holds for a DID to the `k` nodes closest to its key, as the hourly republication does, and count the answers; `repaired` says whether a replica that refused it as stale showed a higher record this node took |
 | `ctl NODE lie on` / `lie v0` / `lie off` | Answer every `FindHash` with a made-up position far ahead, or with position 0 under a made-up hash, neither of which it can show, or stop (testbed builds only) |
 | `ctl NODE get DID` | Read a DID; `get TARGET --from NODE` also takes a node name |
 | `ctl NODE storage` | Records this node holds, with their signing key |

@@ -49,7 +49,7 @@ PyO3 binding or in Rust, decides what to publish and when.
 
 | Component | Role | Section |
 |---|---|---|
-| Network API | Publication of any position, reads, the Status List; hourly refresh and republication, maintenance of contacts | 6, 8, 10, 11 |
+| Network API | Publication of any position, reads and repairs, the Status List; hourly refresh and republication, maintenance of contacts | 6, 8, 10, 11 |
 | Protocol | The RPC handlers; the rules a replica applies to a record; the network check of an empty replica | 7 |
 | Lookups and routing | Kademlia's k-buckets and iterative lookups | 5 |
 | Transport | UDP datagrams, fragments of large records, receipts and resends | 4 |
@@ -414,14 +414,15 @@ worker, 8 such STOREs at once left their lookups without answers.
 
 ## 8. Reading (GET)
 
-![Sequence diagram of a GET: local copy, or iterative FIND_VALUE until the first record whose key is in the tree and whose signature verifies](docs/design/get.png)
+![Sequence diagram of a GET: local copy, or iterative FIND_VALUE until the first record whose key is in the tree and whose signature verifies; then, when the key fails the credential, the repair of the expected record](docs/design/get.png)
 
 *Source: [`docs/design/get.mmd`](docs/design/get.mmd).*
 
-A node that holds a valid copy returns it at once. Otherwise it runs the
-Kademlia value lookup and, as in Kademlia §2.3, stops at the first record that
-passes the checks of section 3. A record that fails is discarded and the
-lookup goes on, so one bad replica cannot end a read.
+A node that holds a valid copy returns it at once, without asking the
+network. Otherwise it runs the Kademlia value lookup and, as in Kademlia
+§2.3, stops at the first record that passes the checks of section 3. A record
+that fails is discarded and the lookup goes on, so one bad replica cannot end
+a read. A GET stores nothing it finds.
 
 There is no vote among replicas. A record proves on its own that the owner
 signed it, and a vote would not tell which position is current: replicas
@@ -430,6 +431,20 @@ that the record is the owner's, not that it is the current position. **The
 application must compare the public key with the key in the Verifiable
 Credential**, and that protects against a superseded record only if the
 credential of a superseded key is revoked, or expires, at rotation.
+
+**Repair.** When the key a node serves fails the credential, the application
+knows from that credential which position and key it expects, and asks for
+them (`repair`). The node runs one value lookup, bounded at 5 s, that goes
+past copies of the record that failed, lower positions and records that do
+not verify, and takes the first verified record at the expected position
+with the expected key. A verified higher record met first supersedes it, and
+the repair finds nothing. The record found is written as a replica writes a
+STORE: it replaces a lower position, never a higher one nor another record
+at its own, so a writer that stored a higher record meanwhile wins. The next
+GET serves it locally. A repaired record is an ordinary stored record, on a
+node among the `k` closest to the DID or not. Only the repair writes what a
+lookup found, because the application has checked it against a credential;
+a GET that wrote would store whatever a node served.
 
 ## 9. Key rotation
 
@@ -502,13 +517,19 @@ any list the issuer signed, an older one included.
   the `k` closest nodes. An empty replica stores what it is sent unless a node
   shows it a higher position, and a replica behind takes any higher position,
   so the holders alone refill the replicas that came back empty and move on
-  those left behind.
+  those left behind. A replica that refuses a republication as `Stale` may
+  hold a higher position the holder lacks: the holder asks one of these
+  replicas, drawn at random, for its record, and takes it if a replica
+  holding its own would, a verified higher position. One fetch per record and
+  republication bounds what made-up refusals cost, and the random draw keeps
+  one node that always refuses without showing anything from blocking every
+  repair.
 - **The owner's republication:** at least every 24 hours, and whenever it comes
   back online, the owner sends its current record again with the saved bytes.
   It restores the copies when no holder is left, and replaces a superseded
   record an empty replica took (section 13).
 
-![Sequence diagram of the repair of a replica that restarted empty: a holder's republication, stored by the replica, or the owner's when no holder is left](docs/design/repair.png)
+![Sequence diagram of a holder's republication: stored by a replica that restarted empty, refused as stale by one holding a higher position, whose record the holder then takes, and the owner's republication when no holder is left](docs/design/repair.png)
 
 *Source: [`docs/design/repair.mmd`](docs/design/repair.mmd).*
 
@@ -553,8 +574,8 @@ any list the issuer signed, an older one included.
   nodes it knows, because made-up nodes pushed it out of the lookup, or
   because of a partition, it stores the authentic but older record it is
   sent. It serves it until a higher one reaches it, from a holder's
-  republication or the owner's, which it then takes. Readers rely on the
-  credential check of section 8 meanwhile.
+  republication or the owner's, which it then takes. Meanwhile readers rely
+  on the credential check of section 8, and repair their copy.
 - **Made-up ids cannot forge, but they cost.** A node answering under many
   ids can delay a check up to its deadline, make the replica fetch up to
   `k − 1` records, hide a higher record from an empty replica, and fill

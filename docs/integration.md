@@ -26,8 +26,8 @@ It states what the application must do for the guarantees of
 | Checks the form of every record, its key against the tree its DID commits to, and its signature | Builds the tree, the genesis and documents in canonical form, and computes the DID |
 | Keeps one record per DID, replaced by any verified higher position | Keeps the seeds and activation codes in protected storage, and releases a code only with its position |
 | Before an empty replica stores a record, looks for a node that shows a higher one | Signs each position once, saves it, and resends the saved bytes on every retry |
-| Republishes the records it holds every hour | Never reuses a position: saves the highest one activated before publishing it |
-| Returns a verified record on a read | Republishes its current record at least once every 24 hours, and decides whether the key it reads is trusted |
+| Republishes the records it holds every hour, and takes a higher one a replica shows | Never reuses a position: saves the highest one activated before publishing it |
+| Returns a verified record on a read, and on request fetches the one a credential names | Republishes its current record at least once every 24 hours, and decides whether the key it reads is trusted |
 
 ## 2. Running a node
 
@@ -447,6 +447,24 @@ application decides whether to trust the key, for example by comparing it
 with the key bound in the device's Verifiable Credential. That protects
 against a superseded record only if the credential of a superseded key is
 revoked, or expires, at rotation.
+
+A node that holds a copy serves it without asking the network, so a node
+that missed a rotation keeps serving the old position. When the key fails
+the credential and the credential names a higher position, ask the node to
+repair its copy:
+
+```python
+repaired = await node.repair(did, record, expected_seq, sha256(expected_key))
+```
+
+`expected_seq` and `expected_key`, the raw public key, come from the
+credential the application has checked. The node looks in the network for
+that record, for at most 5 seconds, verifies it, and stores it in place of
+the old one: the next `get` serves it locally. `repair` returns the record,
+or `None` when no node showed it, or when a higher position than the expected
+one turned up, which means the credential is itself out of date. A `get`
+never stores what it finds; only `repair` does, because the application has
+checked what it asked for.
 
 Accept a DID from outside only in canonical form: `did:iiot:` followed by 43
 base64url characters that decode to 32 bytes and encode back to the same

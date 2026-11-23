@@ -2,18 +2,29 @@ sequenceDiagram
     autonumber
     participant H as Holder of position N
     participant E as Replica that restarted empty
+    participant R as Replica holding N+1
     participant C as Nodes closest to the DID
     participant O as Owner
     Note over H: hourly republication of records older than an hour
-    H->>E: STORE(position N)
-    E->>C: FindHash(key)
-    C-->>E: position and hash of their record
-    alt a node shows a valid higher position
-        Note over E: store the higher one
-        E-->>H: Stale
-    else nobody shows one
-        Note over E: the record proves its own key
-        E-->>H: Stored
+    par to each of the k closest
+        H->>E: STORE(position N)
+        E->>C: FindHash(key)
+        C-->>E: position and hash of their record
+        alt a node shows a valid higher position
+            Note over E: store the higher one
+            E-->>H: Stale
+        else nobody shows one
+            Note over E: the record proves its own key
+            E-->>H: Stored
+        end
+    and
+        H->>R: STORE(position N)
+        R-->>H: Stale
+    end
+    opt some replicas answered Stale
+        H->>R: FIND_VALUE(key) to one of them, drawn at random
+        R-->>H: record N+1, or nothing
+        Note over H: a verified higher position replaces N,<br/>anything else changes nothing
     end
     Note over O: at least every 24 hours, or when it comes back,<br/>the same bytes, which restore the copies<br/>when no holder is left
     O->>E: STORE(current position)

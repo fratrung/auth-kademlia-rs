@@ -21,9 +21,9 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 303 tests
-cargo test --features counters       # 306: also the counters' own tests
-cargo test --features testbed        # 307: also the testbed's FindHash lie switch
+cargo test                           # all 314 tests
+cargo test --features counters       # 317: also the counters' own tests
+cargo test --features testbed        # 318: also the testbed's FindHash lie switch
 cargo test <name>                    # single test, e.g. test_key_rotation_is_published_with_set
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -59,6 +59,11 @@ maturin develop --features python
   another valid record at the same position. Retries resend the same saved
   bytes; the owner publishes its current record again at least once every 24
   hours.
+- `Server.repair(did, failed_record, seq, key_hash)` returns `bytes | None`:
+  when a record `get` served fails the caller's check, it looks in the
+  network (at most 5 s) for the record at `seq`, above the failed one, whose
+  raw public key has SHA-256 `key_hash`, as the caller's credential names
+  them, and stores it; `ValueError` if `key_hash` is not 32 bytes.
 - `Server.update_status_list(value)` replaces the Status List, signed by the
   issuer; the first list is published with `set("status-list", value)`.
 - `MlDsaKeyManager.keypair_from_seed(seed)` returns the ML-DSA-65 key pair of a
@@ -111,14 +116,16 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/protocol/store_check.rs` | `rpc_store` and the network check of an empty replica (`network_check`: `FindHash` to the closest nodes, then the fetch of the records claimed at a higher position, `fetch_higher`) |
 | `src/protocol/acceptance_tests.rs` | Tests of the STORE rules against neighbours that hold, claim, serve, keep silent or answer under made-up ids |
 | `src/protocol/client.rs` | Outgoing calls (`call_*`) and `SpiderProtocol`, the requests of the lookups |
+| `src/protocol/republish.rs` | Republication of a held record (`republish`, `republish_to`), and the repair of the holder from a replica that refuses it as stale (`take_higher`) |
 | `src/protocol/contacts.rs` | Failing and returning contacts, pings of failing contacts, refresh ids |
 | `src/protocol/welcome.rs` | Nodes met through a message: inline routing insert, bounded replication queue |
 | `src/protocol/test_support.rs` | Helpers shared by the protocol tests |
 | `src/network/mod.rs` | Public `Server` API: the struct, `new`, `listen`, `stop`, `bootstrap`; the other files of `network/` each hold one operation |
 | `src/network/publish.rs` | SET of a record at any position (`set`, `set_detailed`): a node lookup, the STOREs, the records of the replicas that refused, checked against the record published (`prove`), and its report (`SetReport`, `SetOutcome`) |
 | `src/network/read.rs` | GET |
+| `src/network/repair.rs` | Repair of a served record that failed the caller's check (`repair`): a bounded lookup for the expected position and key, written by the rules of a replica (`install`) |
 | `src/network/status_list.rs` | UPDATE of the Status List (`update_status_list`): the issuer's new list to the replicas, accepted on a strict majority of at most `alpha` |
-| `src/network/maintenance.rs` | Refresh and republication, recovery tick, stats (`ServerStats`), saved state |
+| `src/network/maintenance.rs` | Refresh and the hourly republication (through `KademliaProtocol::republish`), recovery tick, stats (`ServerStats`), saved state |
 | `src/crawling.rs` | Iterative lookup — `NodeSpiderCrawl` (find nodes) + `ValueSpiderCrawl` (find value; `search` with a deadline tells `NotFound` from `Incomplete`) |
 | `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `find_neighbors` returns the exact local top-k across known primary contacts, skipping failing ones (see Concurrency model); `touch_last_updated()` is called only for the bucket containing the lookup target — bucket staleness reflects lookup activity, not node additions |
 | `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day TTL and configurable byte budget (default 512 MiB), with lazy expiry on read; `insert_if_absent` and `replace_if` (compare and swap under the entry) |
@@ -282,6 +289,24 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
   compares the public key with the key in the VC, so do not treat `get` as
   proof that a key is current. Do not bring the vote back: replicas behind
   outvote the holder of the current position.
+- A DID GET with a local copy returns it without asking the network, and no
+  GET stores what it finds. **Repair** (`Server::repair`) is the one read that
+  writes: the caller passes the record it was served, the position above it
+  that its credential names and the SHA-256 of that key; one value lookup,
+  bounded by `REPAIR_TIMEOUT` (5 s), goes past copies of the failed record,
+  lower positions and records that do not verify, and refuses the expected
+  record once a verified higher one has been met. The record found is
+  written by the rules of a replica (`install`): it replaces a lower
+  position, never a higher one nor another record at its own. Do not make
+  GET write: it would store whatever a node served.
+- **Republication repairs the holder** (`KademliaProtocol::republish`): when
+  replicas answer `Stale`, the holder asks one of them, drawn at random, for
+  its record (`FindValue`), and takes it if a replica holding its own would
+  (`decide_locally` gives `VerifyAndReplace`, the signature verifies,
+  `replace_if`). One fetch per record and republication bounds what made-up
+  refusals cost; the random draw keeps one node that always refuses without
+  showing anything from blocking every repair. The hourly republication and
+  the testbed's `push` both run it.
 - The Status List GET keeps a quorum derived from `alpha`, not independently
   configurable: with `alpha = 3`, two byte-identical record responses, or `None`.
 - An empty replica checks the network before a STORE (`rpc_store`,
@@ -364,8 +389,9 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/scenarios/worker_pool.rs` | 1 | 40-client burst, all responses delivered |
 | `tests/scenarios/crypto.rs` | 4 | End-to-end crypto invariants (tamper, injection, downgrade, revocation) |
 | `tests/quorum_tests.rs` | 16 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum and update, retry of a publication, a rotation that fills empty replicas, and the network check of a STORE to an empty replica |
+| `tests/repair_tests.rs` | 3 | Repair over real UDP: the expected record found, stored and served locally; no match without it; no answer |
 | `tests/chain_tests.rs` | 8 | Positions of one DID over real UDP: a rotation that reaches every replica, the owner restoring empty replicas, refusals of `set` that count only once shown, forged and old genuine records at empty replicas |
-| `src/**` (inline) | 191 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
+| `src/**` (inline) | 199 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 
@@ -403,8 +429,9 @@ All tests are network-clean (loopback only) and run in parallel without interfer
 | 15933–15937 | a rotation that fills empty replicas |
 | 15938–15953 | STORE to an empty replica: network check |
 | 15954–15985 | positions of one DID (`tests/chain_tests.rs`) |
+| 16031–16039 | repair of a served record (`tests/repair_tests.rs`) |
 
-When adding a new integration test use ports **16031+** and document them here (15900 is reserved below).
+When adding a new integration test use ports **16040+** and document them here (15900 is reserved below).
 
 | 15900 | resilience test: Node A victim (host-exposed UDP, Docker only) |
 

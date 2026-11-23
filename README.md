@@ -179,6 +179,7 @@ async def resolve(did: str) -> bytes | None:
 ```
 
 The module also exposes publication of every position (`set_detailed`), the
+repair of a served record that failed the application's check (`repair`), the
 Status List update (`update_status_list`), the ML-DSA-65 key manager with
 seed-based key derivation, and the ephemeral ML-KEM-768 key manager. The
 [integration guide](docs/integration.md) shows how an application creates a

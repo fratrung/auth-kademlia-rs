@@ -46,6 +46,13 @@ application.
 
 ### Added
 
+- `Server::repair` and the Python `Server.repair(did, failed_record, seq,
+  key_hash)`: when a served record fails the application's check, the node
+  fetches the record at the position and with the key the credential names,
+  verifies it and stores it, so the next `get` serves it locally.
+- A holder whose republication a replica refuses as stale asks one such
+  replica, drawn at random, for its record, and takes it if it is a valid
+  higher position. The testbed's `push` command reports it as `repaired`.
 - The `auth_handler::tree` module: leaf and node hashes, membership paths,
   the genesis, and the check of a record against the tree its DID commits to;
   `auth_handler::owner::OwnerTree`, the owner's tree with its secrets in
