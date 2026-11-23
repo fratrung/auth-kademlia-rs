@@ -268,6 +268,17 @@ same deadline, as ADR 0005 does for a claimed other version 0
 whose record is not shown in time is dropped. Made-up ids that answer with
 many different hashes therefore cost at most `k - 1` fetches.
 
+**Amended, 2026-11-24.** Each claim is fetched as soon as it arrives, from
+the first peer that made it, while the lookup goes on, and the first
+verified record ends the check. Fetched once the lookup was over, they
+shared its deadline: a single silent peer spent it, and an empty replica
+stored 5 although a peer had shown 6 at once (found in a review, reproduced
+by `a_silent_neighbour_does_not_keep_a_shown_higher_record_out`). Taken in
+the order they arrive rather than closest first, the claims of made-up
+peers, asked only after the answer that names them, no longer use up the
+`k - 1` fetches before the peers the replica knew
+(`made_up_claims_cannot_use_up_the_fetches_before_a_known_holder`).
+
 **Application requirement.** IoT peers need the DID Document version whose
 signing key the issuer currently authorizes for the handshake. During a
 partition a replica can identify the
@@ -713,8 +724,8 @@ read 4 to 9% more. The latency of a publication does not change (E1).
 |---|---|---|---|
 | A record signed by a key outside the tree | `tree_form` before any lookup or signature: the leaf of its key and code does not reach the root the DID commits to (`InvalidRecord`) | `a_forged_record_is_invalid_whatever_the_network_says`, `made_up_ids_cannot_get_a_forged_record_stored`, `test_rotation_rejected_when_signed_by_a_key_outside_the_tree` | A1, A2, A3: no forged record stored |
 | A flood of forged STOREs | The same form check, so a forged record starts no lookup and costs no signature check | `a_record_that_fails_the_form_is_invalid_before_anything_else` | A2: every forged STORE but 146 answered |
-| The replay of a superseded genuine record | A holder refuses a lower position (`Stale`); an empty replica stores it only if no node shows a higher one; the marker of an expired record (point 6); the repair of a reader (point 9) | `a_holder_decides_alone_by_position`, `an_old_genuine_record_is_stored_only_where_nothing_higher_is_shown`, `a_remembered_position_refuses_a_lower_one_without_asking`, `downgrade_attack_after_rotation_rejected` | E4, L2 |
-| Nodes that claim a higher position they cannot show, under any number of ids | A claim refuses nothing; only a fetched, verified higher record does (point 2) | `a_claim_that_is_not_shown_refuses_nothing`, `made_up_ids_at_one_address_cannot_block_a_record`, `one_shown_higher_position_refuses_and_is_stored` | A4, L1: up to 18 liars block nothing |
+| The replay of a superseded genuine record | A holder refuses a lower position (`Stale`); an empty replica stores it only if no node shows a higher one, which it fetches as soon as it is claimed; the marker of an expired record (point 6); the repair of a reader (point 9) | `a_holder_decides_alone_by_position`, `an_old_genuine_record_is_stored_only_where_nothing_higher_is_shown`, `a_remembered_position_refuses_a_lower_one_without_asking`, `downgrade_attack_after_rotation_rejected`, `a_silent_neighbour_does_not_keep_a_shown_higher_record_out` | E4, L2 |
+| Nodes that claim a higher position they cannot show, under any number of ids | A claim refuses nothing; only a fetched, verified higher record does (point 2). Claims are fetched as they arrive, so those of made-up peers come after the peers a replica knew | `a_claim_that_is_not_shown_refuses_nothing`, `made_up_ids_at_one_address_cannot_block_a_record`, `one_shown_higher_position_refuses_and_is_stored`, `made_up_claims_cannot_use_up_the_fetches_before_a_known_holder` | A4, L1: up to 18 liars block nothing |
 | Answers spoofed for the nodes asked | Message ids drawn at random; an answer spoofed under the ids read on the wire has the power of a liar only | `a_thousand_requests_in_a_row_do_not_get_consecutive_ids`, `an_id_a_pending_request_holds_is_not_given_out_again` | A5 |
 | Two records at one position | A holder keeps the first (`Conflict`, point 3); the owner signs each position once and resends the same bytes (point 4) | `another_record_at_the_stored_position_leaves_the_stored_one`, `two_records_at_once_at_one_position_leave_exactly_one`, `a_retry_in_the_same_slot_gives_the_same_bytes` | |
 | The theft of the current key | Each later position needs its own key and its own code, which stay secret until it is published | `revoked_key_cannot_authorise_further_rotation`, `a_record_with_another_code_fails_the_tree_though_its_signature_verifies` | |

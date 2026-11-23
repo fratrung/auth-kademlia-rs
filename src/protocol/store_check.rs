@@ -13,8 +13,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use tokio::sync::mpsc;
+use tokio::task::JoinSet;
+
 use crate::auth_handler::rules::{
-    claims_to_fetch, decide_locally, shows_higher, Answer, Held, Local,
+    decide_locally, fetches_claim, shows_higher, Answer, Held, Local,
 };
 use crate::counters::CheckEnd;
 use crate::crawling::{RPCFindResponse, SpiderProtocol, ValueSearch, ValueSpiderCrawl};
@@ -214,8 +217,9 @@ impl KademliaProtocol {
     /// Whether a record at `seq` for `key`, sent to this replica while it
     /// holds nothing, has been superseded. The lookup asks the nodes closest
     /// to the key for the position and SHA-256 of their record (`FindHash`),
-    /// one datagram each instead of a whole record, and gives up after
-    /// `STORE_LOOKUP_TIMEOUT`.
+    /// one datagram each instead of a whole record, fetches each record
+    /// claimed at a higher position as its claim arrives (`Fetches`), and
+    /// ends on the first one shown, or after `STORE_LOOKUP_TIMEOUT`.
     async fn network_check(self: &Arc<Self>, key: [u8; ID_LEN], seq: u64) -> CheckOutcome {
         let started = Instant::now();
         let target = Node::from_id(key);
@@ -259,86 +263,111 @@ impl KademliaProtocol {
         if among_closest {
             crawl = crawl.asking_everyone();
         }
-        // Every answer is kept and none ends the lookup.
-        let hits: Arc<Mutex<Vec<(Node, Answer)>>> = Arc::default();
-        let collected = Arc::clone(&hits);
-        let search = crawl
-            .search(Some(deadline), find_hash, move |peer, payload| {
-                if let Some((seq, hash)) = parse_hash_hit(&payload) {
-                    if let Ok(mut hits) = collected.lock() {
-                        hits.push((peer, Answer { seq, hash }));
-                    }
+        // Each claim of a higher position is fetched as soon as it arrives,
+        // while the lookup goes on, and the first record shown ends the
+        // check. Fetched only once every node had answered, a silent node
+        // would spend the deadline and leave no time to fetch. Only the k
+        // replicas hold the DID: k - 1 fetches are enough.
+        let (shown_tx, mut shown_rx) = mpsc::channel(self.ksize.max(1));
+        let fetches = Arc::new(Mutex::new(Fetches::new(seq, self.ksize.saturating_sub(1))));
+        let starter = Arc::clone(&fetches);
+        let protocol = Arc::clone(self);
+        let on_answer = move |peer: Node, payload: Vec<u8>| {
+            if let Some((seq, hash)) = parse_hash_hit(&payload) {
+                if let Ok(mut fetches) = starter.lock() {
+                    fetches.start(&protocol, key, peer, Answer { seq, hash }, &shown_tx);
                 }
-                async { None }
-            })
-            .await;
-        let everyone_answered = search == ValueSearch::NotFound;
-        let mut hits = hits.lock().map(|hits| hits.clone()).unwrap_or_default();
-        hits.sort_by_key(|(peer, _)| peer.distance_to(&target));
-        let (peers, answers): (Vec<Node>, Vec<Answer>) = hits.into_iter().unzip();
-
-        // Only the k replicas hold the DID: the k - 1 others are enough.
-        let claims = claims_to_fetch(seq, &answers, self.ksize.saturating_sub(1));
-        let newer = if claims.is_empty() {
-            None
-        } else {
-            self.fetch_higher(key, seq, &peers, &answers, &claims, deadline)
-                .await
+            }
+            async { None }
         };
-        let end = match (&newer, everyone_answered) {
+        // The lookup is dropped, not left unpolled, once a record is shown.
+        let (mut newer, search) = tokio::select! {
+            Some(record) = shown_rx.recv() => (Some(record), None),
+            search = crawl.search(Some(deadline), find_hash, on_answer) => (None, Some(search)),
+        };
+        if search.is_some() {
+            // The lookup is over and holds no sender any more: wait for the
+            // fetches it started, within the deadline.
+            newer = tokio::time::timeout_at(deadline, shown_rx.recv())
+                .await
+                .ok()
+                .flatten();
+        }
+        let fetched = fetches
+            .lock()
+            .map(|fetches| fetches.claims.len())
+            .unwrap_or(0);
+        if newer.is_none() && fetched > 0 {
+            log::warn!(
+                "rpc_store: {} claims of a later position of {} not shown, dropped",
+                fetched,
+                hex::encode(key)
+            );
+            self.counters.unshown_claims(fetched);
+        }
+        let end = match (&newer, search) {
             (Some(_), _) => CheckEnd::Superseded,
-            (None, true) => CheckEnd::Accepted,
-            (None, false) => CheckEnd::AcceptedWithSilence,
+            (None, Some(ValueSearch::NotFound)) => CheckEnd::Accepted,
+            (None, _) => CheckEnd::AcceptedWithSilence,
         };
         self.counters
-            .check(end, crawl.rounds(), started.elapsed(), !claims.is_empty());
+            .check(end, crawl.rounds(), started.elapsed(), fetched > 0);
         newer.map_or(CheckOutcome::Store, CheckOutcome::Superseded)
     }
+}
 
-    /// Fetch the records claimed above `seq` (`claims`, indices into `peers`
-    /// and `answers`), all at once within the deadline of the check, and
-    /// return the highest that hashes to its claim, binds to the key and
-    /// verifies. A claim not shown in time, or shown with another record, is
-    /// dropped. `join_all` polls every fetch, so none waits for the router
-    /// while unpolled.
-    async fn fetch_higher(
-        self: &Arc<Self>,
-        key: [u8; ID_LEN],
-        seq: u64,
-        peers: &[Node],
-        answers: &[Answer],
-        claims: &[usize],
-        deadline: tokio::time::Instant,
-    ) -> Option<Vec<u8>> {
-        let fetches = claims.iter().filter_map(|&index| {
-            let peer = peers.get(index)?.clone();
-            let claimed = answers.get(index)?.hash;
-            let call = Arc::clone(self).call_find_value(peer, Node::from_id(key));
-            Some(async move {
-                let raw = tokio::time::timeout_at(deadline, call).await.ok()?;
-                let record = RPCFindResponse::new(raw).get_value()?;
-                let form = shows_higher(&key, seq, &claimed, &record)?;
-                Some((form.seq, record))
-            })
-        });
-        let mut shown: Vec<(u64, Vec<u8>)> = futures::future::join_all(fetches)
-            .await
-            .into_iter()
-            .flatten()
-            .collect();
-        shown.sort_by_key(|(seq, _)| std::cmp::Reverse(*seq));
-        for (_, record) in shown {
-            if self.verify_for_key(&key, &record).await {
-                return Some(record);
-            }
+/// The records claimed above `seq` during one network check, each fetched as
+/// its claim arrives: one per distinct claim, from the first node that made
+/// it, at most `limit`. Nodes named in an answer are asked only after it, so
+/// made-up nodes cannot use up the fetches before the nodes the replica knew.
+/// Each fetch runs as its own task and sends the record it fetched once it
+/// hashes to the claim, binds to the key at a higher position and its
+/// signature verifies. Dropping the fetches aborts those still running.
+struct Fetches {
+    seq: u64,
+    limit: usize,
+    claims: Vec<Answer>,
+    tasks: JoinSet<()>,
+}
+
+impl Fetches {
+    fn new(seq: u64, limit: usize) -> Self {
+        Self {
+            seq,
+            limit,
+            claims: vec![],
+            tasks: JoinSet::new(),
         }
-        log::warn!(
-            "rpc_store: {} claims of a later position of {} not shown, dropped",
-            claims.len(),
-            hex::encode(key)
-        );
-        self.counters.unshown_claims(claims.len());
-        None
+    }
+
+    /// Fetch the record behind `answer` from `peer`, if it is worth it.
+    fn start(
+        &mut self,
+        protocol: &Arc<KademliaProtocol>,
+        key: [u8; ID_LEN],
+        peer: Node,
+        answer: Answer,
+        shown: &mpsc::Sender<Vec<u8>>,
+    ) {
+        if !fetches_claim(self.seq, &answer, &self.claims, self.limit) {
+            return;
+        }
+        self.claims.push(answer);
+        let (protocol, shown, seq) = (Arc::clone(protocol), shown.clone(), self.seq);
+        self.tasks.spawn(async move {
+            let raw = Arc::clone(&protocol)
+                .call_find_value(peer, Node::from_id(key))
+                .await;
+            let Some(record) = RPCFindResponse::new(raw).get_value() else {
+                return;
+            };
+            if shows_higher(&key, seq, &answer.hash, &record).is_some()
+                && protocol.verify_for_key(&key, &record).await
+            {
+                // The check may be over: then nobody needs the record.
+                let _ = shown.send(record).await;
+            }
+        });
     }
 }
 
@@ -747,6 +776,100 @@ mod tests {
         assert_eq!(
             protocol
                 .rpc_store([2; ID_LEN], ("127.0.0.1".to_string(), 9018), key, v5)
+                .await,
+            Some(StoreStatus::Stale)
+        );
+        assert_eq!(protocol.storage.get(&key), Some(v6));
+        assert_eq!(handler.verified(), 1);
+    }
+
+    /// The holder of 6 answers at once and a neighbour stays silent. The
+    /// replica fetches 6 as soon as it is claimed, rather than once every
+    /// node has answered: waiting for the silent one would spend the whole
+    /// deadline and leave no time to fetch, and the replica would store 5.
+    /// Once 6 is shown it answers, without waiting for the silent node.
+    #[tokio::test]
+    async fn a_silent_neighbour_does_not_keep_a_shown_higher_record_out() {
+        let (protocol, handler) = real_protocol().await;
+        serve(&protocol);
+        let owner = TreeOwner::new(1);
+        let key = owner.key;
+        let v5 = owner.record(5, Some(b"4"));
+        let v6 = owner.record(6, Some(&v5));
+        let (holder, holder_contact) = raw_peer(id_at(key, 1)).await;
+        let (_silent, silent_contact) = raw_peer(id_at(key, 2)).await;
+        for contact in [holder_contact, silent_contact] {
+            protocol.router.write().await.add_contact(contact);
+        }
+        hold(holder, 6, v6.clone());
+
+        let started = tokio::time::Instant::now();
+        assert_eq!(
+            protocol
+                .rpc_store([2; ID_LEN], ("127.0.0.1".to_string(), 9022), key, v5)
+                .await,
+            Some(StoreStatus::Stale)
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(1000),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(protocol.storage.get(&key), Some(v6));
+        assert_eq!(handler.verified(), 1);
+    }
+
+    /// A neighbour answers with made-up nodes closer to the key, all at its
+    /// own address, and each of them claims another higher position that it
+    /// never shows. They are asked only after the answer that named them,
+    /// so their claims cannot use up the fetches before the claim of the
+    /// holder the replica already knew.
+    #[tokio::test]
+    async fn made_up_claims_cannot_use_up_the_fetches_before_a_known_holder() {
+        let (protocol, handler) = real_protocol().await;
+        serve(&protocol);
+        let owner = TreeOwner::new(1);
+        let key = owner.key;
+        let v5 = owner.record(5, Some(b"4"));
+        let v6 = owner.record(6, Some(&v5));
+        let (liar, liar_contact) = raw_peer(id_at(key, 2)).await;
+        let (holder, holder_contact) = raw_peer(id_at(key, 4)).await;
+        for contact in [liar_contact.clone(), holder_contact] {
+            protocol.router.write().await.add_contact(contact);
+        }
+        hold(holder, 6, v6.clone());
+
+        let made_up: Vec<WireNode> = (1..=20u8)
+            .map(|n| {
+                let mut id = key;
+                id[ID_LEN - 1] ^= n;
+                WireNode::from(&Node::new(id, liar_contact.ip.clone(), liar_contact.port))
+            })
+            .collect();
+        tokio::spawn(async move {
+            let mut claims = 0u8;
+            while let Some((frame, from)) = try_read_frame(&liar, Duration::from_secs(5)).await {
+                if !matches!(frame.message, RpcMessage::FindHash { .. }) {
+                    continue;
+                }
+                let answer = if claims == 0 {
+                    RpcMessage::FindValueNodes {
+                        nodes: made_up.clone(),
+                    }
+                } else {
+                    RpcMessage::FindHashHit {
+                        seq: 7 + u64::from(claims),
+                        hash: [claims; 32],
+                    }
+                };
+                claims = claims.saturating_add(1);
+                send_raw(&liar, from, frame.msg_id, false, answer).await;
+            }
+        });
+
+        assert_eq!(
+            protocol
+                .rpc_store([2; ID_LEN], ("127.0.0.1".to_string(), 9023), key, v5)
                 .await,
             Some(StoreStatus::Stale)
         );

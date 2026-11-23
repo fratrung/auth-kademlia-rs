@@ -12,10 +12,10 @@ sequenceDiagram
     end
     R->>C: FindHash(key) to all of them at once, deadline 2 s
     C-->>R: position and SHA-256 of their record, or closer nodes
-    opt some nodes claim a position above N
-        R->>C: FindValue(key), one per distinct claim,<br/>to the closest node that made it, at most k − 1, at once
-        C-->>R: their record, or nothing
-        Note over R: a record counts if it hashes to the claim,<br/>is in the tree at a higher position<br/>and its signature verifies
+    opt a node claims a position above N
+        R->>C: FindValue(key) to that node as soon as it claims,<br/>while the lookup goes on: one per distinct claim, at most k − 1
+        C-->>R: its record, or nothing
+        Note over R: a record counts if it hashes to the claim,<br/>is in the tree at a higher position<br/>and its signature verifies: the first one ends the check
     end
     alt a higher record verified
         rect rgba(201, 138, 27, 0.10)

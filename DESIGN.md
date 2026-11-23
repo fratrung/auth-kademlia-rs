@@ -366,12 +366,14 @@ an empty replica asks the network before storing:
    in an earlier answer. A node that knows `k` nodes closer to the key than
    itself is not a replica and keeps three at a time. The check ends after
    2 s, fetches included.
-3. For each distinct claim of a higher position, it asks the closest node
-   that made it for its record (`FindValue`), at most `k − 1` of them, all at
-   once. A record counts only if it hashes to the claim, has the form of
-   section 3 for the key at a higher position, and its signature verifies.
-4. **A higher record verified:** the replica stores it instead and answers
-   `Stale`. One is enough, however many nodes claim lower positions.
+3. For each distinct claim of a higher position, it asks the first node
+   that made it for its record (`FindValue`) as soon as the claim arrives,
+   while the lookup goes on, at most `k − 1` of them. A record counts only if
+   it hashes to the claim, has the form of section 3 for the key at a higher
+   position, and its signature verifies.
+4. **A higher record verified:** the check ends there; the replica stores
+   it instead and answers `Stale`. One is enough, however many nodes claim
+   lower positions, and the nodes still silent are not waited for.
 5. **Otherwise:** it verifies the signature of the record it was sent and
    stores it, whether every node answered, some did not, or it knew nobody
    to ask.
@@ -637,9 +639,12 @@ any list the issuer signed, an older one included.
   on the credential check of section 8, and repair their copy.
 - **Made-up ids cannot forge, but they cost.** A node answering under many
   ids can delay a check up to its deadline, make the replica fetch up to
-  `k − 1` records, hide a higher record from an empty replica, and fill
-  routing tables. It cannot make a replica store a record the owner did not
-  sign.
+  `k − 1` records, and fill routing tables. Its made-up nodes are asked only
+  after the answer that names them, so their claims come after those of the
+  nodes a replica knew: they hide a higher record only from a replica that
+  knew no node holding it (or from a node far from the key, which asks
+  `alpha` nodes at a time and may meet them first). It cannot make a replica
+  store a record the owner did not sign.
 - **An answer counts for the address it comes from.** Message ids are drawn
   at random for each request, so a node that does not read the traffic cannot
   answer for another; one that reads it can, and then hide a higher record

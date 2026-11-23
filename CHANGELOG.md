@@ -94,6 +94,9 @@ application.
 - A network check of empty replicas: a record is refused as stale only when
   a node shows a verified higher position, which the replica then stores; a
   claim, a silence or another record at the same position refuses nothing.
+  Each claimed record is fetched as soon as its claim arrives, and the first
+  one verified ends the check, so a silent node cannot spend the time a
+  record shown at once needs.
 - Testbed: a tree of rotation keys on each node; attack modes that forge a
   record after every position seen (`race`, `burst`, `successor`, `persist`)
   and spoof `FindHash` answers (`spoof`); a testbed-only switch that makes a

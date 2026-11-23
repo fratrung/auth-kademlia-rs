@@ -115,23 +115,14 @@ pub fn decide_locally(key: &Hash, held: Held<'_>, incoming: &[u8]) -> Local {
     }
 }
 
-/// The answers an empty replica follows up before storing a record at
-/// `seq`: one per distinct claimed record above `seq`, from the closest node
-/// that claimed it (answers come closest first), at most `limit`. A claim at
-/// or below `seq` cannot supersede the record, so it is not fetched; nor does
-/// a claim alone refuse anything.
-pub fn claims_to_fetch(seq: u64, answers: &[Answer], limit: usize) -> Vec<usize> {
-    let mut picked: Vec<usize> = Vec::new();
-    for (index, answer) in answers.iter().enumerate() {
-        if picked.len() == limit {
-            break;
-        }
-        let repeated = picked.iter().any(|&seen| answers[seen] == *answer);
-        if answer.seq > seq && !repeated {
-            picked.push(index);
-        }
-    }
-    picked
+/// Whether an empty replica checking a record at `seq` fetches the record
+/// behind `answer`, having fetched those of `started`: a claim above `seq`,
+/// distinct from those, while fewer than `limit` are. Claims are taken as
+/// they arrive, so the nodes a replica knew, asked first, come before those
+/// their answers named. A claim at or below `seq` cannot supersede the
+/// record, so it is not fetched; nor does a claim alone refuse anything.
+pub fn fetches_claim(seq: u64, answer: &Answer, started: &[Answer], limit: usize) -> bool {
+    answer.seq > seq && started.len() < limit && !started.contains(answer)
 }
 
 /// The form of `fetched`, the record a node gave for its claim `claimed`,
@@ -291,8 +282,21 @@ mod tests {
         );
     }
 
+    /// The indices of `answers`, taken in order, whose records are fetched.
+    fn fetched(seq: u64, answers: &[Answer], limit: usize) -> Vec<usize> {
+        let mut started = vec![];
+        let mut picked = vec![];
+        for (index, answer) in answers.iter().enumerate() {
+            if fetches_claim(seq, answer, &started, limit) {
+                started.push(*answer);
+                picked.push(index);
+            }
+        }
+        picked
+    }
+
     #[test]
-    fn only_distinct_higher_claims_are_fetched_closest_first_up_to_the_limit() {
+    fn only_distinct_higher_claims_are_fetched_in_order_up_to_the_limit() {
         let owner = TreeOwner::new(1);
         let (v3, v6, v7) = (
             owner.record(3, Some(b"2")),
@@ -307,9 +311,9 @@ mod tests {
             answer(7, &v7),
             answer(9, b"a claim nobody can show"),
         ];
-        assert_eq!(claims_to_fetch(5, &answers, 19), vec![1, 4, 5]);
-        assert_eq!(claims_to_fetch(5, &answers, 2), vec![1, 4]);
-        assert_eq!(claims_to_fetch(9, &answers, 19), Vec::<usize>::new());
+        assert_eq!(fetched(5, &answers, 19), vec![1, 4, 5]);
+        assert_eq!(fetched(5, &answers, 2), vec![1, 4]);
+        assert_eq!(fetched(9, &answers, 19), Vec::<usize>::new());
     }
 
     /// One node answering under made-up ids costs at most `limit` fetches,
@@ -322,7 +326,7 @@ mod tests {
                 hash: [i; 32],
             })
             .collect();
-        assert_eq!(claims_to_fetch(5, &answers, 19).len(), 19);
+        assert_eq!(fetched(5, &answers, 19).len(), 19);
     }
 
     #[test]

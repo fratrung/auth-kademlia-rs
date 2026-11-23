@@ -21,9 +21,9 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 360 tests
-cargo test --features counters       # 363: also the counters' own tests
-cargo test --features testbed        # 364: also the testbed's FindHash lie switch
+cargo test                           # all 362 tests
+cargo test --features counters       # 365: also the counters' own tests
+cargo test --features testbed        # 366: also the testbed's FindHash lie switch
 cargo test <name>                    # single test, e.g. test_key_rotation_is_published_with_set
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -132,7 +132,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/protocol/messages.rs` | `RpcMessage` (the wire format: variants are encoded by position, so new ones go at the end), `Frame`, `ExpectedResponse` |
 | `src/protocol/transport.rs` | Sending and receiving: KADF fragments and reassembly, `call` with its resends, `handle_datagram`, `InProgress` |
 | `src/protocol/handlers.rs` | `dispatch_request` and the handlers of every request except STORE (`rpc_update_status_list`, `rpc_find_node`, `rpc_find_value`, `rpc_find_hash`, ...); verification of a record for a key |
-| `src/protocol/store_check.rs` | `rpc_store` and the network check of an empty replica (`network_check`: `FindHash` to the closest nodes, then the fetch of the records claimed at a higher position, `fetch_higher`) |
+| `src/protocol/store_check.rs` | `rpc_store` and the network check of an empty replica (`network_check`: `FindHash` to the closest nodes, and the fetch of each record claimed at a higher position as its claim arrives, `Fetches`) |
 | `src/protocol/acceptance_tests.rs` | Tests of the STORE rules against neighbours that hold, claim, serve, keep silent or answer under made-up ids |
 | `src/protocol/client.rs` | Outgoing calls (`call_*`) and `SpiderProtocol`, the requests of the lookups |
 | `src/protocol/republish.rs` | Republication of a held record (`republish`, `republish_to`), and the repair of the holder from a replica that refuses it as stale (`take_higher`) |
@@ -158,7 +158,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/counters.rs` | Datagrams, bytes, resends and STORE checks counted for measurements (feature `counters`, off by default; empty without it) |
 | `src/auth_handler/mod.rs` | `SignatureVerifierHandler` trait + `DIDSignatureVerifierHandler` (DID record verification); `verify_record`, `verify_issuer_signed`: how a node runs it (binding first, signature cache, blocking thread), shared by protocol and network |
 | `src/auth_handler/did.rs` | The `did:iiot` DID: canonical suffix (`key_of_did`, `did_of_key`), canonical JSON (`canonical_bytes`, `parse_canonical`), the placeholder, and the errors of a record's form (`FormError`) |
-| `src/auth_handler/rules.rs` | The STORE rules as pure functions: `decide_locally` against the stored copy, `claims_to_fetch` and `shows_higher` for the network check of an empty replica, and `shown_against`, what a replica's record proves against a record being published |
+| `src/auth_handler/rules.rs` | The STORE rules as pure functions: `decide_locally` against the stored copy, `fetches_claim` and `shows_higher` for the network check of an empty replica, and `shown_against`, what a replica's record proves against a record being published |
 | `src/auth_handler/tree.rs` | The tree of rotation keys: the leaf and node hashes, the tree and its paths (`Tree`, `root_from_path`), the genesis whose SHA-256 is the DID (`Genesis`), the hashed initial body, the document of a position as the owner completes it (`document_at`), and step 1 of the rules, the form of a record for a key (`tree_form`: `seq`, `prev`, the key's hash; no signature) |
 | `src/auth_handler/owner.rs` | The owner's side of a tree in memory (`OwnerTree`, for tests, examples and the testbed): the keys and codes of the 64 positions from seeds, the genesis of a DID, and the signed record of a position from its draft body; `sign_position` signs one and checks it with `tree_form` before it leaves (shared with the custody); `signed_record` builds the record layout |
 | `src/auth_handler/test_tree.rs` | The 64 positions of one DID for the unit tests (`TreeOwner`), the tree and the DID computed with `sha2` alone, and the record helpers the tests share |
@@ -257,7 +257,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 - `SignatureCache` is keyed on `SHA-256(record_bytes)`. TTL 1 h, capacity 4096 (moka TinyLFU). Eviction = cache miss = full re-verification (never a security bypass). On a cache miss the SHA-256 key is computed once via `compute_key()` and reused for both `get_by_key` and `insert_by_key` — never twice.
 - The replication to a new node (`replicate_to`) uses two conditions (Kademlia §2.5, matches Python AuthKademlia): `new_node_close` (new node is XOR-closer than the farthest k-neighbor) AND `this_closest` (this node is closer than the nearest k-neighbor). Both must be true to replicate. The new node is already in the routing table when the scan runs, so `find_neighbors` excludes it from the comparisons.
 - `schedule_stats_log()` emits a `[stats]` log line every 60 s: routing table size and live contacts, storage record count, used/max storage bytes, and (when enabled) signature cache entries.
-- Every task that holds the protocol (receive loop, workers, refresh, maintenance, stats, save-state, the replication to new nodes, LRU pings) must start through `KademliaProtocol::spawn_task`, never `tokio::spawn`; otherwise it keeps the socket bound after shutdown. The one exception is the requests of a value lookup (`ValueSpiderCrawl::search`), which run in a `JoinSet` owned by the lookup and are aborted when it returns or is dropped. `Server::stop` sends `Leave` without waiting for a reply, cancels those tasks, and returns once the socket is released, so `listen` can be called again. Dropping a `Server` cancels them too, without sending `Leave`.
+- Every task that holds the protocol (receive loop, workers, refresh, maintenance, stats, save-state, the replication to new nodes, LRU pings) must start through `KademliaProtocol::spawn_task`, never `tokio::spawn`; otherwise it keeps the socket bound after shutdown. The exceptions are the requests of a value lookup (`ValueSpiderCrawl::search`), which run in a `JoinSet` owned by the lookup and are aborted when it returns or is dropped, and the fetches of the network check (`Fetches`), in a `JoinSet` owned by the check, aborted when it returns. `Server::stop` sends `Leave` without waiting for a reply, cancels those tasks, and returns once the socket is released, so `listen` can be called again. Dropping a `Server` cancels them too, without sending `Leave`.
 - **Unresponsive contacts** (Kademlia §4.1, unlike Python): a timeout calls `record_failure`, it does not remove the contact. Each failure sets a `retry_after` with exponential backoff (5 s to 300 s, plus jitter), and failures inside that window are not counted, so a burst of concurrent timeouts counts once. After `STALE_AFTER_FAILURES` (5) in a row a contact is stale: it is removed only if a replacement exists, otherwise it stays flagged, is not advertised (`find_neighbors_to_advertise`), and gives way to a new contact when its bucket is full. Any response clears the failures; a failing contact is cleared only from its registered endpoint, while a stale one also accepts a new endpoint. `find_neighbors` skips failing contacts while at least `read_quorum(alpha)` healthy ones remain, and uses stale ones last. `Leave` still removes the contact immediately.
 - **Recovery** (`schedule_maintenance`): a 1 s tick pings failing contacts whose backoff has elapsed, so user lookups do not pay for them. While no contact is live it also retries the addresses given to `bootstrap` (`seeds`), with backoff up to 60 s, and runs a self-lookup once reconnected. It does no network work while the table is healthy. A contact silent for at least `RETURNED_AFTER` goes through `welcome` when it comes back, so it receives the records it missed.
 - **Lookups and dead contacts** (Kademlia §2.3, §4.1): a lookup with a deadline (the STORE check) stops waiting at the deadline and marks the peers silent for at least `SILENT_AFTER` (1 s) as failing (`note_no_answer`), since their requests never reached a timeout; the STORE check also leaves failing contacts out entirely. A crawl never re-admits a peer that failed during it, and does not query a reported contact this node knows is failing (`SpiderProtocol::failing_among`), because other nodes that have not tried it keep reporting it. Initial peers are exempt, so `find_neighbors` can still use failing contacts as a last resort. The result holds only peers that responded, so no STORE goes to a dead peer. `set_detailed` counts the others in `unavailable_nodes`, not in `expected_replicas`: `Complete` means every node that responded holds the record. The first lookup after a peer dies still waits `RPC_TIMEOUT` (2.5 s) per round that contains a dead peer, because rounds wait for all their RPCs.
@@ -376,12 +376,21 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
     every node it asked, including one pushed out since. A node that knows `k` nodes
     closer to the key than itself is not a replica by its own table and keeps `alpha`
     per round: asking all would ask `k` nodes per hop, most replaced at the next.
-  - It fetches one record per distinct claim above `seq`, from the closest
-    node that made it, at most `k − 1`, all at once, within the deadline
-    (`claims_to_fetch`, `fetch_higher`). A fetched record counts only if it
-    hashes to the claim, has the form for the key at a higher position, and
-    its signature verifies (`shows_higher`). One is enough: the replica stores
-    it instead and answers `Stale`.
+  - It fetches one record per distinct claim above `seq`, from the first
+    node that made it, at most `k − 1`, each as soon as its claim arrives,
+    while the lookup goes on (`fetches_claim`, `Fetches`). A fetched record
+    counts only if it hashes to the claim, has the form for the key at a
+    higher position, and its signature verifies (`shows_higher`), checked in
+    the fetch's own task. One is enough: the first ends the check (a
+    `select!` of the lookup and the records shown, which drops the lookup),
+    and the replica stores it instead and answers `Stale`. Do not move the
+    fetches back after the lookup: a node that stays silent then spends the
+    deadline, and the replica stored 5 while a holder had shown 6 at once
+    (`a_silent_neighbour_does_not_keep_a_shown_higher_record_out`). Taken in
+    the order they arrive, the claims of made-up nodes, asked only after the
+    answer that names them, cannot use up the `k − 1` fetches before the
+    nodes the replica knew
+    (`made_up_claims_cannot_use_up_the_fetches_before_a_known_holder`).
   - Otherwise it verifies the signature of the record it was sent and stores
     it: when every node answered, when some did not, and when there was
     nobody to ask. A claim not shown, or not in time, refuses nothing.
@@ -442,7 +451,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/quorum_tests.rs` | 16 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum and update, retry of a publication, a rotation that fills empty replicas, and the network check of a STORE to an empty replica |
 | `tests/repair_tests.rs` | 3 | Repair over real UDP: the expected record found, stored and served locally; no match without it; no answer |
 | `tests/chain_tests.rs` | 8 | Positions of one DID over real UDP: a rotation that reaches every replica, the owner restoring empty replicas, refusals of `set` that count only once shown, forged and old genuine records at empty replicas |
-| `src/**` (inline) | 242 | Module-level `#[test]` blocks (incl. the custody's acceptance cases and calendar, persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
+| `src/**` (inline) | 244 | Module-level `#[test]` blocks (incl. the custody's acceptance cases and calendar, persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 
