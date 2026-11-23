@@ -1,3 +1,4 @@
+use aws_lc_rs::digest::{Context, SHA256};
 /// In-memory cache for signature verification results.
 ///
 /// Keyed by a domain-separated SHA-256 of the full record bytes so that any
@@ -7,7 +8,6 @@
 /// trust roots (the embedded document key or the issuer key). The cache is
 /// bounded in size and entries expire after one hour.
 use moka::sync::Cache;
-use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 pub struct SignatureCache {
@@ -39,10 +39,12 @@ impl SignatureCache {
     /// Callers that need to both look up and insert should call this once and
     /// use `get_by_key` / `insert_by_key` to avoid hashing twice.
     pub fn compute_key(domain: VerificationDomain, value: &[u8]) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        hasher.update([domain as u8]);
-        hasher.update(value);
-        hasher.finalize().into()
+        let mut context = Context::new(&SHA256);
+        context.update(&[domain as u8]);
+        context.update(value);
+        let mut key = [0u8; 32];
+        key.copy_from_slice(context.finish().as_ref());
+        key
     }
 
     pub fn get_by_key(&self, key: &[u8; 32]) -> Option<bool> {

@@ -27,7 +27,7 @@ cargo test --features testbed        # 365: also the testbed's FindHash lie swit
 cargo test <name>                    # single test, e.g. test_update_did_record_key_rotation
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
-ML-DSA and ML-KEM come from `aws-lc-rs` (ADR 0003): its C code is built by
+ML-DSA, ML-KEM and the protocol's SHA-256 come from `aws-lc-rs` (ADR 0003): its C code is built by
 the `cc` crate, so a C compiler is needed (no cmake on Linux x86-64/AArch64).
 
 Python extension (maturin, optional — do not use in Rust-only deployments):

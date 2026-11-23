@@ -1,7 +1,7 @@
 //! DHT keys and node ids: SHA-256 digests (`digest`, `ID_LEN`), and the fixed
 //! key of the Status List (ADR 0004).
 
-use sha2::{Digest, Sha256};
+use aws_lc_rs::digest;
 
 /// Byte length of a node id and of a DHT key: a SHA-256 output, 256 bits.
 pub const ID_LEN: usize = 32;
@@ -17,9 +17,11 @@ pub fn digest(s: &str) -> [u8; ID_LEN] {
     digest_bytes(s.as_bytes())
 }
 
-/// The SHA-256 digest of raw bytes.
+/// The SHA-256 digest of raw bytes, from AWS-LC like the signatures.
 pub fn digest_bytes(data: &[u8]) -> [u8; ID_LEN] {
-    Sha256::digest(data).into()
+    let mut out = [0u8; ID_LEN];
+    out.copy_from_slice(digest::digest(&digest::SHA256, data).as_ref());
+    out
 }
 
 #[cfg(test)]

@@ -8,7 +8,6 @@ use auth_kademlia_rs::crypto::mldsa::{self as mldsa, MlDsa65KeyPair};
 use auth_kademlia_rs::utils::digest_bytes;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
 pub const ALGORITHM: &str = "ML-DSA-65";
 
@@ -129,7 +128,7 @@ fn document_of(record: &[u8]) -> Option<Value> {
 }
 
 pub fn short_hash(bytes: &[u8]) -> String {
-    hex::encode(&Sha256::digest(bytes)[..6])
+    hex::encode(&digest_bytes(bytes)[..6])
 }
 
 /// The DID and version of a record and a short hash of its signing key, so

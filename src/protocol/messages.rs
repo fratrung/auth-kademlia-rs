@@ -6,11 +6,10 @@
 //! `transport.rs`.
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::node::Node;
 use crate::storage::StorageWriteStatus;
-use crate::utils::ID_LEN;
+use crate::utils::{digest_bytes, ID_LEN};
 
 /// Explicit result of a STORE request.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
@@ -141,7 +140,7 @@ pub const RECORD_HASH_LEN: usize = 32;
 
 /// SHA-256 of a whole record, as a node answers `FindHash`.
 pub fn record_hash(record: &[u8]) -> [u8; RECORD_HASH_LEN] {
-    Sha256::digest(record).into()
+    digest_bytes(record)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
