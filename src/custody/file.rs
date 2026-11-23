@@ -9,11 +9,20 @@
 //! holds every future key and code of the DID: keep and back it up as a
 //! private key.
 //!
+//! One instance at a time holds the directory, through an exclusive lock on
+//! a fourth, empty file, `lock`, taken when it opens or provisions the
+//! directory and released when it is dropped or its process ends. Each
+//! instance decides from its own copy of `state`: two would each sign the
+//! next position, two records at one position. The lock is advisory and
+//! holds on a local file system; a copy of the directory, or an older
+//! `state` restored from a backup, is not stopped by it and signs a
+//! position again.
+//!
 //! A position's secrets are read only to sign it. Once a record is
 //! published, the secrets of the positions below it are erased, since no
 //! call signs below the highest activated position again.
 
-use std::fs;
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -39,6 +48,7 @@ const VERSION: u8 = 1;
 const TREE: (&str, u8) = ("tree", 1);
 const SECRETS: (&str, u8) = ("secrets", 2);
 const STATE: (&str, u8) = ("state", 3);
+const LOCK: &str = "lock";
 const HEADER_LEN: usize = MAGIC.len() + 2;
 const SECRET_LEN: usize = SEED_LEN + CODE_LEN;
 
@@ -225,12 +235,15 @@ pub struct FileCustody {
     tree: Tree,
     clock: Clock,
     state: Mutex<State>,
+    /// Held while this instance lives.
+    _lock: File,
 }
 
 impl FileCustody {
     /// A new DID in `dir`, created if missing: fresh seeds and codes, the
     /// genesis of `template` at position 0, and the record of position 0,
-    /// prepared. `Exists` if `dir` already holds a custody.
+    /// prepared. `Exists` if `dir` already holds a custody, `Busy` while
+    /// another instance holds it.
     pub fn provision(
         dir: impl Into<PathBuf>,
         calendar: Calendar,
@@ -239,7 +252,7 @@ impl FileCustody {
         Self::provision_with(dir.into(), calendar, template, Arc::new(system_clock))
     }
 
-    /// The custody kept in `dir`.
+    /// The custody kept in `dir`; `Busy` while another instance holds it.
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, CustodyError> {
         Self::open_with(dir.into(), Arc::new(system_clock))
     }
@@ -251,6 +264,7 @@ impl FileCustody {
         clock: Clock,
     ) -> Result<Self, CustodyError> {
         create_private_dir(&dir)?;
+        let lock = lock_dir(&dir)?;
         if dir.join(STATE.0).exists() {
             return Err(CustodyError::Exists(dir));
         }
@@ -292,10 +306,14 @@ impl FileCustody {
             tree,
             clock,
             state: Mutex::new(state),
+            _lock: lock,
         })
     }
 
     pub(crate) fn open_with(dir: PathBuf, clock: Clock) -> Result<Self, CustodyError> {
+        // Taken before the state is read: a state read first could be
+        // replaced by another instance before it lets go of the directory.
+        let lock = lock_dir(&dir)?;
         let (calendar, genesis, tree) =
             decode_tree(&fs::read(dir.join(TREE.0))?).ok_or(CustodyError::Damaged("tree"))?;
         let state =
@@ -307,6 +325,7 @@ impl FileCustody {
             tree,
             clock,
             state: Mutex::new(state),
+            _lock: lock,
         };
         let key = custody.genesis.key();
         let state = custody.lock();
@@ -506,6 +525,28 @@ fn write_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), CustodyError> 
         bytes,
         true,
     )?)
+}
+
+/// The exclusive lock of `dir`, created if missing. It is `flock` on Unix,
+/// held by the open file rather than by the process, so a second instance
+/// in the same process is refused too (a POSIX record lock would let it
+/// through), and the kernel releases it when the process ends, so a crash
+/// leaves nothing to remove. `Busy` at once, rather than waiting, while
+/// another instance holds it.
+fn lock_dir(dir: &Path) -> Result<File, CustodyError> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(dir.join(LOCK))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => Err(CustodyError::Busy(dir.to_path_buf())),
+        Err(TryLockError::Error(error)) => Err(error.into()),
+    }
 }
 
 fn create_private_dir(dir: &Path) -> Result<(), CustodyError> {

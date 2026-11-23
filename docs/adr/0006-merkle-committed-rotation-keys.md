@@ -202,6 +202,18 @@ A TEE backend is outside the first implementation. It produces the same
 record format. Once a code is public, a holder of its stolen private key
 can sign a competing document at that position.
 
+**One instance at a time.** Decided, 2026-11-24. Each instance of the file
+backend decides from its own copy of the activation state, so two
+instances on one store would each sign the next position: two records at
+one position, made by the owner. The backend takes an exclusive lock on
+the store when it opens or provisions it, holds it while the instance
+lives, and refuses a second instance at once. A signer must store the new
+index "before exporting a signature value or accepting another request to
+sign a message" ([SP800-208], section 8.1), which two signers sharing one
+state cannot do. The lock does not stop a copy of the store, nor an older
+state restored from a backup: for stateful schemes "simply copying the
+private key would create a risk of OTS key reuse" ([SP800-208], section 7).
+
 **Acceptance cases.** Use controlled time in the custody tests.
 
 | Case | Expected result |
@@ -707,6 +719,7 @@ read 4 to 9% more. The latency of a publication does not change (E1).
 | Two records at one position | A holder keeps the first (`Conflict`, point 3); the owner signs each position once and resends the same bytes (point 4) | `another_record_at_the_stored_position_leaves_the_stored_one`, `two_records_at_once_at_one_position_leave_exactly_one`, `a_retry_in_the_same_slot_gives_the_same_bytes` | |
 | The theft of the current key | Each later position needs its own key and its own code, which stay secret until it is published | `revoked_key_cannot_authorise_further_rotation`, `a_record_with_another_code_fails_the_tree_though_its_signature_verifies` | |
 | The owner reusing a position, after a restart or with the clock set back | The custody writes the highest activated position durably before it returns a record, and signs nothing below it (point 1) | `a_restart_in_slot_5_after_publishing_2_prepares_5_after_2`, `a_clock_set_back_reopens_no_position` | |
+| Two instances of the custody on one store, each signing the next position | An exclusive lock on the store, held while an instance lives (point 1) | `one_instance_at_a_time_holds_a_custody` | |
 | An early activation without authority | The application's verifier checks the issuer's authorization; it reaches only the next position that is not skipped | `a_position_is_never_signed_before_its_slot_without_an_authorization`, `an_authorization_holds_once_for_its_did_and_position`, `an_authorization_never_reaches_a_skipped_lower_or_reserved_position` | |
 | Reading the custody's files | Files readable by the owner's user only; the secrets below a published position are erased | `only_the_owner_can_read_the_custody`, `publishing_erases_the_secrets_below_the_published_position` | |
 | A replica losing its records in a crash or a power cut | A durable write before the replica acknowledges, no answer when the write fails (point 5) | `a_restarted_replica_serves_its_record_with_no_peer`, `a_replica_that_cannot_write_does_not_confirm_the_record` | D1: no copy lost |

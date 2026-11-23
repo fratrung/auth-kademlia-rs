@@ -686,9 +686,10 @@ impl ActivationVerifier for PyActivationVerifier {
 
 fn custody_err(error: CustodyError) -> PyErr {
     match error {
-        CustodyError::Io(_) | CustodyError::Damaged(_) | CustodyError::Exists(_) => {
-            PyRuntimeError::new_err(error.to_string())
-        }
+        CustodyError::Io(_)
+        | CustodyError::Damaged(_)
+        | CustodyError::Exists(_)
+        | CustodyError::Busy(_) => PyRuntimeError::new_err(error.to_string()),
         _ => PyValueError::new_err(error.to_string()),
     }
 }
@@ -712,11 +713,14 @@ pub struct PyCustody {
 
 #[pymethods]
 impl PyCustody {
-    /// The custody kept in ``dir``.
+    /// The custody kept in ``dir``. One instance at a time holds a
+    /// directory, in this process or another, until it is garbage
+    /// collected or its process ends: two would each sign the next
+    /// position.
     ///
     /// Raises:
-    ///     RuntimeError: the directory holds no custody, or its files are
-    ///         damaged.
+    ///     RuntimeError: the directory holds no custody, its files are
+    ///         damaged, or another instance holds it.
     #[new]
     fn open(py: Python<'_>, dir: String) -> PyResult<Self> {
         let custody = py
@@ -740,8 +744,8 @@ impl PyCustody {
     /// Raises:
     ///     ValueError: a zero interval, or a template that is not JSON or
     ///         holds a field the custody fills in.
-    ///     RuntimeError: ``dir`` already holds a custody, or cannot be
-    ///         written.
+    ///     RuntimeError: ``dir`` already holds a custody, another
+    ///         instance holds it, or it cannot be written.
     #[staticmethod]
     fn provision(
         py: Python<'_>,

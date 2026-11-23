@@ -79,10 +79,19 @@ impl Owner {
         self
     }
 
-    /// The custody as a restart finds it, on the same clock.
-    fn restart(&mut self) {
-        self.custody =
-            FileCustody::open_with(self.dir.path().to_path_buf(), clock(&self.now)).unwrap();
+    /// The directory and the clock, once this instance has ended.
+    fn close(self) -> (TestDir, Arc<AtomicU64>) {
+        let Self { dir, now, custody } = self;
+        drop(custody);
+        (dir, now)
+    }
+
+    /// The custody as a restart finds it, on the same clock: this instance
+    /// ends first, as its process would.
+    fn restart(self) -> Self {
+        let (dir, now) = self.close();
+        let custody = FileCustody::open_with(dir.path().to_path_buf(), clock(&now)).unwrap();
+        Self { dir, now, custody }
     }
 
     /// Prepare and publish `position`, due now.
@@ -176,7 +185,7 @@ fn a_retry_in_the_same_slot_gives_the_same_bytes() {
     assert_eq!(owner.custody.prepare(3, &template()).unwrap(), first);
     owner.custody.mark_published(&first).unwrap();
     assert_eq!(owner.custody.prepare(3, &template()).unwrap(), first);
-    owner.restart();
+    owner = owner.restart();
     assert_eq!(owner.custody.prepare(3, &template()).unwrap(), first);
     // A position is signed once: another document is refused.
     assert!(matches!(
@@ -192,7 +201,7 @@ fn a_restart_in_slot_5_after_publishing_2_prepares_5_after_2() {
     owner.custody.mark_published(&zero).unwrap();
     let two = owner.at(slot(2)).publish(2);
     owner.at(slot(5));
-    owner.restart();
+    owner = owner.restart();
 
     assert_eq!(owner.custody.published(), Some(two.clone()));
     let five = owner.custody.prepare(5, &template()).unwrap();
@@ -226,7 +235,7 @@ fn a_clock_set_back_reopens_no_position() {
             })
         ));
     }
-    owner.restart();
+    owner = owner.restart();
     assert_eq!(owner.custody.due(), Due::Position(5));
     assert_eq!(owner.custody.prepare(5, &template()).unwrap(), five);
 }
@@ -306,7 +315,7 @@ fn an_authorized_early_activation_signs_the_next_position_and_keeps_it() {
     assert_eq!(owner.seq(&six), 6);
     assert!(signature_verifies(&six));
     assert_eq!(document(&six)["treeProof"]["code"], owner.code_text(6));
-    owner.restart();
+    owner = owner.restart();
     assert_eq!(owner.custody.due(), Due::Position(6));
     assert_eq!(owner.custody.pending(), Some(six));
 }
@@ -328,7 +337,7 @@ fn an_early_activation_that_cannot_be_stored_releases_nothing() {
     set_read_only(owner.dir.path(), false);
     assert!(matches!(early, Err(CustodyError::Io(_))), "{early:?}");
     assert_eq!(owner.custody.pending(), None);
-    owner.restart();
+    owner = owner.restart();
     assert_eq!(owner.custody.due(), Due::Position(5));
     assert_eq!(owner.custody.published(), Some(five));
 }
@@ -424,18 +433,53 @@ fn provisioning_gives_a_record_of_position_0_that_verifies() {
 #[test]
 fn provisioning_never_replaces_a_custody() {
     let owner = Owner::new();
-    let again = FileCustody::provision_with(
-        owner.dir.path().to_path_buf(),
+    let (did, calendar, pending) = (
+        owner.custody.did(),
         owner.custody.calendar(),
-        &template(),
-        clock(&owner.now),
+        owner.custody.pending(),
     );
+    let (dir, now) = owner.close();
+    let again =
+        FileCustody::provision_with(dir.path().to_path_buf(), calendar, &template(), clock(&now));
     assert!(matches!(again, Err(CustodyError::Exists(_))));
-    let reopened =
-        FileCustody::open_with(owner.dir.path().to_path_buf(), clock(&owner.now)).unwrap();
-    assert_eq!(reopened.did(), owner.custody.did());
-    assert_eq!(reopened.calendar(), owner.custody.calendar());
-    assert_eq!(reopened.pending(), owner.custody.pending());
+    let reopened = FileCustody::open_with(dir.path().to_path_buf(), clock(&now)).unwrap();
+    assert_eq!(reopened.did(), did);
+    assert_eq!(reopened.calendar(), calendar);
+    assert_eq!(reopened.pending(), pending);
+}
+
+/// Each instance decides from its own copy of the state: two on one
+/// directory would each sign the next position, from two templates, two
+/// valid records at one position. While one lives, no other opens or
+/// provisions the directory, in this process or another; once it ends, the
+/// next one opens it as it was left.
+#[test]
+fn one_instance_at_a_time_holds_a_custody() {
+    let owner = Owner::new();
+    let did = owner.custody.did();
+    let dir = owner.dir.path().to_path_buf();
+    assert!(matches!(
+        FileCustody::open_with(dir.clone(), clock(&owner.now)),
+        Err(CustodyError::Busy(_))
+    ));
+    assert!(matches!(
+        FileCustody::provision_with(
+            dir,
+            owner.custody.calendar(),
+            &other_template(),
+            clock(&owner.now)
+        ),
+        Err(CustodyError::Busy(_))
+    ));
+
+    let one = owner.at(slot(1)).custody.prepare(1, &template()).unwrap();
+    let owner = owner.restart();
+    assert_eq!(owner.custody.did(), did);
+    assert!(matches!(
+        owner.custody.prepare(1, &other_template()),
+        Err(CustodyError::AlreadySigned(1))
+    ));
+    assert_eq!(owner.custody.prepare(1, &template()).unwrap(), one);
 }
 
 #[test]
@@ -478,7 +522,7 @@ fn a_skipped_position_stays_skipped_across_a_restart() {
     }
     owner.custody.skip(4).unwrap();
     owner.at(slot(4));
-    owner.restart();
+    owner = owner.restart();
     assert_eq!(owner.custody.due(), Due::Skipped(4));
     assert!(owner.custody.prepare(4, &template()).is_err());
     owner.at(slot(5));

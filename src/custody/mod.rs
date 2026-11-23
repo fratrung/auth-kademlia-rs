@@ -249,6 +249,8 @@ pub enum CustodyError {
     Template(&'static str),
     #[error("{0} already holds a custody")]
     Exists(PathBuf),
+    #[error("another instance holds the custody in {0}")]
+    Busy(PathBuf),
     #[error("the custody files are damaged: {0}")]
     Damaged(&'static str),
     #[error(transparent)]

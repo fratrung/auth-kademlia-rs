@@ -57,7 +57,11 @@ application.
   authorization checked by a verifier the application supplies. A position
   can be skipped for good. The application writes one template of the
   document, and no method returns a private key, a seed or an unreleased
-  code. Publishing a record erases the secrets below it.
+  code. Publishing a record erases the secrets below it. One instance at a
+  time holds a custody's directory, through an exclusive lock: another
+  opening or provisioning of it fails with `CustodyError::Busy`
+  (`RuntimeError` in Python) until the first is dropped or its process
+  ends.
 - Persistent replica storage: `ForgetfulStorage::persistent(dir, ttl,
   max_storage_bytes)`, `Server(data_dir=..., flush_secs=3600)` in Python and
   `DATA_DIR` in `dht_node`. A replica keeps each record in a file, written to

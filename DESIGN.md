@@ -508,9 +508,11 @@ project); the position due then becomes that one, so the next falls due at
 its normal boundary. A position whose key has leaked is skipped for good.
 Once a record is published, the secrets of the positions below it are
 erased. The file backend keeps the seeds and codes, the calendar and the
-records in a directory only the process's user can read: it trusts the
-device's clock and files, and enforcing the calendar against the host needs
-a backend that keeps its own.
+records in a directory only the process's user can read, and one instance
+at a time holds it, through an exclusive lock: each instance decides from
+its own copy of the state, so two would each sign the next position. It
+trusts the device's clock and files, and enforcing the calendar against the
+host needs a backend that keeps its own.
 
 ## 10. Status List
 

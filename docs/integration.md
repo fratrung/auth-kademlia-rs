@@ -533,6 +533,13 @@ def is_canonical_did(did: str) -> bool:
   storage and back it up as a private key. A copy restored from an older
   backup has an older highest activated position, and can sign again a
   position already published.
+- **One `Custody` at a time** holds a directory, in one process or
+  several, until it is garbage collected or its process ends: another
+  `Custody(dir)` or `Custody.provision(dir, ...)` raises `RuntimeError`
+  meanwhile. Each instance decides from its own copy of the state, and two
+  would each sign the next position. The lock is advisory and holds on a
+  local file system: keep the directory on a local disk, and never run a
+  copy of it on a second device.
 - **The file backend trusts the device's clock and files.** Whoever can
   write them can move the calendar; enforcing it against the host needs a
   backend inside a TEE or a secure element, behind the same Rust trait
