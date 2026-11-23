@@ -344,9 +344,10 @@ on the device:
    with the key of position 0, and keeps it as the record prepared,
    `pending()`, with position 0 as the highest activated.
 
-The calendar is fixed here: position 0 is due from `start_secs`, and one
-more position every `interval_secs` (a week or a month is a deployment
-choice). A directory that already holds a custody is refused: a DID is
+The calendar is fixed here: position 0 is due from provisioning until
+`start_secs + interval_secs`, also before `start_secs`, and one more
+position falls due every `interval_secs` from then (a week or a month is a
+deployment choice). A directory that already holds a custody is refused: a DID is
 provisioned once.
 
 ## 5. Publishing a record
@@ -412,7 +413,9 @@ The custody keeps the order that makes a rotation safe across a crash:
 
 1. **The position due.** From the start `T`, every interval `D`, the
    position due is `floor((now - T) / D)`, or the highest activated if it is
-   higher. `prepare` signs only that one, and a request for any other is
+   higher. Position 0 is signed at provisioning and is due until `T + D`,
+   also before `T`: a device provisioned today for service from tomorrow
+   can publish 0 at once, and 1 falls due at `T + D`. `prepare` signs only that one, and a request for any other is
    refused (`ValueError`), however often it is made.
 2. **Saved before it leaves.** A new position is written as the highest
    activated, flushed to the device, before `prepare` returns its record. A

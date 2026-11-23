@@ -3,7 +3,9 @@
 //!
 //! Positions fall due on a calendar fixed at provisioning: from a start `T`,
 //! one every interval `D`, the position due at `now` is
-//! `floor((now - T) / D)`. A position is signed once, when it is due and
+//! `floor((now - T) / D)`. Position 0 is signed at provisioning, since the
+//! genesis commits its body, and is due from then until `T + D`, also
+//! before `T`. A position is signed once, when it is due and
 //! above every position activated before, and it is written durably as the
 //! highest activated position before its record leaves the backend: a
 //! restart, a clock set back or a request never reopen a lower position.

@@ -134,9 +134,13 @@ deployment. A week or a month is a deployment choice.
   document position before computing the root. Keep each unreleased code
   private, including when exporting a public path or the genesis.
 - Let the provisioned start be `T`, the positive interval be `D`, and the
-  number of usable document positions be `U`, numbered from zero. Before
-  `T` no position is due. At or after `T`, the due index is
-  `floor((now - T) / D)`. The boundary itself belongs to the new interval.
+  number of usable document positions be `U`, numbered from zero. Position
+  0 is signed at provisioning, because the genesis commits its body, and
+  is the position due from then until `T + D`, also before `T`. Before `T`
+  no other position is due, except through an authorized early activation
+  (below). At or after `T`, the due index is `floor((now - T) / D)`.
+  (Amended, 2026-11-24: this said that no position was due before `T`,
+  while provisioning has always activated 0; found in a review.) The boundary itself belongs to the new interval.
   A request count or an index supplied by Python cannot advance this
   schedule. Only an authorized early activation can (below).
 - When a new slot becomes due, prepare its document even when only the

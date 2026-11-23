@@ -733,8 +733,9 @@ impl PyCustody {
 
     /// A new DID in ``dir``: fresh seeds and codes, and the record of
     /// position 0 from ``template``, prepared (``pending()``). Position 0
-    /// starts at ``start_secs`` (Unix time); one position falls due every
-    /// ``interval_secs``.
+    /// is due from now until ``start_secs + interval_secs`` (Unix time),
+    /// also before ``start_secs``, since the DID commits its document;
+    /// position 1 falls due then, and one more every ``interval_secs``.
     ///
     /// ``template`` is the JSON text of the document without ``id``,
     /// ``seq``, ``prev``, ``treeProof`` and the ``pub`` of its key, with

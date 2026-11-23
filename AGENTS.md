@@ -21,9 +21,9 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 368 tests
-cargo test --features counters       # 371: also the counters' own tests
-cargo test --features testbed        # 372: also the testbed's FindHash lie switch
+cargo test                           # all 369 tests
+cargo test --features counters       # 372: also the counters' own tests
+cargo test --features testbed        # 373: also the testbed's FindHash lie switch
 cargo test <name>                    # single test, e.g. test_key_rotation_is_published_with_set
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -68,7 +68,8 @@ maturin develop --features python
   issuer; the first list is published with `set("status-list", value)`.
 - `Custody` is the owner's custody of one DID (`src/custody/`, file
   backend): `Custody.provision(dir, template, start_secs, interval_secs)`
-  creates the DID and prepares position 0, `Custody(dir)` opens it; `did`,
+  creates the DID and prepares position 0, due from then until `start_secs +
+  interval_secs`, also before `start_secs`; `Custody(dir)` opens it; `did`,
   `due()` (`{"status": "due"|"skipped"|"exhausted", "position": ...}`),
   `prepare(position, template)`, `activate_early(position, template,
   authorization, verifier)` with `verifier(did, position, authorization) ->
@@ -466,7 +467,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/quorum_tests.rs` | 16 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum and update, retry of a publication, a rotation that fills empty replicas, and the network check of a STORE to an empty replica |
 | `tests/repair_tests.rs` | 3 | Repair over real UDP: the expected record found, stored and served locally; no match without it; no answer |
 | `tests/chain_tests.rs` | 8 | Positions of one DID over real UDP: a rotation that reaches every replica, the owner restoring empty replicas, refusals of `set` that count only once shown, forged and old genuine records at empty replicas |
-| `src/**` (inline) | 250 | Module-level `#[test]` blocks (incl. the custody's acceptance cases and calendar, persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
+| `src/**` (inline) | 251 | Module-level `#[test]` blocks (incl. the custody's acceptance cases and calendar, persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 

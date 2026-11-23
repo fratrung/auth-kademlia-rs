@@ -504,7 +504,8 @@ application writes one template of its document; the custody fills in
 so a code never passes through the application before its record. It signs
 a position only when its slot has come: from a start `T`, every interval
 `D`, the position due is `floor((now - T) / D)`, or the highest activated if
-greater. It writes a new position as the highest activated, flushed to the
+greater; position 0, signed at provisioning since the genesis commits its
+body, is due until `T + D`, also before `T`. It writes a new position as the highest activated, flushed to the
 device, before returning its record; within the slot it returns the same
 bytes again, and it never signs below the highest activated. Before its slot
 only the next position that is not skipped can be activated, once, with an

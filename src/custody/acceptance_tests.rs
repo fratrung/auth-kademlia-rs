@@ -624,3 +624,27 @@ fn a_record_too_long_to_publish_activates_nothing() {
     assert!(too_long(provision(&long).map(|_| vec![])));
     assert!(provision(&template()).is_ok());
 }
+
+/// Position 0 is signed at provisioning, since the genesis commits its
+/// body: it is the position due from then until the end of its slot, also
+/// before the start. Position 1 falls due at its boundary, not before.
+#[test]
+fn position_zero_is_due_from_provisioning_until_the_end_of_its_slot() {
+    let dir = TestDir::new();
+    let now = Arc::new(AtomicU64::new(START - DAY));
+    let calendar = Calendar::new(START, INTERVAL).unwrap();
+    let custody =
+        FileCustody::provision_with(dir.path().to_path_buf(), calendar, &template(), clock(&now))
+            .unwrap();
+    let zero = custody.pending().unwrap();
+    assert_eq!(custody.due(), Due::Position(0));
+    assert_eq!(custody.prepare(0, &template()).unwrap(), zero);
+    assert!(matches!(
+        custody.prepare(1, &template()),
+        Err(CustodyError::NotDue { requested: 1, .. })
+    ));
+    for (at, due) in [(START, 0), (slot(1) - 1, 0), (slot(1), 1)] {
+        now.store(at, Ordering::SeqCst);
+        assert_eq!(custody.due(), Due::Position(due), "at {at}");
+    }
+}
