@@ -36,7 +36,9 @@ use auth_kademlia_rs::auth_handler::tree::Genesis;
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::{Server, SetOutcome};
 use auth_kademlia_rs::protocol::Lie;
-use auth_kademlia_rs::storage::IStorage;
+use auth_kademlia_rs::storage::{
+    ForgetfulStorage, IStorage, DEFAULT_MAX_STORAGE_BYTES, DEFAULT_TTL,
+};
 use auth_kademlia_rs::utils::digest;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -625,12 +627,26 @@ async fn run(ctl_port: u16) {
         "issuer.bin",
     )));
     let id = digest(&format!("testbed:{name}"));
+    // With DATA_DIR the node keeps its records in files, which survive a
+    // crash and a restart of its container.
+    let storage = match std::env::var("DATA_DIR").ok().filter(|dir| !dir.is_empty()) {
+        Some(dir) => {
+            match ForgetfulStorage::persistent(&dir, DEFAULT_TTL, DEFAULT_MAX_STORAGE_BYTES) {
+                Ok(storage) => Some(Arc::new(storage)),
+                Err(error) => {
+                    log::error!("cannot use DATA_DIR {dir}: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        None => None,
+    };
     let mut server = Server::new(
         handler,
         k,
         alpha,
         Some(id),
-        None,
+        storage,
         env_or("SIG_CACHE", 0u8) == 1,
     );
     if let Err(error) = server.listen(port, "0.0.0.0").await {

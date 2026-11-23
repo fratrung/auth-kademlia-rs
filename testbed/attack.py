@@ -38,6 +38,7 @@ from testbed import (  # noqa: E402
     ctl,
     fail,
     load_config,
+    on_disk,
     run,
 )
 
@@ -142,7 +143,7 @@ def cmd_race(args):
     rounds = []
     print(
         f"race: {args.rounds} rounds, owner {args.owner}, {config['nodes']} nodes, k={config['k']}, "
-        f"profile {config['profile']}, image {config.get('image', IMAGE)}"
+        f"profile {config['profile']}, image {config.get('image', IMAGE)}{on_disk(config)}"
     )
     print(f"{'round':>5}  {'victim':<8} {'before':<8} {'update':<14} {'after':<11} {'others':<9} forged reads")
     for number in range(1, args.rounds + 1):
@@ -220,7 +221,7 @@ def cmd_restart(args):
     rounds = []
     print(
         f"restart: {args.rounds} rounds, owner {args.owner}, {config['nodes']} nodes, k={config['k']}, "
-        f"profile {config['profile']}, image {config.get('image', IMAGE)}"
+        f"profile {config['profile']}, image {config.get('image', IMAGE)}{on_disk(config)}"
     )
     print(f"{'round':>5}  {'victim':<8} {'publish':<10} {'after':<9} {'forged copies':<14} forged reads")
     for number in range(1, args.rounds + 1):

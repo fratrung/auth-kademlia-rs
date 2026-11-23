@@ -553,13 +553,16 @@ one (`__isoc23_strtol`, glibc 2.38) does not start on `debian:bookworm-slim`.
 N nodes in Docker with configurable `k`, `alpha`, seeds and `tc netem` profiles
 (LAN, WAN Europe, WAN Trans-Atlantic, from Verizon's published latencies).
 ```
-testbed/testbed.py up --nodes 10 --k 3 --profile wan-eu
+testbed/testbed.py up --nodes 10 --k 3 --profile wan-eu   # --data-dir: records on disk across restarts
 testbed/testbed.py ctl node-3 publish        # also: update, republish, push, get, lie on|v0|off, storage, routing
 testbed/testbed.py get node-3 --from node-5
 testbed/testbed.py pause node-10             # also: netem, stop, start, logs
 testbed/testbed.py down
 ```
 The binaries are built only with `--features testbed` (the image enables it).
+With `up --data-dir` every node keeps its records in `/app/data` (`DATA_DIR`),
+so a node stopped and started again comes back with them, as a replica with a
+data directory after a power cut; without it a restarted node is empty.
 Beyond about 30 nodes the host's neighbour table limit (`gc_thresh3`, 1024 by
 default, shared by all containers) must be raised first, or nodes cannot send,
 and so must the per-CPU receive backlog (`net.core.netdev_max_backlog`, 1000 by

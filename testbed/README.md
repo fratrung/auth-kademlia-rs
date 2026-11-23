@@ -109,6 +109,7 @@ testbed/testbed.py down
 | `--cpus` | none | CPU limit per container, e.g. `0.5` |
 | `--log` | `warn,testbed_node=info` | `RUST_LOG` of every node |
 | `--subnet` | `10.213` | First two octets of the /16 the nodes live in |
+| `--data-dir` | off | Every node keeps its records in `/app/data` (`DATA_DIR`), across its restarts |
 
 **Bootstrap.** Every node receives the addresses of all the seeds and
 bootstraps from them, seeds included (without themselves). A node that starts
@@ -118,7 +119,9 @@ if a container exits.
 
 **Identity.** A node's id is derived from its name, and storage lives in
 memory. A node stopped or killed and started again comes back with the same id
-and no records, as after a crash.
+and no records, as after a crash. With `--data-dir` it comes back with the
+records it held, as a replica with a data directory after a power cut: the
+directory is inside the container, so `down` deletes it.
 
 ## Network profiles
 
@@ -166,8 +169,8 @@ default; Y.1541 bounds delay variation at 50 ms for classes 0 and 1.
 | `netem NODE` | Change one node's emulation live: `--profile`, `--delay`, `--jitter`, `--loss` |
 | `rtt A B` | Ping from A to B |
 | `pause` / `unpause NODES` | Freeze nodes, as if hung: they stop answering |
-| `stop` / `start NODES` | Stop nodes (they send `Leave`) and start them again, empty |
-| `kill NODES` | Crash nodes: no `Leave`. `start` brings them back with the same id and no records |
+| `stop` / `start NODES` | Stop nodes (they send `Leave`) and start them again, empty (with `--data-dir`, with their records) |
+| `kill NODES` | Crash nodes: no `Leave`. `start` brings them back with the same id and no records (with `--data-dir`, with their records) |
 | `logs [NODE] [-f]` | Logs of one node or of all |
 
 Signing keys are shown as the first 6 bytes of their SHA-256, so positions can

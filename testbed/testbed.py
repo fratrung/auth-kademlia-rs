@@ -28,6 +28,9 @@ GENERATED = HERE / ".generated"
 COMPOSE_FILE = GENERATED / "compose.yaml"
 CONFIG_FILE = GENERATED / "config.json"
 IMAGE = "auth-kademlia-testbed:latest"
+# Where a node keeps its records with `up --data-dir`: inside the container,
+# so they survive `docker kill` and `docker start` as a disk survives a crash.
+DATA_DIR = "/app/data"
 PROJECT = "aktestbed"
 DHT_PORT = 4000
 ATTACKER = "tb-attacker"
@@ -82,6 +85,11 @@ def compose(*args, capture=False, check=True):
     if not COMPOSE_FILE.exists():
         fail("no testbed has been generated: run `up` first")
     return run(["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE_FILE), *args], capture, check)
+
+
+def on_disk(config):
+    """What a run's header says about where the nodes keep their records."""
+    return ", records on disk" if config.get("data_dir") else ""
 
 
 def load_config():
@@ -154,6 +162,10 @@ def generate(args):
             f'      NETEM_JITTER_MS: "{jitter:g}"',
             f'      NETEM_LOSS_PCT: "{loss:g}"',
             f'      RUST_LOG: "{args.log}"',
+        ]
+        if args.data_dir:
+            lines.append(f'      DATA_DIR: "{DATA_DIR}"')
+        lines += [
             "    networks:",
             "      testbed:",
             f"        ipv4_address: {ip}",
@@ -255,6 +267,7 @@ def cmd_up(args):
         "loss_pct": loss,
         "cpus": args.cpus,
         "image": args.image,
+        "data_dir": args.data_dir,
     }
     CONFIG_FILE.write_text(json.dumps(config, indent=2) + "\n")
     rtt = "about the bridge RTT" if delay == 0 else f"about {2 * delay:g} ms"
@@ -262,6 +275,7 @@ def cmd_up(args):
         f"starting {args.nodes} nodes, k={args.k}, alpha={args.alpha}, {args.seeds} seeds; "
         f"network {args.profile}: one-way delay {delay:g} ms per container (RTT {rtt}), "
         f"jitter {jitter:g} ms, loss {loss:g}% per direction"
+        + (f"; records on disk in {DATA_DIR}" if args.data_dir else "")
     )
     compose("up", "-d", "--remove-orphans", "--force-recreate")
     wait_ready(args.nodes, args.timeout)
@@ -391,6 +405,9 @@ def main():
     up.add_argument("--timeout", type=int, default=120, help="seconds to wait for contacts")
     up.add_argument("--no-build", action="store_true", help="reuse the existing image")
     up.add_argument("--image", default=IMAGE, help=f"image to run (default {IMAGE})")
+    up.add_argument("--data-dir", action="store_true",
+                    help=f"every node keeps its records in {DATA_DIR}, which survives a crash "
+                         "and a restart of its container")
     up.set_defaults(func=cmd_up)
 
     sub.add_parser("down", help="stop and remove the network").set_defaults(func=cmd_down)

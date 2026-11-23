@@ -30,7 +30,9 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True  # no __pycache__ inside the repository
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from testbed import GENERATED, IMAGE, check_node, container, ctl, fail, load_config, run  # noqa: E402
+from testbed import (  # noqa: E402
+    GENERATED, IMAGE, check_node, container, ctl, fail, load_config, on_disk, run,
+)
 from attack import keys_of, wait_answering  # noqa: E402
 
 
@@ -162,7 +164,7 @@ def cmd_publish(args):
     rounds = []
     print(
         f"publish: {args.rounds} rounds, owner {args.owner}, {config['nodes']} nodes, k={config['k']}, "
-        f"profile {config['profile']}, image {config.get('image', IMAGE)}"
+        f"profile {config['profile']}, image {config.get('image', IMAGE)}{on_disk(config)}"
     )
     print(f"{'round':>5}  {'outcome':<10} {'publish':>9}  {'first read':>10}  {'reads after':>11}")
     if args.counters and args.watchers:
@@ -266,8 +268,10 @@ def tally(labels):
 
 
 def store_quorum(k):
-    """The votes an empty replica needs when it asks the other k - 1 replicas
-    (src/auth_handler/rules.rs, `store_quorum`)."""
+    """The votes an empty replica needed under the earlier record format
+    (ADR 0005) when it asked the other k - 1 replicas. Printed only to compare
+    with the measurements of that format: no rule of the current one counts
+    votes."""
     n = k - 1
     f = max(1, (n - 1) // 3)
     return max(2, min(n, math.ceil((n + f + 1) / 2)))
@@ -295,7 +299,7 @@ def cmd_update(args):
     print(
         f"update: {args.rounds} rounds, {args.rotations} rotation(s) each, {args.restart} replica(s) "
         f"restarted before the last, owner {args.owner}, {config['nodes']} nodes, k={config['k']}, "
-        f"profile {config['profile']}, image {config.get('image', IMAGE)}"
+        f"profile {config['profile']}, image {config.get('image', IMAGE)}{on_disk(config)}"
     )
     print(f"{'round':>5}  {'outcome':<14} {'update':>9}  {'replicas cur/old/none':<22} "
           f"{'restarted cur/old/none':<23} {'reads cur/old/none'}")
@@ -436,8 +440,8 @@ def cmd_churn(args):
     print(
         f"churn: {args.duration:g} s, a crash every {args.churn_every:g} s among the {args.churn_among}, "
         f"republication every {args.republish_every:g} s, {len(liars)} liar(s), {args.rotations} rotation(s), "
-        f"owner {args.owner}, {config['nodes']} nodes, k={k} (quorum {quorum}), profile {config['profile']}, "
-        f"image {config.get('image', IMAGE)}"
+        f"owner {args.owner}, {config['nodes']} nodes, k={k}, profile {config['profile']}, "
+        f"image {config.get('image', IMAGE)}{on_disk(config)}"
     )
     set_liars(liars, True, args.lie)
     try:
@@ -492,7 +496,7 @@ def cmd_churn(args):
           f"{summary_counts(current)}, "
           f"last {current[-1] if current else '-'}")
     below = sum(1 for c in current if c < quorum)
-    print(f"  samples below the quorum ({quorum}): {below}/{len(current)}")
+    print(f"  samples below {quorum}, the store quorum of ADR 0005: {below}/{len(current)}")
     print(f"  crashes: {len(crashes)}, of a replica {sum(1 for c in crashes if c['replica'])}")
     outcomes = sorted({r["outcome"] for r in republications if r["outcome"]})
     print("  republications: " + (", ".join(
@@ -551,12 +555,11 @@ def cmd_outage(args):
         # They leave now, and join the network only at the worst moment of each round.
         run(["docker", "stop", *[container(n) for n in joiners]], capture=True)
     k = config["k"]
-    quorum = store_quorum(k)
     rounds = []
     print(
         f"outage: replicas lost {args.lost}, {args.rounds} rounds each, owner {args.owner} offline"
-        f"{', then back' if args.owner_returns else ''}, {config['nodes']} nodes, k={k} (quorum {quorum}), "
-        f"profile {config['profile']}, image {config.get('image', IMAGE)}"
+        f"{', then back' if args.owner_returns else ''}, {config['nodes']} nodes, k={k}, "
+        f"profile {config['profile']}, image {config.get('image', IMAGE)}{on_disk(config)}"
     )
     print(f"{'lost':>4} {'round':>5}  {'before':<9} {'after loss':<11} {'after push':<11} "
           f"{'owner back':<11} "

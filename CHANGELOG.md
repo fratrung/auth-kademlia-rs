@@ -95,7 +95,8 @@ application.
   with liars (`update --liars`), copies under churn (`churn`), and replicas
   lost while the owner is offline (`outage`, with the `push` command), with
   what readers in the network and joining readers get then (`--reads`,
-  `--joiners`).
+  `--joiners`); `up --data-dir`, which keeps every node's records on disk
+  across its restarts.
 - Counters for the outcomes of the network check (`accepted`,
   `accepted_with_silence`, `superseded`) and for the claims of a higher
   position dropped because they were not shown (`unshown_claims`).
