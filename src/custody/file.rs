@@ -269,23 +269,27 @@ impl FileCustody {
             return Err(CustodyError::Exists(dir));
         }
         let secrets = Secrets::generate()?;
-        let mut keys = Vec::with_capacity(POSITIONS);
-        let mut leaves = Vec::with_capacity(POSITIONS);
-        for position in 0..POSITIONS as u32 {
+        // Each key pair is dropped once its leaf is computed, rather than
+        // all 64 kept until position 0 is signed; the key of 0 is derived
+        // again from its seed.
+        let leaf = |position: u32| -> Result<Hash, CustodyError> {
             let (seed, code) = secrets.of(u64::from(position))?;
             let key = MlDsa65KeyPair::from_seed(&seed).map_err(OwnerError::from)?;
-            leaves.push(leaf_hash(position, key.public_key(), &code));
-            keys.push(key);
-        }
+            Ok(leaf_hash(position, key.public_key(), &code))
+        };
+        let leaves = (0..POSITIONS as u32)
+            .map(leaf)
+            .collect::<Result<Vec<_>, _>>()?;
         let tree = Tree::new(&leaves).ok_or(CustodyError::Damaged("tree"))?;
-        let (_, code) = secrets.of(0)?;
-        let draft = draft_of(template, 0, keys[0].public_key(), None)?;
+        let (seed, code) = secrets.of(0)?;
+        let first = MlDsa65KeyPair::from_seed(&seed).map_err(OwnerError::from)?;
+        let draft = draft_of(template, 0, first.public_key(), None)?;
         let genesis = Genesis {
             initial_body_hash: draft_body_hash(&draft)?,
             root: tree.root(),
         };
         let path = tree.path(0).ok_or(CustodyError::Damaged("tree"))?;
-        let record = sign_position(&genesis, &draft, &keys[0], &code, &path)?;
+        let record = sign_position(&genesis, &draft, &first, &code, &path)?;
         let state = State {
             activation: Activation::first(),
             pending: Some(record),
