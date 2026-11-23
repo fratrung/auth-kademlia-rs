@@ -13,7 +13,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::auth_handler::rules::{claims_to_fetch, decide_locally, shows_higher, Answer, Local};
+use crate::auth_handler::rules::{
+    claims_to_fetch, decide_locally, shows_higher, Answer, Held, Local,
+};
 use crate::counters::CheckEnd;
 use crate::crawling::{RPCFindResponse, SpiderProtocol, ValueSearch, ValueSpiderCrawl};
 use crate::node::Node;
@@ -83,8 +85,8 @@ impl KademliaProtocol {
         // Writes are compare-and-swap: when the stored record changes while
         // this one is decided, it is decided once more against the new one.
         for _ in 0..2 {
-            let stored = self.storage.get(&key);
-            let status = match decide_locally(&key, stored.as_deref(), &value) {
+            let (stored, marker) = self.storage.record_or_marker(&key);
+            let status = match decide_locally(&key, Held::of(stored.as_deref(), marker), &value) {
                 Local::Invalid(error) => {
                     log::warn!(
                         "rpc_store: invalid record for {} from {}: {error}",
@@ -102,7 +104,7 @@ impl KademliaProtocol {
                 Local::AlreadyStored => {
                     match self.storage.replace_if(&key, &value, value.clone()) {
                         ReplaceStatus::Replaced => StoreStatus::AlreadyStored,
-                        ReplaceStatus::Changed | ReplaceStatus::CapacityExceeded => continue,
+                        _ => continue,
                     }
                 }
                 Local::AskNetwork(form) => {
@@ -140,6 +142,7 @@ impl KademliaProtocol {
                         StorageWriteStatus::AlreadyStored => StoreStatus::AlreadyStored,
                         StorageWriteStatus::CapacityExceeded => StoreStatus::CapacityExceeded,
                         StorageWriteStatus::Conflict => continue,
+                        StorageWriteStatus::WriteFailed => return None,
                     }
                 }
                 Local::VerifyAndReplace => {
@@ -153,6 +156,7 @@ impl KademliaProtocol {
                         ReplaceStatus::Replaced => StoreStatus::Stored,
                         ReplaceStatus::CapacityExceeded => StoreStatus::CapacityExceeded,
                         ReplaceStatus::Changed => continue,
+                        ReplaceStatus::WriteFailed => return None,
                     }
                 }
                 Local::Stale { .. } => StoreStatus::Stale,
@@ -193,7 +197,7 @@ impl KademliaProtocol {
             log::warn!("rpc_store: invalid status list from {}", sender_addr.0);
             return Some(StoreStatus::InvalidRecord);
         }
-        let status = StoreStatus::from(self.storage.insert_if_absent(key.to_vec(), value));
+        let status = StoreStatus::of_write(self.storage.insert_if_absent(key.to_vec(), value))?;
         if matches!(status, StoreStatus::Stored | StoreStatus::AlreadyStored) {
             let source = Node::new(sender_id, Some(sender_addr.0), Some(sender_addr.1));
             self.schedule_welcome_if_new(source).await;

@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use crate::auth_handler::tree::tree_form;
 use crate::crawling::ValueSpiderCrawl;
 use crate::node::Node;
 use crate::storage::IStorage;
@@ -63,9 +64,14 @@ impl Server {
         );
 
         if !is_status_list {
+            // A position below one this node remembers is superseded.
+            let floor = self.storage.marker(&dkey);
             return crawl
                 .find_first_valid(|value| async move {
-                    self.verify_value(key, &value).await.then_some(value)
+                    let above_floor = floor.is_none_or(|floor| {
+                        tree_form(&dkey, &value).is_ok_and(|form| form.seq >= floor)
+                    });
+                    (above_floor && self.verify_value(key, &value).await).then_some(value)
                 })
                 .await;
         }
@@ -79,5 +85,60 @@ impl Server {
             Some(v) if self.verify_value(key, &v).await => Some(v),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use crate::auth_handler::test_tree::TreeOwner;
+    use crate::auth_handler::DIDSignatureVerifierHandler;
+    use crate::storage::{ForgetfulStorage, IStorage, DEFAULT_MAX_STORAGE_BYTES};
+    use crate::utils::ID_LEN;
+
+    use super::*;
+
+    /// A reader whose 6 expired returns nothing for the 5 a node serves, and
+    /// the 7 it serves next. Ports 16040-16041.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_get_returns_nothing_below_the_position_remembered() {
+        let owner = TreeOwner::new(1);
+        let v5 = owner.record(5, Some(b"4"));
+        let v6 = owner.record(6, Some(&v5));
+        let v7 = owner.record(7, Some(&v6));
+        let time = Arc::new(AtomicU64::new(0));
+        let now = Arc::clone(&time);
+        let storage = ForgetfulStorage::in_memory(
+            100,
+            DEFAULT_MAX_STORAGE_BYTES,
+            Arc::new(move || now.load(Ordering::Relaxed)),
+        );
+        storage.set(owner.key.to_vec(), v6);
+        time.store(100_000, Ordering::Relaxed);
+
+        let handler = Arc::new(DIDSignatureVerifierHandler::new("unused"));
+        let mut reader = Server::new(
+            handler.clone(),
+            20,
+            3,
+            Some([1; ID_LEN]),
+            Some(Arc::new(storage)),
+            false,
+        );
+        reader.listen(16040, "127.0.0.1").await.unwrap();
+        let mut peer = Server::new(handler, 20, 3, Some([2; ID_LEN]), None, false);
+        peer.listen(16041, "127.0.0.1").await.unwrap();
+        assert!(!reader
+            .bootstrap(vec![("127.0.0.1".to_string(), 16041)])
+            .await
+            .is_empty());
+
+        peer.storage.set(owner.key.to_vec(), v5);
+        assert_eq!(reader.get(&owner.did).await, None);
+        peer.storage.set(owner.key.to_vec(), v7.clone());
+        assert_eq!(reader.get(&owner.did).await, Some(v7));
+        reader.stop().await;
+        peer.stop().await;
     }
 }

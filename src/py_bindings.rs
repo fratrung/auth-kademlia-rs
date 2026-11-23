@@ -157,6 +157,14 @@ impl PyServer {
     ///     node_id (bytes):    Fixed 32-byte node ID.  Pass ``None`` for a
     ///                         random ID (recommended for most deployments).
     ///     max_storage_bytes (int): Per-node key/value budget. Default: 512 MiB.
+    ///     data_dir (str):     Directory where this replica keeps its records,
+    ///                         so that it serves them again after a restart.
+    ///                         ``None`` (default) keeps them in memory only.
+    ///     flush_secs (int):   With ``data_dir``, how often renewed expiries
+    ///                         are written to disk. Default: 3600.
+    ///
+    /// Raises:
+    ///     RuntimeError: ``data_dir`` cannot be created or read.
     #[new]
     #[pyo3(signature = (
         ksize=20,
@@ -164,8 +172,11 @@ impl PyServer {
         issuer_path=None,
         node_id=None,
         sig_cache=false,
-        max_storage_bytes=536_870_912
+        max_storage_bytes=536_870_912,
+        data_dir=None,
+        flush_secs=3600
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         ksize: usize,
         alpha: usize,
@@ -173,6 +184,8 @@ impl PyServer {
         node_id: Option<Vec<u8>>,
         sig_cache: bool,
         max_storage_bytes: usize,
+        data_dir: Option<String>,
+        flush_secs: u64,
     ) -> PyResult<Self> {
         configure_runtime();
 
@@ -201,11 +214,20 @@ impl PyServer {
             None => None,
         };
 
-        let storage = Arc::new(ForgetfulStorage::with_max_storage_bytes(
-            DEFAULT_TTL,
-            max_storage_bytes,
-        ));
-        let server = Server::new(handler, ksize, alpha, fixed_id, Some(storage), sig_cache);
+        let storage = match data_dir {
+            Some(dir) => ForgetfulStorage::persistent(&dir, DEFAULT_TTL, max_storage_bytes)
+                .map_err(|e| PyRuntimeError::new_err(format!("data_dir {dir}: {e}")))?,
+            None => ForgetfulStorage::with_max_storage_bytes(DEFAULT_TTL, max_storage_bytes),
+        }
+        .with_flush_interval(Duration::from_secs(flush_secs));
+        let server = Server::new(
+            handler,
+            ksize,
+            alpha,
+            fixed_id,
+            Some(Arc::new(storage)),
+            sig_cache,
+        );
         Ok(Self {
             inner: Arc::new(RwLock::new(server)),
         })

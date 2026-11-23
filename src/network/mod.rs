@@ -173,16 +173,22 @@ impl Server {
         self.schedule_refresh();
         self.schedule_maintenance();
         self.schedule_stats_log();
+        self.schedule_flush();
         Ok(())
     }
 
-    /// Notify neighbours of departure, cancel all background tasks, and release
-    /// the socket. Stored records are kept, and `listen` may be called again.
-    /// The socket stays bound if the caller still holds a clone of `protocol`.
+    /// Notify neighbours of departure, cancel all background tasks, write the
+    /// pending renewals of a persistent store, and release the socket. Stored
+    /// records are kept, and `listen` may be called again. The socket stays
+    /// bound if the caller still holds a clone of `protocol`.
     pub async fn stop(&mut self) {
         let Some(proto) = self.protocol.take() else {
             return;
         };
+        let storage = Arc::clone(&self.storage);
+        if let Err(error) = tokio::task::spawn_blocking(move || storage.flush_renewals()).await {
+            log::error!("stop: the renewals were not written: {error}");
+        }
         let neighbors = proto.router.read().await.find_neighbors(&self.node, None);
         log::info!("Notifying {} neighbours of departure", neighbors.len());
         futures::future::join_all(

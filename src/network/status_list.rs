@@ -59,9 +59,12 @@ impl Server {
             return Some(false);
         }
         if store_local
-            && self.storage.set(dkey.to_vec(), value) == StorageWriteStatus::CapacityExceeded
+            && matches!(
+                self.storage.set(dkey.to_vec(), value),
+                StorageWriteStatus::CapacityExceeded | StorageWriteStatus::WriteFailed
+            )
         {
-            log::warn!("update_status_list: local storage capacity exceeded");
+            log::warn!("update_status_list: the local copy was not stored");
             return Some(false);
         }
         Some(true)

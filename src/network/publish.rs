@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use crate::auth_handler::rules::{decide_locally, shown_against, Local, Proof};
+use crate::auth_handler::rules::{decide_locally, shown_against, Held, Local, Proof};
 use crate::crawling::{LookupNodes, NodeSpiderCrawl, RPCFindResponse, SpiderProtocol};
 use crate::node::Node;
 use crate::protocol::StoreStatus;
@@ -268,27 +268,28 @@ impl Server {
     /// Write the owner's verified `value` to this node's storage by the rules
     /// a replica follows, without the network check: the owner knows its own
     /// record. The Status List keeps its own rule, first writer wins. `None`
-    /// when the stored record changed twice meanwhile.
+    /// when the stored record changed twice meanwhile, or the record could
+    /// not be made durable.
     fn store_locally(&self, dkey: &[u8; ID_LEN], value: &[u8]) -> Option<StoreStatus> {
         if *dkey == digest(STATUS_LIST_KEY) {
             let status = self.storage.insert_if_absent(dkey.to_vec(), value.to_vec());
-            return Some(StoreStatus::from(status));
+            return StoreStatus::of_write(status);
         }
         for _ in 0..2 {
-            let stored = self.storage.get(dkey);
-            let status = match decide_locally(dkey, stored.as_deref(), value) {
+            let (stored, marker) = self.storage.record_or_marker(dkey);
+            let status = match decide_locally(dkey, Held::of(stored.as_deref(), marker), value) {
                 Local::Invalid(_) => StoreStatus::InvalidRecord,
                 Local::AskNetwork(_) => {
                     match self.storage.insert_if_absent(dkey.to_vec(), value.to_vec()) {
                         StorageWriteStatus::Conflict => continue,
-                        status => StoreStatus::from(status),
+                        status => StoreStatus::of_write(status)?,
                     }
                 }
                 Local::AlreadyStored => {
                     match self.storage.replace_if(dkey, value, value.to_vec()) {
                         ReplaceStatus::Replaced => StoreStatus::AlreadyStored,
                         ReplaceStatus::CapacityExceeded => StoreStatus::CapacityExceeded,
-                        ReplaceStatus::Changed => continue,
+                        ReplaceStatus::Changed | ReplaceStatus::WriteFailed => continue,
                     }
                 }
                 Local::VerifyAndReplace => {
@@ -299,6 +300,7 @@ impl Server {
                         ReplaceStatus::Replaced => StoreStatus::Stored,
                         ReplaceStatus::CapacityExceeded => StoreStatus::CapacityExceeded,
                         ReplaceStatus::Changed => continue,
+                        ReplaceStatus::WriteFailed => return None,
                     }
                 }
                 Local::Stale { .. } => StoreStatus::Stale,

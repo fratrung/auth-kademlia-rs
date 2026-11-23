@@ -13,6 +13,8 @@
 ///                                fetch its record from the DHT and print it
 /// RETRIEVE_KEY    DID to look up instead of the one in /shared/did (optional)
 /// MAX_STORAGE_BYTES  per-node key/value budget (default: 536870912 = 512 MiB)
+/// DATA_DIR        directory where the node keeps the records it holds across
+///                 restarts (optional; without it they are kept in memory)
 /// RUST_LOG        log filter, e.g. "info", "debug", "auth_kademlia_rs=trace"
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -128,11 +130,12 @@ async fn start_server(port: u16, max_storage_bytes: usize) -> Server {
         );
     }
     let handler = Arc::new(DIDSignatureVerifierHandler::new(issuer_path));
-    let storage = Arc::new(ForgetfulStorage::with_max_storage_bytes(
-        DEFAULT_TTL,
-        max_storage_bytes,
-    ));
-    let mut server = Server::new(handler, 20, 3, None, Some(storage), true);
+    let storage = match std::env::var("DATA_DIR") {
+        Ok(dir) => ForgetfulStorage::persistent(&dir, DEFAULT_TTL, max_storage_bytes)
+            .unwrap_or_else(|error| panic!("DATA_DIR {dir}: {error}")),
+        Err(_) => ForgetfulStorage::with_max_storage_bytes(DEFAULT_TTL, max_storage_bytes),
+    };
+    let mut server = Server::new(handler, 20, 3, None, Some(Arc::new(storage)), true);
     server
         .listen(port, "0.0.0.0")
         .await

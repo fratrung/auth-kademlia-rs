@@ -25,6 +25,27 @@ pub enum Conflict {
     Duplicity,
 }
 
+/// What a replica holds for a DID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Held<'a> {
+    Nothing,
+    /// The highest position it accepted, remembered after that record
+    /// expired.
+    Marker(u64),
+    Record(&'a [u8]),
+}
+
+impl<'a> Held<'a> {
+    /// The stored record if any, otherwise the position remembered.
+    pub fn of(stored: Option<&'a [u8]>, marker: Option<u64>) -> Self {
+        match (stored, marker) {
+            (Some(record), _) => Self::Record(record),
+            (None, Some(seq)) => Self::Marker(seq),
+            (None, None) => Self::Nothing,
+        }
+    }
+}
+
 /// What a replica does with a record, by what it holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Local {
@@ -32,12 +53,13 @@ pub enum Local {
     Invalid(FormError),
     /// The same bytes as stored.
     AlreadyStored,
-    /// Nothing stored: check the network before storing.
+    /// Nothing stored, or a remembered position not above this one: check
+    /// the network before storing.
     AskNetwork(TreeForm),
     /// A higher position than the stored one: verify the signature, then
     /// replace the stored record.
     VerifyAndReplace,
-    /// The replica holds a higher position.
+    /// The replica holds a higher position, or remembers one.
     Stale { stored: u64 },
     /// Another record at the stored position: verify its signature. Valid,
     /// it is a conflict of this kind and the stored record stays; invalid,
@@ -62,14 +84,18 @@ pub enum Proof {
     Conflict(Conflict),
 }
 
-/// What a replica holding `stored` does with `incoming`, sent under `key`.
-pub fn decide_locally(key: &Hash, stored: Option<&[u8]>, incoming: &[u8]) -> Local {
+/// What a replica that holds `held` does with `incoming`, sent under `key`.
+/// A position below one it remembers is stale, whatever the network says.
+pub fn decide_locally(key: &Hash, held: Held<'_>, incoming: &[u8]) -> Local {
     let form = match tree_form(key, incoming) {
         Ok(form) => form,
         Err(error) => return Local::Invalid(error),
     };
-    let Some(stored) = stored else {
-        return Local::AskNetwork(form);
+    let stored = match held {
+        Held::Nothing => return Local::AskNetwork(form),
+        Held::Marker(seq) if form.seq < seq => return Local::Stale { stored: seq },
+        Held::Marker(_) => return Local::AskNetwork(form),
+        Held::Record(stored) => stored,
     };
     if stored == incoming {
         return Local::AlreadyStored;
@@ -124,7 +150,7 @@ pub fn shows_higher(key: &Hash, seq: u64, claimed: &Hash, fetched: &[u8]) -> Opt
 /// For `Superseded` and `Conflict` the caller verifies the signature of
 /// `held`.
 pub fn shown_against(key: &Hash, published: &[u8], held: &[u8]) -> Proof {
-    match decide_locally(key, Some(held), published) {
+    match decide_locally(key, Held::Record(held), published) {
         Local::Stale { .. } => Proof::Superseded,
         Local::VerifyConflict(kind) => Proof::Conflict(kind),
         Local::Invalid(_)
@@ -156,9 +182,9 @@ mod tests {
         let mut doc = owner.doc(6, Some(&v5));
         doc[PROOF]["code"] = json!("not a code");
         let bad = sign(&doc, &owner.keys[6]);
-        for stored in [None, Some(v5.as_slice())] {
+        for held in [Held::Nothing, Held::Record(&v5)] {
             assert!(matches!(
-                decide_locally(&owner.key, stored, &bad),
+                decide_locally(&owner.key, held, &bad),
                 Local::Invalid(FormError::Field("code"))
             ));
         }
@@ -169,7 +195,7 @@ mod tests {
         let owner = TreeOwner::new(1);
         let v5 = owner.record(5, Some(b"4"));
         assert_eq!(
-            decide_locally(&owner.key, Some(&v5), &v5),
+            decide_locally(&owner.key, Held::Record(&v5), &v5),
             Local::AlreadyStored
         );
     }
@@ -179,9 +205,30 @@ mod tests {
         let owner = TreeOwner::new(1);
         let v5 = owner.record(5, Some(b"4"));
         assert!(matches!(
-            decide_locally(&owner.key, None, &v5),
+            decide_locally(&owner.key, Held::Nothing, &v5),
             Local::AskNetwork(TreeForm { seq: 5, .. })
         ));
+    }
+
+    /// A position below the one remembered after its record expired is stale
+    /// without asking anyone; that one or a higher one goes to the check.
+    #[test]
+    fn a_remembered_position_refuses_a_lower_one() {
+        let owner = TreeOwner::new(1);
+        let v5 = owner.record(5, Some(b"4"));
+        assert_eq!(
+            decide_locally(&owner.key, Held::Marker(6), &v5),
+            Local::Stale { stored: 6 }
+        );
+        for remembered in [4, 5] {
+            assert!(matches!(
+                decide_locally(&owner.key, Held::Marker(remembered), &v5),
+                Local::AskNetwork(TreeForm { seq: 5, .. })
+            ));
+        }
+        assert_eq!(Held::of(Some(&v5), Some(6)), Held::Record(&v5));
+        assert_eq!(Held::of(None, Some(6)), Held::Marker(6));
+        assert_eq!(Held::of(None, None), Held::Nothing);
     }
 
     /// Any higher position replaces the stored one, without the positions in
@@ -193,7 +240,7 @@ mod tests {
         for prev in [&v3[..], b"another record"] {
             let v5 = owner.record(5, Some(prev));
             assert_eq!(
-                decide_locally(&owner.key, Some(&v3), &v5),
+                decide_locally(&owner.key, Held::Record(&v3), &v5),
                 Local::VerifyAndReplace
             );
         }
@@ -205,7 +252,7 @@ mod tests {
         let v3 = owner.record(3, Some(b"2"));
         let v5 = owner.record(5, Some(&v3));
         assert_eq!(
-            decide_locally(&owner.key, Some(&v5), &v3),
+            decide_locally(&owner.key, Held::Record(&v5), &v3),
             Local::Stale { stored: 5 }
         );
     }
@@ -220,7 +267,7 @@ mod tests {
             6,
         );
         assert!(matches!(
-            decide_locally(&owner.key, Some(&v5), &forged),
+            decide_locally(&owner.key, Held::Record(&v5), &forged),
             Local::Invalid(FormError::NotInTree)
         ));
     }
@@ -232,14 +279,14 @@ mod tests {
         let signed_again = owner.record(5, Some(b"4"));
         assert_ne!(signed_again, v5, "ML-DSA signs with fresh randomness");
         assert_eq!(
-            decide_locally(&owner.key, Some(&v5), &signed_again),
+            decide_locally(&owner.key, Held::Record(&v5), &signed_again),
             Local::VerifyConflict(Conflict::RepeatedSigning)
         );
         let mut other = owner.doc(5, Some(b"4"));
         other["service"][0]["serviceEndpoint"] = json!("http://example.com/other");
         let other = sign(&other, &owner.keys[5]);
         assert_eq!(
-            decide_locally(&owner.key, Some(&v5), &other),
+            decide_locally(&owner.key, Held::Record(&v5), &other),
             Local::VerifyConflict(Conflict::Duplicity)
         );
     }

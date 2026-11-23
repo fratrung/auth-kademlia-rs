@@ -140,9 +140,12 @@ impl Server {
             loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;
 
-                let reclaimed = storage.prune_expired();
-                if reclaimed > 0 {
-                    log::debug!("Pruned {} expired storage records", reclaimed);
+                // Expiry writes the files of a persistent store.
+                let pruning = Arc::clone(&storage);
+                match tokio::task::spawn_blocking(move || pruning.prune_expired()).await {
+                    Ok(0) => {}
+                    Ok(reclaimed) => log::debug!("Pruned {} expired storage records", reclaimed),
+                    Err(error) => log::error!("prune: {error}"),
                 }
 
                 let (routing_size, live_size): (usize, usize) = {
@@ -223,6 +226,26 @@ impl Server {
                         .await;
                     seed_delay = (seed_delay * 2).min(REJOIN_BACKOFF_MAX);
                     next_seed_attempt = Instant::now() + with_jitter(seed_delay);
+                }
+            }
+        });
+    }
+
+    /// Write the renewals of a persistent store every `flush_interval`, on
+    /// the blocking pool: they wait for the device.
+    pub(super) fn schedule_flush(&self) {
+        let (Some(owner), true) = (&self.protocol, self.storage.is_persistent()) else {
+            return;
+        };
+        let storage = Arc::clone(&self.storage);
+        owner.spawn_task(async move {
+            loop {
+                tokio::time::sleep(storage.flush_interval()).await;
+                let flushing = Arc::clone(&storage);
+                match tokio::task::spawn_blocking(move || flushing.flush_renewals()).await {
+                    Ok(0) => {}
+                    Ok(written) => log::debug!("Wrote {} renewed records", written),
+                    Err(error) => log::error!("flush: {error}"),
                 }
             }
         });

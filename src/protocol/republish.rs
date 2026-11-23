@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use rand::seq::SliceRandom;
 
-use crate::auth_handler::rules::{decide_locally, Local};
+use crate::auth_handler::rules::{decide_locally, Held, Local};
 use crate::crawling::{NodeSpiderCrawl, RPCFindResponse, SpiderProtocol};
 use crate::node::Node;
 use crate::protocol::messages::StoreStatus;
@@ -90,7 +90,7 @@ impl KademliaProtocol {
     /// replica holding `held` would take it: a higher position, whose
     /// signature verifies, while `held` is still the stored record.
     async fn take_higher(&self, key: &[u8; ID_LEN], held: &[u8], record: Vec<u8>) -> bool {
-        if decide_locally(key, Some(held), &record) != Local::VerifyAndReplace {
+        if decide_locally(key, Held::Record(held), &record) != Local::VerifyAndReplace {
             return false;
         }
         if !self.verify_for_key(key, &record).await {

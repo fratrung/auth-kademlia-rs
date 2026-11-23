@@ -154,9 +154,12 @@ impl KademliaProtocol {
         }
         let source = Node::new(sender_id, Some(sender_addr.0), Some(sender_addr.1));
         self.schedule_welcome_if_new(source).await;
-        if self.storage.set(key.to_vec(), value) == StorageWriteStatus::CapacityExceeded {
+        if matches!(
+            self.storage.set(key.to_vec(), value),
+            StorageWriteStatus::CapacityExceeded | StorageWriteStatus::WriteFailed
+        ) {
             log::warn!(
-                "rpc_update_status_list: storage capacity exceeded for {}",
+                "rpc_update_status_list: the list of {} was not stored",
                 hex::encode(key)
             );
             return false;

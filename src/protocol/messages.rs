@@ -24,13 +24,16 @@ pub enum StoreStatus {
     Stale,
 }
 
-impl From<StorageWriteStatus> for StoreStatus {
-    fn from(status: StorageWriteStatus) -> Self {
+impl StoreStatus {
+    /// The answer to a STORE whose write ended with `status`; `None`, no
+    /// answer, when the record could not be made durable.
+    pub(crate) fn of_write(status: StorageWriteStatus) -> Option<Self> {
         match status {
-            StorageWriteStatus::Stored => Self::Stored,
-            StorageWriteStatus::AlreadyStored => Self::AlreadyStored,
-            StorageWriteStatus::Conflict => Self::Conflict,
-            StorageWriteStatus::CapacityExceeded => Self::CapacityExceeded,
+            StorageWriteStatus::Stored => Some(Self::Stored),
+            StorageWriteStatus::AlreadyStored => Some(Self::AlreadyStored),
+            StorageWriteStatus::Conflict => Some(Self::Conflict),
+            StorageWriteStatus::CapacityExceeded => Some(Self::CapacityExceeded),
+            StorageWriteStatus::WriteFailed => None,
         }
     }
 }

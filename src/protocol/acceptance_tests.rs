@@ -4,7 +4,7 @@
 //! `auth_handler/rules.rs`; here, that a replica gathers what they need, asks
 //! only when they say so, and writes only what they accept.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,7 +14,7 @@ use crate::auth_handler::test_tree::{body, sha256, sign, TreeOwner, PLACEHOLDER}
 use crate::node::Node;
 use crate::protocol::messages::{record_hash, rpc_message_name, RpcMessage, StoreStatus, WireNode};
 use crate::protocol::test_support::*;
-use crate::storage::{ForgetfulStorage, IStorage};
+use crate::storage::{ForgetfulStorage, IStorage, DEFAULT_MAX_STORAGE_BYTES};
 use crate::utils::ID_LEN;
 
 use super::KademliaProtocol;
@@ -592,4 +592,42 @@ async fn made_up_ids_cannot_get_a_forged_record_stored() {
     );
     assert!(asked(&seen).is_empty());
     assert_eq!(protocol.storage.get(&owner.key), None);
+}
+
+/// A replica whose 6 expired remembers its position: a replay of 5 is stale
+/// without asking anyone, 6 and 7 go through the check and are stored. Once
+/// the marker's own deadline has passed, 5 is a record like any other.
+#[tokio::test]
+async fn a_remembered_position_refuses_a_lower_one_without_asking() {
+    const TTL_MS: u64 = 100_000;
+    let owner = TreeOwner::new(1);
+    let v5 = owner.record(5, Some(b"4"));
+    let v6 = owner.record(6, Some(&v5));
+    let v7 = owner.record(7, Some(&v6));
+    let cases = [
+        (TTL_MS, &v5, StoreStatus::Stale),
+        (TTL_MS, &v6, StoreStatus::Stored),
+        (TTL_MS, &v7, StoreStatus::Stored),
+        (2 * TTL_MS, &v5, StoreStatus::Stored),
+    ];
+    for (elapsed, incoming, answer) in cases {
+        let time = Arc::new(AtomicU64::new(0));
+        let now = Arc::clone(&time);
+        let storage = ForgetfulStorage::in_memory(
+            100,
+            DEFAULT_MAX_STORAGE_BYTES,
+            Arc::new(move || now.load(Ordering::Relaxed)),
+        );
+        storage.set(owner.key.to_vec(), v6.clone());
+        time.store(elapsed, Ordering::Relaxed);
+        let (protocol, _) = replica_with(Arc::new(storage)).await;
+        let seen = neighbours(&protocol, owner.key, vec![Neighbour::Empty; 3]).await;
+        assert_eq!(store(&protocol, owner.key, incoming).await, Some(answer));
+        if answer == StoreStatus::Stale {
+            assert!(asked(&seen).is_empty());
+            assert_eq!(protocol.storage.get(&owner.key), None);
+        } else {
+            assert_eq!(protocol.storage.get(&owner.key), Some(incoming.clone()));
+        }
+    }
 }

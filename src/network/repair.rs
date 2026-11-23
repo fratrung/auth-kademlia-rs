@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::auth_handler::did::key_of_did;
-use crate::auth_handler::rules::{decide_locally, Local};
+use crate::auth_handler::rules::{decide_locally, Held, Local};
 use crate::auth_handler::tree::{tree_form, Hash};
 use crate::crawling::{SpiderProtocol, ValueSearch, ValueSpiderCrawl};
 use crate::node::Node;
@@ -75,14 +75,18 @@ impl Server {
             seq,
             key_hash: *key_hash,
         };
-        if let Some(held) = self.storage.get(&key) {
-            if expected.matches(&key, &held) {
-                return Some(held);
-            }
-            if tree_form(&key, &held).is_ok_and(|form| form.seq > seq) {
-                log::warn!("repair({}): this node holds a higher position", did);
-                return None;
-            }
+        let (held, marker) = self.storage.record_or_marker(&key);
+        let highest = match held {
+            Some(held) if expected.matches(&key, &held) => return Some(held),
+            Some(held) => tree_form(&key, &held).ok().map(|form| form.seq),
+            None => marker,
+        };
+        if highest.is_some_and(|highest| highest > seq) {
+            log::warn!(
+                "repair({}): this node holds or remembers a higher position",
+                did
+            );
+            return None;
         }
         let found = self.look_for(did, key, expected).await?;
         self.install(did, key, expected, found)
@@ -140,26 +144,41 @@ impl Server {
     /// supersedes it, meanwhile.
     fn install(&self, did: &str, key: Hash, expected: Expected, found: Vec<u8>) -> Option<Vec<u8>> {
         for _ in 0..2 {
-            let Some(held) = self.storage.get(&key) else {
-                match self.storage.insert_if_absent(key.to_vec(), found.clone()) {
-                    StorageWriteStatus::Stored | StorageWriteStatus::AlreadyStored => {
-                        return Some(found)
+            let (held, marker) = self.storage.record_or_marker(&key);
+            if let Some(held) = held.as_ref().filter(|held| expected.matches(&key, held)) {
+                return Some(held.clone());
+            }
+            match decide_locally(&key, Held::of(held.as_deref(), marker), &found) {
+                Local::AskNetwork(_) => {
+                    match self.storage.insert_if_absent(key.to_vec(), found.clone()) {
+                        StorageWriteStatus::Stored | StorageWriteStatus::AlreadyStored => {
+                            return Some(found)
+                        }
+                        StorageWriteStatus::Conflict => continue,
+                        StorageWriteStatus::CapacityExceeded | StorageWriteStatus::WriteFailed => {
+                            return None
+                        }
                     }
-                    StorageWriteStatus::CapacityExceeded => return None,
-                    StorageWriteStatus::Conflict => continue,
                 }
-            };
-            if expected.matches(&key, &held) {
-                return Some(held);
-            }
-            if decide_locally(&key, Some(&held), &found) != Local::VerifyAndReplace {
-                log::warn!("repair({}): this node now holds a higher position", did);
-                return None;
-            }
-            match self.storage.replace_if(&key, &held, found.clone()) {
-                ReplaceStatus::Replaced => return Some(found),
-                ReplaceStatus::CapacityExceeded => return None,
-                ReplaceStatus::Changed => continue,
+                Local::VerifyAndReplace => {
+                    let Some(held) = held else {
+                        continue;
+                    };
+                    match self.storage.replace_if(&key, &held, found.clone()) {
+                        ReplaceStatus::Replaced => return Some(found),
+                        ReplaceStatus::Changed => continue,
+                        ReplaceStatus::CapacityExceeded | ReplaceStatus::WriteFailed => {
+                            return None
+                        }
+                    }
+                }
+                _ => {
+                    log::warn!(
+                        "repair({}): this node holds or remembers a higher position",
+                        did
+                    );
+                    return None;
+                }
             }
         }
         None
@@ -268,5 +287,41 @@ mod tests {
         server.storage.set(owner.key.to_vec(), v7.clone());
         assert_eq!(server.repair(&owner.did, &v5, 6, &key_hash).await, None);
         assert_eq!(server.storage.get(&owner.key), Some(v7));
+    }
+
+    /// This node remembers 7 after it expired: a repair for 6 finds nothing.
+    #[tokio::test]
+    async fn a_repair_below_a_remembered_position_finds_nothing() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        use crate::storage::{ForgetfulStorage, DEFAULT_MAX_STORAGE_BYTES};
+
+        let owner = TreeOwner::new(1);
+        let v5 = owner.record(5, Some(b"4"));
+        let v6 = owner.record(6, Some(&v5));
+        let v7 = owner.record(7, Some(&v6));
+        let time = Arc::new(AtomicU64::new(0));
+        let now = Arc::clone(&time);
+        let storage = ForgetfulStorage::in_memory(
+            100,
+            DEFAULT_MAX_STORAGE_BYTES,
+            Arc::new(move || now.load(Ordering::Relaxed)),
+        );
+        storage.set(owner.key.to_vec(), v7);
+        time.store(100_000, Ordering::Relaxed);
+        let server = Server::new(
+            Arc::new(DIDSignatureVerifierHandler::new("unused")),
+            20,
+            3,
+            None,
+            Some(Arc::new(storage)),
+            false,
+        );
+        let key_hash = sha256(owner.keys[6].public_key());
+        assert_eq!(server.repair(&owner.did, &v5, 6, &key_hash).await, None);
+        assert_eq!(
+            server.install(&owner.did, owner.key, expected(&owner, 6), v6),
+            None
+        );
     }
 }
