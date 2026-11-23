@@ -27,6 +27,7 @@ use crate::signature_cache::{SignatureCache, VerificationDomain};
 use crate::utils::{digest, ID_LEN, STATUS_LIST_KEY};
 
 pub mod did;
+pub mod owner;
 pub mod rules;
 #[cfg(test)]
 pub(crate) mod test_chain;

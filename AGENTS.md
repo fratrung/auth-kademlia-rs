@@ -21,9 +21,9 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 342 tests
-cargo test --features counters       # 346: also the counters' own tests
-cargo test --features testbed        # 347: also the testbed's FindHash lie switch
+cargo test                           # all 346 tests
+cargo test --features counters       # 350: also the counters' own tests
+cargo test --features testbed        # 351: also the testbed's FindHash lie switch
 cargo test <name>                    # single test, e.g. test_update_did_record_key_rotation
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -131,6 +131,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/auth_handler/rules.rs` | The STORE and UPDATE rules as pure functions: `decide_locally` against the stored copy (R1, R3, R4), `decide_version_zero` and `check_claimed` (R2), `decide_successor` and `check_fetched` (R5), `store_quorum`, and `shown_against`, what a record proves against a version 0 (open point 27) |
 | `src/auth_handler/test_chain.rs` | Chains of versions for the unit tests, the DID computed as the Python application computes it |
 | `src/auth_handler/tree.rs` | ADR 0006, not yet wired into the rules: the leaf and node hashes, the tree and its paths (`Tree`, `root_from_path`), the genesis whose SHA-256 is the DID (`Genesis`), the hashed initial body, the document of a position as the owner completes it (`document_at`), and step 1 for a record under a tree (`tree_form`: no signature) |
+| `src/auth_handler/owner.rs` | The owner's side of a tree in memory (`OwnerTree`): the keys and codes of the 64 positions from seeds, the genesis of a DID, and the signed record of a position from its draft body, checked by `tree_form` before it leaves; `signed_record` builds the record layout |
 | `src/auth_handler/test_tree.rs` | The 64 positions of one DID for the unit tests of ADR 0006, the tree and the DID computed with `sha2` alone |
 | `src/crypto/signature_verifier.rs` | `SignatureVerifier` trait, `resolve_alg_and_length()`, algorithm registry |
 | `src/crypto/factory.rs` | `SignatureVerifierFactory` + `SignerFactory` — dispatch by algorithm string |
@@ -370,7 +371,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/scenarios/crypto.rs` | 4 | End-to-end crypto invariants (tamper, injection, downgrade, revocation) |
 | `tests/quorum_tests.rs` | 20 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum, delayed UPDATE commit, retry of an applied UPDATE, UPDATE to replicas without the record, and the network check of a STORE to an empty replica |
 | `tests/chain_tests.rs` | 14 | Chains of versions over real UDP (ADR 0005): `set` refuses a later version, forged versions at empty replicas, the replay below the quorum and to replicas behind, the closed gap, version 0 signed twice, refusals of `set` that count only once shown |
-| `src/**` (inline) | 220 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID derivation with a Python test vector, the Merkle tree and genesis of ADR 0006 with a Python test vector, the STORE and UPDATE rules, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 4 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
+| `src/**` (inline) | 224 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID derivation with a Python test vector, the Merkle tree and genesis of ADR 0006 with a Python test vector, the STORE and UPDATE rules, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 4 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 
