@@ -1,8 +1,8 @@
 //! Integration tests for the cryptographic layer.
 //!
 //! Context: every record stored in the DHT carries an algorithm tag, a raw
-//! signature, and a DID Document. A node accepts only ML-DSA-65 records (ADR
-//! 0003), the only algorithm `crypto/` implements.
+//! signature, and a DID Document. A node accepts only ML-DSA-65 records,
+//! the only algorithm `crypto/` implements.
 //!
 //! These tests cover:
 //!   1. Sign-then-verify round-trips for ML-DSA-65.
@@ -284,7 +284,7 @@ fn test_did_handler_accepts_record_bound_to_requested_key() {
         handler
             .handle_key_binding_verification(&key_of(&did), &record)
             .unwrap(),
-        "version 0 must bind to the key of its DID, the hash of its document"
+        "position 0 must bind to the key of its DID, the hash of its genesis"
     );
 }
 
@@ -321,8 +321,8 @@ fn test_did_handler_rejects_a_did_that_is_not_a_canonical_suffix() {
     );
 }
 
-/// A DID that is a UUID (ADR 0004) binds to no key since ADR 0005: neither the
-/// SHA-256 of the UUID nor anything else.
+/// A DID that is a UUID binds to no key: neither the SHA-256 of the UUID nor
+/// anything else.
 #[test]
 fn test_did_handler_rejects_a_uuid_did() {
     let sk = MlDsa65KeyPair::generate().unwrap();
@@ -389,7 +389,7 @@ fn test_did_handler_rejects_malformed_record() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ML-DSA-65 records (ADR 0003)
+// ML-DSA-65 records
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// The signature length of a record comes from the crate, not from a literal,

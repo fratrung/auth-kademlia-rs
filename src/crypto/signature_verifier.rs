@@ -32,8 +32,8 @@ pub trait Signer: Send + Sync {
 }
 
 /// Resolve the algorithm name of a record header into
-/// `(algorithm_name, signature_byte_length)`. The only algorithm is ML-DSA-65
-/// (ADR 0003).
+/// `(algorithm_name, signature_byte_length)`. The only algorithm is
+/// ML-DSA-65.
 ///
 /// The header must use the exact spelling. Accepting whitespace, zero-padded
 /// levels, or other aliases would make distinct byte strings authenticate as

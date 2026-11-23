@@ -1,6 +1,6 @@
 /// Node and NodeHeap — core Kademlia data structures.
 ///
-/// `Node` represents a single peer identified by a 256-bit id (ADR 0004).
+/// `Node` represents a single peer identified by a 256-bit id.
 /// `NodeHeap` holds the nodes met during an iterative lookup, ordered by XOR
 /// distance from a pivot node; reads see the closest `maxsize`.
 use std::collections::HashSet;

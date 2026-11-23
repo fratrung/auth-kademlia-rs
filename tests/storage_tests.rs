@@ -181,7 +181,7 @@ fn test_multiple_independent_keys() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// replace_if: replace only the record that was checked (ADR 0005)
+// replace_if: replace only the record that was checked
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// The expected bytes are replaced, with a fresh expiry, and the byte count

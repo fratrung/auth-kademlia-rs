@@ -3,8 +3,8 @@
 /// Mirrors the Python `KeyManager` ABC and its implementation
 /// `MlDsaKeyManager`.
 ///
-/// `MlDsaKeyManager` handles ML-DSA-65 only, the algorithm of every record
-/// (ADR 0003). `MlKemKeyManager` gives out one ML-KEM-768 key pair per
+/// `MlDsaKeyManager` handles ML-DSA-65 only, the algorithm of every record.
+/// `MlKemKeyManager` gives out one ML-KEM-768 key pair per
 /// handshake and keeps it in memory only: it is no `KeyManager`, and has no
 /// key file.
 ///
@@ -107,7 +107,7 @@ impl MlDsaKeyManager {
 
     /// The `(public_key, private_key)` pair of a 32-byte ML-DSA-65 seed
     /// (FIPS 204, Algorithm 6): the same seed gives the same pair, so the
-    /// owner keeps only the seed of its next key (ADR 0005, open point 22).
+    /// owner keeps only the seed of each position's key.
     /// The private key is the expanded one `sign` takes.
     pub fn keypair_from_seed(&self, seed: &[u8]) -> Result<(Vec<u8>, Vec<u8>), KeyManagerError> {
         let key = MlDsa65KeyPair::from_seed(seed)?;
@@ -175,7 +175,7 @@ impl KeyManager for MlDsaKeyManager {
     }
 }
 
-/// How long an ephemeral ML-KEM key pair given out stays usable (ADR 0003).
+/// How long an ephemeral ML-KEM key pair given out stays usable.
 pub const EPHEMERAL_KEY_MAX_AGE: Duration = Duration::from_secs(30);
 
 /// How many ephemeral ML-KEM key pairs may be given out at once, by default.
@@ -197,7 +197,7 @@ impl fmt::Debug for SharedSecret {
 }
 
 /// ML-KEM-768 (FIPS 203) with ephemeral keys, for the handshake between
-/// devices, outside the DHT (ADR 0003).
+/// devices, outside the DHT.
 ///
 /// Each handshake gets its own key pair. `ephemeral_public_key` gives one out
 /// under an id; `decapsulate` uses it once and destroys it, whatever the

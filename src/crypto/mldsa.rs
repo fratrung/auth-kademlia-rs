@@ -1,4 +1,4 @@
-//! ML-DSA-65 (FIPS 204), the signature of every record (ADR 0003), from
+//! ML-DSA-65 (FIPS 204), the signature of every record, from
 //! `aws-lc-rs`: AWS-LC, whose ML-DSA is `mldsa-native`.
 //!
 //! Pure ML-DSA with an empty context string: `aws-lc-rs` signs and verifies
@@ -45,8 +45,8 @@ impl MlDsa65KeyPair {
     pub const SEED_LEN: usize = 32;
 
     /// The key pair of a 32-byte seed (FIPS 204, `ML-DSA.KeyGen_internal`): the
-    /// same seed always gives the same key pair. The owner keeps the next key
-    /// as its seed (ADR 0005, open point 22).
+    /// same seed always gives the same key pair, so the owner keeps only the
+    /// seed of each position's key.
     pub fn from_seed(seed: &[u8]) -> Result<Self, VerifierError> {
         PqdsaKeyPair::from_seed(&ML_DSA_65_SIGNING, seed)
             .map(Self)

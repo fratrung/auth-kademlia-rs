@@ -58,7 +58,7 @@ base64             = "0.22"
 hex                = "0.4"
 rand               = "0.8"
 
-# AWS-LC (ADR 0003): ML-DSA-65 for records, SHA-256, and ephemeral
+# AWS-LC: ML-DSA-65 for records, SHA-256, and ephemeral
 # ML-KEM-768 in the key manager
 aws-lc-rs          = { version = "1.19", default-features = false, features = ["aws-lc-sys", "alloc"] }
 

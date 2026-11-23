@@ -61,7 +61,7 @@ fn now_secs() -> u64 {
 
 /// The whole key space `[0, 2^256 - 1]`, the Python `KBucket(0, 2**256)`.
 /// Python's upper bound is exclusive; here it is inclusive, because 2^256
-/// is not a `U256` (ADR 0004).
+/// is not a `U256`.
 fn full_keyspace() -> RangeInclusive<U256> {
     U256::zero()..=U256::MAX
 }
@@ -775,7 +775,7 @@ mod tests {
     }
 
     /// The first bucket covers the whole key space, up to 2^256 - 1, the
-    /// largest `U256` (ADR 0004); it splits into two halves that meet without
+    /// largest `U256`; it splits into two halves that meet without
     /// a gap.
     #[test]
     fn the_whole_key_space_splits_into_two_halves() {

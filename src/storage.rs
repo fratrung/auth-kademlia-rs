@@ -47,8 +47,8 @@ pub trait IStorage: Send + Sync {
 
     /// Atomically replace `expected` with `new` under `key`, only if `key`
     /// still holds `expected` and it has not expired: a compare-and-swap, so
-    /// that a replica replaces only the record it checked (ADR 0005, open
-    /// point 14). The new value gets a fresh expiry.
+    /// that a replica replaces only the record it checked. The new value
+    /// gets a fresh expiry.
     fn replace_if(&self, key: &[u8], expected: &[u8], new: Vec<u8>) -> ReplaceStatus;
 
     /// Retrieve a value, returning `default` if the key is absent.

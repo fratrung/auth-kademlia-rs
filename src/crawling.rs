@@ -270,8 +270,8 @@ impl<P: SpiderProtocol> SpiderCrawl<P> {
 
 /// Iterative lookup that terminates when a value is found or the network is
 /// exhausted. It only reads: unlike Kademlia §2.3, it stores no copy of the
-/// value it found at the nearest node that lacked it (ADR 0005, open point
-/// 15), since that copy would be one the reader neither chose nor verified.
+/// value it found at the nearest node that lacked it, since that copy would
+/// be one the reader neither chose nor verified.
 pub struct ValueSpiderCrawl<P: SpiderProtocol> {
     pub base: SpiderCrawl<P>,
 }
