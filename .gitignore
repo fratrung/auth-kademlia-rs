@@ -20,17 +20,10 @@ stats_result.md
 stats.json
 docker-compose.override.yml
 degradation.json
-code_review.md
 TODO.md
-dht_robustness_issues.md
 
 # Testbed: generated compose file and configuration
 testbed/.generated/
 
 # Session resume notes (AGENTS.md), deleted at the start of the next session
 RESUME_BEFORE_COMPACT.md
-
-# Notes of agent sessions and reviews, kept out of the repository
-/adr-*-review.md
-/adr-*-analysis.md
-/dht_sequence_freshness_spec.md

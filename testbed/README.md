@@ -200,7 +200,6 @@ and the owner replays the versions it missed. Before ADR 0005 nothing repaired
 it, and on 2026-11-03 this run also showed the owner locked out: while node-10 was
 frozen, node-3 entered the k closest and took a copy; once node-10 came back,
 node-3 left them, its copy stayed behind, and its next rotation was refused.
-Both are P3 defects in `dht_robustness_issues.md`.
 
 ## Attack mode
 
