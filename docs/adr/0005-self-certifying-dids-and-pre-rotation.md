@@ -2,7 +2,11 @@
 
 Status: Accepted, 2026-11-11 (proposed 2026-11-09). It supersedes ADR 0002,
 and amends ADR 0004: the part that makes the DID a canonical UUID. The rest
-of ADR 0004 (SHA-256, 256-bit ids and keys) stays.
+of ADR 0004 (SHA-256, 256-bit ids and keys) stays. Amended by ADR 0006,
+2026-11-23: the DID is the hash of a genesis, each key is committed in a
+Merkle tree instead of a chain of versions, and the `Update` request and
+the quorum of the network check are gone; canonical JSON, the DID suffix
+and the rules that ADR 0006 keeps (its point 11) stay.
 
 ## Context
 

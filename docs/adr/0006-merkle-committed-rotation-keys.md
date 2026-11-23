@@ -1,6 +1,8 @@
 # 0006. Commit a DID's rotation keys in a Merkle tree
 
-Status: Proposed. The discussion so far covers records within the first tree.
+Status: Accepted, 2026-11-23 (proposed 2026-11-23). It covers records within
+the first tree; migration between trees is not in this ADR. It replaces the
+record format of ADR 0005 (point 11).
 
 ## Context
 
@@ -503,7 +505,7 @@ the published record and proof.
 
 ### 9. Local-first DID lookup and network-only repair
 
-**DHT contract.** Ordinary DID GET returns an unexpired, verified local
+**Decided, 2026-11-23.** Ordinary DID GET returns an unexpired, verified local
 record immediately. On a local miss it uses the normal network lookup and
 respects any live minimum position from point 6. The Status List retains
 its existing DHT read policy.
@@ -672,14 +674,50 @@ bytes) and the canonical JSON document. The document at position 5:
   only on hashes, so a Python script with `hashlib` and `json` alone
   recomputes it.
 
-The record grows by about 0.55 KB, possibly one more KADF fragment: to be
-measured.
+The record grows by about 0.55 KB: about 7.0 KB in 6 KADF fragments,
+against about 6.5 KB in 5 under ADR 0005. Measured on the testbed on
+2026-11-23 (`EXPERIMENTS.md`, E2), a first publication at `k` = 20 sends
+1.5% more, about 9 KiB, one more fragment in each of its 20 STOREs, and a
+read 4 to 9% more. The latency of a publication does not change (E1).
 
-Still to specify for the handoff:
+**Decided, 2026-11-23: the handoff.**
 
-- the Python recovery API;
-- the per-case tests, the threat table and the documentation amendments
-  of the repository.
+- The Python recovery API is the repair call of point 9:
+  `Server.repair(did, failed_record, seq, key_hash)` returns the record it
+  installed, or `None`, and raises `ValueError` when `key_hash` is not 32
+  bytes. The caller passes the record it was served, which keeps the call
+  from going below what the caller already holds. The owner's side is the
+  `Custody` class of point 1.
+- The per-case tests are the acceptance cases of points 1, 5, 6 and 9 and
+  the STORE rules of points 2 to 4, run against a clock the tests move and
+  against neighbours whose answers the tests choose. `AGENTS.md`,
+  `DESIGN.md`, the changelog and `docs/integration.md` describe the result.
+- The threat table below names, for each threat inside the scope of the
+  DHT, what stops it, the tests that check it, and the testbed experiment
+  that measured it (`EXPERIMENTS.md`, 127 nodes, `k` = 20, unless the
+  experiment says otherwise).
+
+| Threat | What stops it | Tests | Testbed |
+|---|---|---|---|
+| A record signed by a key outside the tree | `tree_form` before any lookup or signature: the leaf of its key and code does not reach the root the DID commits to (`InvalidRecord`) | `a_forged_record_is_invalid_whatever_the_network_says`, `made_up_ids_cannot_get_a_forged_record_stored`, `test_rotation_rejected_when_signed_by_a_key_outside_the_tree` | A1, A2, A3: no forged record stored |
+| A flood of forged STOREs | The same form check, so a forged record starts no lookup and costs no signature check | `a_record_that_fails_the_form_is_invalid_before_anything_else` | A2: every forged STORE but 146 answered |
+| The replay of a superseded genuine record | A holder refuses a lower position (`Stale`); an empty replica stores it only if no node shows a higher one; the marker of an expired record (point 6); the repair of a reader (point 9) | `a_holder_decides_alone_by_position`, `an_old_genuine_record_is_stored_only_where_nothing_higher_is_shown`, `a_remembered_position_refuses_a_lower_one_without_asking`, `downgrade_attack_after_rotation_rejected` | E4, L2 |
+| Nodes that claim a higher position they cannot show, under any number of ids | A claim refuses nothing; only a fetched, verified higher record does (point 2) | `a_claim_that_is_not_shown_refuses_nothing`, `made_up_ids_at_one_address_cannot_block_a_record`, `one_shown_higher_position_refuses_and_is_stored` | A4, L1: up to 18 liars block nothing |
+| Answers spoofed for the nodes asked | Message ids drawn at random; an answer spoofed under the ids read on the wire has the power of a liar only | `a_thousand_requests_in_a_row_do_not_get_consecutive_ids`, `an_id_a_pending_request_holds_is_not_given_out_again` | A5 |
+| Two records at one position | A holder keeps the first (`Conflict`, point 3); the owner signs each position once and resends the same bytes (point 4) | `another_record_at_the_stored_position_leaves_the_stored_one`, `two_records_at_once_at_one_position_leave_exactly_one`, `a_retry_in_the_same_slot_gives_the_same_bytes` | |
+| The theft of the current key | Each later position needs its own key and its own code, which stay secret until it is published | `revoked_key_cannot_authorise_further_rotation`, `a_record_with_another_code_fails_the_tree_though_its_signature_verifies` | |
+| The owner reusing a position, after a restart or with the clock set back | The custody writes the highest activated position durably before it returns a record, and signs nothing below it (point 1) | `a_restart_in_slot_5_after_publishing_2_prepares_5_after_2`, `a_clock_set_back_reopens_no_position` | |
+| An early activation without authority | The application's verifier checks the issuer's authorization; it reaches only the next position that is not skipped | `a_position_is_never_signed_before_its_slot_without_an_authorization`, `an_authorization_holds_once_for_its_did_and_position`, `an_authorization_never_reaches_a_skipped_lower_or_reserved_position` | |
+| Reading the custody's files | Files readable by the owner's user only; the secrets below a published position are erased | `only_the_owner_can_read_the_custody`, `publishing_erases_the_secrets_below_the_published_position` | |
+| A replica losing its records in a crash or a power cut | A durable write before the replica acknowledges, no answer when the write fails (point 5) | `a_restarted_replica_serves_its_record_with_no_peer`, `a_replica_that_cannot_write_does_not_confirm_the_record` | D1: no copy lost |
+| A restarted replica spreading a superseded record | It sends its records to the nodes it meets only once the lookup of its own id is over | `a_node_that_starts_with_records_sends_them_only_once_it_has_joined`, `a_restarted_replica_sends_its_records_only_once_it_has_joined` | D1: 2520 of 2520 reads current, 461 older before the fix |
+| A reader served a superseded record | The application compares the key with its credential and calls the repair (point 9) | `a_reader_repairs_its_record_and_then_serves_the_new_one_locally`, `a_repair_without_the_expected_record_keeps_the_served_one`, `a_repair_below_a_remembered_position_finds_nothing` | L3: no forged record read |
+
+Outside the DHT's scope, as `DESIGN.md` (section 2) states: an attacker that
+controls every node close to a DID, which can choose which of the owner's
+records that DID resolves to but cannot forge one; the binding between a DID
+and a device, which the credential makes; and the authentication of a
+session, in the protocol repository.
 
 Tree migration is deferred as described in the scope above.
 
