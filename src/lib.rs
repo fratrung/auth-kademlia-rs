@@ -2,6 +2,7 @@ pub mod auth_handler;
 pub mod counters;
 pub mod crawling;
 pub mod crypto;
+pub mod custody;
 mod durable;
 pub mod fragmentation;
 pub mod network;

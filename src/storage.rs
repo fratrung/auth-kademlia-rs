@@ -99,7 +99,7 @@ pub trait IStorage: Send + Sync {
 /// Milliseconds since the Unix epoch.
 pub(crate) type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
-fn system_clock() -> u64 {
+pub(crate) fn system_clock() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| {

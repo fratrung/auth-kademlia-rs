@@ -49,6 +49,7 @@ use crate::crypto::key_manager::{
     KeyManager, KeyManagerError, MlDsaKeyManager, MlKemKeyManager, EPHEMERAL_KEY_MAX_AGE,
     MAX_EPHEMERAL_KEYS,
 };
+use crate::custody::{ActivationVerifier, Calendar, Custody, CustodyError, Due, FileCustody};
 use crate::network::{Server, ServerStats, SetOutcome, SetRejection, SetReport};
 use crate::storage::{ForgetfulStorage, DEFAULT_TTL};
 use crate::utils::ID_LEN;
@@ -664,6 +665,211 @@ impl PyMlKemKeyManager {
     }
 }
 
+/// An authorization check written in Python: ``verifier(did, position,
+/// authorization) -> bool``. An exception refuses.
+struct PyActivationVerifier(PyObject);
+
+impl ActivationVerifier for PyActivationVerifier {
+    fn verify(&self, did: &str, position: u64, authorization: &[u8]) -> bool {
+        Python::with_gil(|py| {
+            let authorization = PyBytes::new_bound(py, authorization);
+            self.0
+                .call1(py, (did, position, authorization))
+                .and_then(|answer| answer.bind(py).is_truthy())
+                .unwrap_or_else(|error| {
+                    log::warn!("custody: the activation verifier raised: {error}");
+                    false
+                })
+        })
+    }
+}
+
+fn custody_err(error: CustodyError) -> PyErr {
+    match error {
+        CustodyError::Io(_) | CustodyError::Damaged(_) | CustodyError::Exists(_) => {
+            PyRuntimeError::new_err(error.to_string())
+        }
+        _ => PyValueError::new_err(error.to_string()),
+    }
+}
+
+fn parse_template(template: &str) -> PyResult<serde_json::Value> {
+    serde_json::from_str(template)
+        .map_err(|error| PyValueError::new_err(format!("the template is not JSON: {error}")))
+}
+
+/// The owner's custody of one DID, kept in a directory: the seeds and codes
+/// of its 64 positions, the calendar of its rotations, the highest position
+/// activated, and the records prepared and published.
+///
+/// No method returns a private key, a seed, or a code that no record has
+/// released. A position is signed once, when it is due; the record carries
+/// its code.
+#[pyclass(name = "Custody")]
+pub struct PyCustody {
+    inner: Arc<FileCustody>,
+}
+
+#[pymethods]
+impl PyCustody {
+    /// The custody kept in ``dir``.
+    ///
+    /// Raises:
+    ///     RuntimeError: the directory holds no custody, or its files are
+    ///         damaged.
+    #[new]
+    fn open(py: Python<'_>, dir: String) -> PyResult<Self> {
+        let custody = py
+            .allow_threads(|| FileCustody::open(dir))
+            .map_err(custody_err)?;
+        Ok(Self {
+            inner: Arc::new(custody),
+        })
+    }
+
+    /// A new DID in ``dir``: fresh seeds and codes, and the record of
+    /// position 0 from ``template``, prepared (``pending()``). Position 0
+    /// starts at ``start_secs`` (Unix time); one position falls due every
+    /// ``interval_secs``.
+    ///
+    /// ``template`` is the JSON text of the document without ``id``,
+    /// ``seq``, ``prev``, ``treeProof`` and the ``pub`` of its key, with
+    /// ``did:iiot:self`` wherever it names its own DID. The custody fills
+    /// them in.
+    ///
+    /// Raises:
+    ///     ValueError: a zero interval, or a template that is not JSON or
+    ///         holds a field the custody fills in.
+    ///     RuntimeError: ``dir`` already holds a custody, or cannot be
+    ///         written.
+    #[staticmethod]
+    fn provision(
+        py: Python<'_>,
+        dir: String,
+        template: String,
+        start_secs: u64,
+        interval_secs: u64,
+    ) -> PyResult<Self> {
+        let millis = |secs: u64| {
+            secs.checked_mul(1000)
+                .ok_or_else(|| PyValueError::new_err("time out of range"))
+        };
+        let calendar = Calendar::new(millis(start_secs)?, millis(interval_secs)?)
+            .ok_or_else(|| PyValueError::new_err("the interval must be positive"))?;
+        let template = parse_template(&template)?;
+        let custody = py
+            .allow_threads(|| FileCustody::provision(dir, calendar, &template))
+            .map_err(custody_err)?;
+        Ok(Self {
+            inner: Arc::new(custody),
+        })
+    }
+
+    /// The DID: ``did:iiot:`` and the base64url SHA-256 of its genesis.
+    #[getter]
+    fn did(&self) -> String {
+        self.inner.did()
+    }
+
+    /// What can be signed now, as a ``dict``: ``status`` is ``due`` with
+    /// the ``position`` to prepare, ``skipped`` when the position due was
+    /// skipped, or ``exhausted`` when the DID can rotate no more
+    /// (``position`` is then ``None``).
+    fn due<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let due = py.allow_threads(|| self.inner.due());
+        let (status, position) = match due {
+            Due::Position(position) => ("due", Some(position)),
+            Due::Skipped(position) => ("skipped", Some(position)),
+            Due::Exhausted => ("exhausted", None),
+        };
+        let dict = PyDict::new_bound(py);
+        dict.set_item("status", status)?;
+        dict.set_item("position", position)?;
+        Ok(dict)
+    }
+
+    /// The record of ``position``, due now, from ``template``: a new one
+    /// above the highest position activated, kept as ``pending()``; the
+    /// same bytes again for the highest, if ``template`` is unchanged.
+    ///
+    /// Raises:
+    ///     ValueError: ``position`` is not due, is already signed from
+    ///         another template, or the template is invalid.
+    ///     RuntimeError: the custody files cannot be read or written.
+    fn prepare<'py>(
+        &self,
+        py: Python<'py>,
+        position: u64,
+        template: String,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let template = parse_template(&template)?;
+        py.allow_threads(|| self.inner.prepare(position, &template))
+            .map(|record| PyBytes::new_bound(py, &record))
+            .map_err(custody_err)
+    }
+
+    /// The record of ``position`` before its slot, when the current key has
+    /// leaked: only the next position that can be activated, and only if
+    /// ``verifier(did, position, authorization)`` returns true. The
+    /// verifier is called before anything is signed; an exception refuses.
+    ///
+    /// Raises:
+    ///     ValueError: ``position`` is not the next one, or the verifier
+    ///         refused.
+    ///     RuntimeError: the custody files cannot be read or written.
+    fn activate_early<'py>(
+        &self,
+        py: Python<'py>,
+        position: u64,
+        template: String,
+        authorization: Vec<u8>,
+        verifier: PyObject,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let template = parse_template(&template)?;
+        let verifier = PyActivationVerifier(verifier);
+        py.allow_threads(|| {
+            self.inner
+                .activate_early(position, &template, &authorization, &verifier)
+        })
+        .map(|record| PyBytes::new_bound(py, &record))
+        .map_err(custody_err)
+    }
+
+    /// Never sign ``position`` nor release its code, across restarts: its
+    /// key has leaked. Only a position above the highest activated.
+    fn skip(&self, py: Python<'_>, position: u64) -> PyResult<()> {
+        py.allow_threads(|| self.inner.skip(position))
+            .map_err(custody_err)
+    }
+
+    /// The record prepared and not yet published, or ``None``.
+    fn pending<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
+        self.inner
+            .pending()
+            .map(|record| PyBytes::new_bound(py, &record))
+    }
+
+    /// The record published last, to send again at least once a day, or
+    /// ``None`` before the first publication.
+    fn published<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
+        self.inner
+            .published()
+            .map(|record| PyBytes::new_bound(py, &record))
+    }
+
+    /// ``record``, the one prepared, has reached the network: it becomes
+    /// the published record, and the secrets of the positions below it
+    /// are erased.
+    ///
+    /// Raises:
+    ///     ValueError: ``record`` is not the record prepared.
+    ///     RuntimeError: the custody files cannot be written.
+    fn mark_published(&self, py: Python<'_>, record: Vec<u8>) -> PyResult<()> {
+        py.allow_threads(|| self.inner.mark_published(&record))
+            .map_err(custody_err)
+    }
+}
+
 /// Ensure the Tokio runtime uses a bounded blocking thread pool.
 ///
 /// Runtime configuration is automatic at module import and server creation.
@@ -687,5 +893,6 @@ fn authkademlia_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyServer>()?;
     m.add_class::<PyMlDsaKeyManager>()?;
     m.add_class::<PyMlKemKeyManager>()?;
+    m.add_class::<PyCustody>()?;
     Ok(())
 }

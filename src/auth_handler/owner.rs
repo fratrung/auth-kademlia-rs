@@ -12,7 +12,8 @@ use crate::crypto::signature_verifier::VerifierError;
 
 use super::did::{canonical_bytes, FormError};
 use super::tree::{
-    document_at, draft_body_hash, leaf_hash, tree_form, Genesis, Hash, Tree, CODE_LEN, POSITIONS,
+    document_at, draft_body_hash, leaf_hash, tree_form, Genesis, Hash, Tree, CODE_LEN, PATH_LEN,
+    POSITIONS,
 };
 use super::RECORD_ALGORITHM;
 
@@ -125,11 +126,24 @@ impl OwnerTree {
         ) else {
             return Err(OwnerError::Position(position));
         };
-        let document = canonical_bytes(&document_at(draft, genesis, code, &path)?)?;
-        let record = signed_record(&key.sign(&document)?, &document);
-        tree_form(&genesis.key(), &record)?;
-        Ok(record)
+        sign_position(genesis, draft, key, code, &path)
     }
+}
+
+/// The record of a position from its draft body, its key, code and path:
+/// completed with the DID and the proof, signed, and checked as a replica
+/// checks it before it leaves.
+pub(crate) fn sign_position(
+    genesis: &Genesis,
+    draft: &Value,
+    key: &MlDsa65KeyPair,
+    code: &[u8; CODE_LEN],
+    path: &[u8; PATH_LEN],
+) -> Result<Vec<u8>, OwnerError> {
+    let document = canonical_bytes(&document_at(draft, genesis, code, path)?)?;
+    let record = signed_record(&key.sign(&document)?, &document);
+    tree_form(&genesis.key(), &record)?;
+    Ok(record)
 }
 
 #[cfg(test)]

@@ -7,9 +7,9 @@
 //! a journaling file system such as ext4 a power cut then leaves the old
 //! file or the new one, never a mix of them.
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 4] = b"AKRS";
 const VERSION: u8 = 1;
@@ -64,18 +64,19 @@ impl DurableDir {
 
     fn replace(&self, key: &[u8], bytes: &[u8]) -> io::Result<()> {
         let temporary = self.path(key, TEMPORARY);
-        let mut file = File::create(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&temporary, self.path(key, EXTENSION))?;
-        self.sync_dir()
+        write_durably(
+            &self.dir,
+            &temporary,
+            &self.path(key, EXTENSION),
+            bytes,
+            false,
+        )
     }
 
     /// Remove the file of `key`, if any.
     pub(crate) fn remove(&self, key: &[u8]) -> io::Result<()> {
         match fs::remove_file(self.path(key, EXTENSION)) {
-            Ok(()) => self.sync_dir(),
+            Ok(()) => sync_dir(&self.dir),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error),
         }
@@ -107,13 +108,47 @@ impl DurableDir {
         }
         Ok(entries)
     }
+}
 
-    fn sync_dir(&self) -> io::Result<()> {
-        // A rename or a removal is durable once its directory is.
-        #[cfg(unix)]
-        File::open(&self.dir)?.sync_all()?;
-        Ok(())
+/// Make `target`, a file of `dir`, hold `bytes`: written to `temporary`,
+/// flushed to the device, renamed over `target`, and the directory
+/// flushed. With `owner_only` only the owner of the process can read or
+/// write the file.
+pub(crate) fn write_durably(
+    dir: &Path,
+    temporary: &Path,
+    target: &Path,
+    bytes: &[u8],
+    owner_only: bool,
+) -> io::Result<()> {
+    // A temporary file left by a crash keeps its permissions when opened
+    // again: start from a new one.
+    match fs::remove_file(temporary) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+        _ => {}
     }
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if owner_only {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    #[cfg(not(unix))]
+    let _ = owner_only;
+    let mut file = options.open(temporary)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(temporary, target)?;
+    sync_dir(dir)
+}
+
+/// A rename or a removal is durable once its directory is.
+pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    File::open(dir)?.sync_all()?;
+    Ok(())
 }
 
 /// `| "AKRS" | version | kind | ... |`, integers big-endian: a record is its
