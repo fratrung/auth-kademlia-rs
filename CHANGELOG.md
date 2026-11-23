@@ -67,7 +67,9 @@ application.
   `DATA_DIR` in `dht_node`. A replica keeps each record in a file, written to
   the device before it acknowledges the record, and serves it again after a
   restart with the rest of its TTL; renewals are written every hour. A STORE
-  whose record cannot be written gets no answer. A node that starts with
+  whose record cannot be written gets no answer. Each file ends with the
+  SHA-256 of its other bytes, and a file that does not match it is not
+  loaded. A node that starts with
   records sends them to the nodes it meets only once the lookup of its own id
   is over, so that a restarted replica does not give a superseded record to
   nodes outside the `k` closest.

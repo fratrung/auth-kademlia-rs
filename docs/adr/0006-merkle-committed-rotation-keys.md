@@ -423,6 +423,20 @@ it renews. A delayed flush for 5 must never overwrite any part of 6. If a
 power cut loses a pending renewal, use the earlier durable expiry. Never
 restart the TTL from boot time. The batching interval remains configurable.
 
+**Amended, 2026-11-24: damaged files.** Each file ends with the SHA-256 of
+its other bytes, and a file that does not match it is not loaded. Records
+enter a replica's memory only verified, and the rules rely on it: a held
+record is kept against another at its position, and a repair returns a held
+record of the expected position and key without checking its signature. A
+byte the device changed in the signature of 6 left its form intact, so the
+restarted replica served it, refused the valid 6 as a conflict, and a
+repair returned it (found in a review, reproduced by
+`a_record_damaged_on_disk_is_not_returned_by_a_repair`). A changed marker
+would refuse the lower positions of a DID for a TTL. The hash costs
+microseconds per file, where verifying every record's signature at each
+start would cost one ML-DSA verification per record and still not cover
+markers. It does not stop a party that can write the files.
+
 At the ADR 0005 estimate of 6.5 KB per record, 20 DIDs require about 130 KB
 of record bytes before filesystem and ADR 0006 format overhead. A weekly
 rotation at every DID would add about 130 KB of new record payload writes
@@ -734,6 +748,7 @@ read 4 to 9% more. The latency of a publication does not change (E1).
 | An early activation without authority | The application's verifier checks the issuer's authorization; it reaches only the next position that is not skipped | `a_position_is_never_signed_before_its_slot_without_an_authorization`, `an_authorization_holds_once_for_its_did_and_position`, `an_authorization_never_reaches_a_skipped_lower_or_reserved_position` | |
 | Reading the custody's files | Files readable by the owner's user only; the secrets below a published position are erased | `only_the_owner_can_read_the_custody`, `publishing_erases_the_secrets_below_the_published_position` | |
 | A replica losing its records in a crash or a power cut | A durable write before the replica acknowledges, no answer when the write fails (point 5) | `a_restarted_replica_serves_its_record_with_no_peer`, `a_replica_that_cannot_write_does_not_confirm_the_record` | D1: no copy lost |
+| A record or a marker damaged on the replica's disk | The SHA-256 at the end of each file; a file that does not match it is not loaded (point 5) | `a_file_whose_bytes_changed_is_skipped_and_kept`, `a_record_damaged_on_disk_is_not_returned_by_a_repair` | |
 | A restarted replica spreading a superseded record | It sends its records to the nodes it meets only once the lookup of its own id is over | `a_node_that_starts_with_records_sends_them_only_once_it_has_joined`, `a_restarted_replica_sends_its_records_only_once_it_has_joined` | D1: 2520 of 2520 reads current, 461 older before the fix |
 | A reader served a superseded record | The application compares the key with its credential and calls the repair (point 9) | `a_reader_repairs_its_record_and_then_serves_the_new_one_locally`, `a_repair_without_the_expected_record_keeps_the_served_one`, `a_repair_below_a_remembered_position_finds_nothing` | L3: no forged record read |
 

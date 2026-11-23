@@ -21,9 +21,9 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 362 tests
-cargo test --features counters       # 365: also the counters' own tests
-cargo test --features testbed        # 366: also the testbed's FindHash lie switch
+cargo test                           # all 364 tests
+cargo test --features counters       # 367: also the counters' own tests
+cargo test --features testbed        # 368: also the testbed's FindHash lie switch
 cargo test <name>                    # single test, e.g. test_key_rotation_is_published_with_set
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -148,7 +148,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/crawling.rs` | Iterative lookup — `NodeSpiderCrawl` (find nodes) + `ValueSpiderCrawl` (find value; `search` with a deadline tells `NotFound` from `Incomplete`) |
 | `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `find_neighbors` returns the exact local top-k across known primary contacts, skipping failing ones (see Concurrency model); `touch_last_updated()` is called only for the bucket containing the lookup target — bucket staleness reflects lookup activity, not node additions |
 | `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day TTL and configurable byte budget (default 512 MiB), with lazy expiry on read; times in Unix milliseconds; `insert_if_absent` and `replace_if` (compare and swap under the entry); optionally persistent (`persistent`, `flush_renewals`); the marker of an expired DID record (`marker`, `record_or_marker`) |
-| `src/durable.rs` | The files of a persistent store, one per key: a record and its expiry, or a marker; atomic replacement (`write_durably`: temporary file, fsync, rename, fsync of the directory, also used by the custody) and loading |
+| `src/durable.rs` | The files of a persistent store, one per key: a record and its expiry, or a marker, followed by the SHA-256 of those bytes (a file that does not match is not loaded); atomic replacement (`write_durably`: temporary file, fsync, rename, fsync of the directory, also used by the custody) and loading |
 | `src/custody/mod.rs` | The owner's custody of a DID: the `Custody` trait, the `Calendar` (`floor((now - T) / D)`), `Activation` (highest activated, skipped positions, `due`, `next_early`), `ActivationVerifier`, and the template the application writes (`draft_of`, `template_of`) |
 | `src/custody/file.rs` | `FileCustody`: the custody in a directory (`tree`, `secrets`, `state`, owner-only), held by one instance at a time (`lock`, an exclusive `flock`), the record of a position signed when due and written as the highest activated before it is returned, early activation, skip, and the erasure of the secrets below a published record |
 | `src/custody/acceptance_tests.rs` | The custody's acceptance cases on the file backend, with a clock the tests move |
@@ -351,7 +351,13 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
   the disk with the next flush (`DEFAULT_FLUSH_INTERVAL`, one hour): a power
   cut loses at most one interval of TTL, never a record. Expiries are wall
   clock times, so a record keeps the rest of its TTL across a restart; never
-  restart a TTL from boot time.
+  restart a TTL from boot time. Each file ends with the SHA-256 of its other
+  bytes, and `load` skips a file that does not match: records enter memory
+  only verified, and `decide_locally` (a held record kept against another at
+  its position) and `repair` (a held match returned) rely on it. Do not load
+  a file without the hash: a byte the device changed in a signature leaves
+  the form intact, and the replica served the damaged record, refused the
+  valid one as `Conflict`, and returned it from a repair.
 - **Marker**: once a DID record expires, its position is remembered for one
   more TTL from its expiry, in memory and in its file, charged to the
   budget. While it lives, a lower position is `Stale` without asking anyone
@@ -451,7 +457,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/quorum_tests.rs` | 16 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum and update, retry of a publication, a rotation that fills empty replicas, and the network check of a STORE to an empty replica |
 | `tests/repair_tests.rs` | 3 | Repair over real UDP: the expected record found, stored and served locally; no match without it; no answer |
 | `tests/chain_tests.rs` | 8 | Positions of one DID over real UDP: a rotation that reaches every replica, the owner restoring empty replicas, refusals of `set` that count only once shown, forged and old genuine records at empty replicas |
-| `src/**` (inline) | 244 | Module-level `#[test]` blocks (incl. the custody's acceptance cases and calendar, persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
+| `src/**` (inline) | 246 | Module-level `#[test]` blocks (incl. the custody's acceptance cases and calendar, persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 

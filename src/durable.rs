@@ -6,16 +6,27 @@
 //! the device, renaming it over the old one and flushing the directory. On
 //! a journaling file system such as ext4 a power cut then leaves the old
 //! file or the new one, never a mix of them.
+//!
+//! Each file ends with the SHA-256 of the bytes before it. A file whose
+//! bytes the device changed, such as a flipped bit on an SD card, is not
+//! loaded, as a file that cannot be read: the store would otherwise serve,
+//! and keep against valid copies, a record whose signature no longer
+//! verifies, or remember a position that was never accepted. A writer that
+//! can change the files can also recompute the hash: it is no defence
+//! against the host.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use crate::utils::{digest_bytes, ID_LEN};
+
 const MAGIC: &[u8; 4] = b"AKRS";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 const RECORD: u8 = 1;
 const MARKER: u8 = 2;
 const HEADER_LEN: usize = MAGIC.len() + 2;
+const CHECKSUM_LEN: usize = ID_LEN;
 const EXTENSION: &str = "rec";
 const TEMPORARY: &str = "tmp";
 
@@ -64,11 +75,13 @@ impl DurableDir {
 
     fn replace(&self, key: &[u8], bytes: &[u8]) -> io::Result<()> {
         let temporary = self.path(key, TEMPORARY);
+        let mut sealed = bytes.to_vec();
+        sealed.extend_from_slice(&digest_bytes(bytes));
         write_durably(
             &self.dir,
             &temporary,
             &self.path(key, EXTENSION),
-            bytes,
+            &sealed,
             false,
         )
     }
@@ -151,8 +164,9 @@ pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// `| "AKRS" | version | kind | ... |`, integers big-endian: a record is its
-/// expiry and its bytes, a marker its position and its deadline.
+/// `| "AKRS" | version | kind | ... | SHA-256 |`, integers big-endian: a
+/// record is its expiry and its bytes, a marker its position and its
+/// deadline, and the hash covers everything before it.
 fn header(kind: u8) -> Vec<u8> {
     let mut bytes = MAGIC.to_vec();
     bytes.push(VERSION);
@@ -161,7 +175,11 @@ fn header(kind: u8) -> Vec<u8> {
 }
 
 fn decode(bytes: &[u8]) -> Option<Stored> {
-    let (header, body) = bytes.split_at_checked(HEADER_LEN)?;
+    let (sealed, checksum) = bytes.split_at_checked(bytes.len().checked_sub(CHECKSUM_LEN)?)?;
+    if digest_bytes(sealed) != checksum {
+        return None;
+    }
+    let (header, body) = sealed.split_at_checked(HEADER_LEN)?;
     if &header[..MAGIC.len()] != MAGIC || header[MAGIC.len()] != VERSION {
         return None;
     }
@@ -280,6 +298,24 @@ mod tests {
         assert!(!half_written.exists());
     }
 
+    /// A byte changed on the device, in a record or in a marker: the file is
+    /// not loaded, and is left as it is.
+    #[test]
+    fn a_file_whose_bytes_changed_is_skipped_and_kept() {
+        let dir = TestDir::new();
+        let store = DurableDir::open(dir.path().to_path_buf()).unwrap();
+        store.write_record(&[1; 32], b"record", 7).unwrap();
+        store.write_marker(&[2; 32], 6, 42).unwrap();
+        for (key, at) in [([1u8; 32], HEADER_LEN + 8 + 2), ([2u8; 32], HEADER_LEN + 7)] {
+            let path = dir.path().join(format!("{}.rec", hex::encode(key)));
+            let mut bytes = std::fs::read(&path).unwrap();
+            bytes[at] ^= 0x01;
+            std::fs::write(&path, &bytes).unwrap();
+        }
+        assert!(store.load().unwrap().is_empty());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
     #[test]
     fn a_file_that_cannot_be_read_is_skipped() {
         let dir = TestDir::new();
@@ -287,7 +323,7 @@ mod tests {
         for bytes in [
             &b"AKRS"[..],
             b"XXXX\x01\x02",
-            b"AKRS\x02\x02",
+            b"AKRS\x09\x02",
             b"AKRS\x01\x02short",
         ] {
             std::fs::write(

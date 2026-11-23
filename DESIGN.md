@@ -590,7 +590,11 @@ any list the issuer signed, an older one included.
   the next renewal gives back. A file is replaced by writing a temporary one,
   flushing it, renaming it over the old one and flushing the directory, so a
   power cut leaves the old file or the new one. The marker of an expired
-  record lives in the same file. Without a data directory a replica restarts
+  record lives in the same file. Each file ends with the SHA-256 of its
+  other bytes, and a file that does not match it, such as one with a bit
+  the device flipped, is not loaded: the replica would otherwise serve a
+  record whose signature no longer verifies, keep it against the valid one,
+  and return it from a repair. Without a data directory a replica restarts
   empty, as before.
 
 ## 12. Concurrency and resource bounds
@@ -662,8 +666,10 @@ any list the issuer signed, an older one included.
 - **Expiries follow the device's clock.** They are wall clock times, so that
   a record keeps its TTL across a restart: a clock set forward expires
   records early, one set back keeps them longer.
-- **The data directory is trusted.** Records read from it are verified again
-  before a GET returns them, but a party that can write it can plant a
+- **The data directory is trusted.** The hash at the end of each file
+  catches what the device damaged, not what a party that can write the
+  directory changes: it can recompute the hash. Records read from it are
+  verified again before a GET returns them, but such a party can plant a
   marker that makes the replica refuse a DID's lower positions for its
   lifetime.
 

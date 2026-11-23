@@ -289,6 +289,54 @@ mod tests {
         assert_eq!(server.storage.get(&owner.key), Some(v7));
     }
 
+    /// A byte of the signature of 6 changed on the device while the node was
+    /// down. Its form still matches what the caller expects, so loaded, it
+    /// would be returned by the repair and kept against the valid 6. The
+    /// restarted node does not load it: the repair finds nothing here, and
+    /// the valid 6 is written.
+    #[tokio::test]
+    async fn a_record_damaged_on_disk_is_not_returned_by_a_repair() {
+        use crate::durable::test_dir::TestDir;
+        use crate::storage::{ForgetfulStorage, DEFAULT_MAX_STORAGE_BYTES, DEFAULT_TTL};
+
+        let owner = TreeOwner::new(1);
+        let v5 = owner.record(5, Some(b"4"));
+        let v6 = owner.record(6, Some(&v5));
+        let dir = TestDir::new();
+        let open = || {
+            ForgetfulStorage::persistent(
+                dir.path().to_path_buf(),
+                DEFAULT_TTL,
+                DEFAULT_MAX_STORAGE_BYTES,
+            )
+            .unwrap()
+        };
+        open().set(owner.key.to_vec(), v6.clone());
+        let file = dir.path().join(format!("{}.rec", hex::encode(owner.key)));
+        let mut bytes = std::fs::read(&file).unwrap();
+        // The file's header and expiry, the record's algorithm, then its
+        // signature.
+        bytes[6 + 8 + 12 + 100] ^= 0x01;
+        std::fs::write(&file, &bytes).unwrap();
+
+        let server = Server::new(
+            Arc::new(DIDSignatureVerifierHandler::new("unused")),
+            20,
+            3,
+            None,
+            Some(Arc::new(open())),
+            false,
+        );
+        assert_eq!(server.storage.get(&owner.key), None);
+        let key_hash = sha256(owner.keys[6].public_key());
+        assert_eq!(server.repair(&owner.did, &v5, 6, &key_hash).await, None);
+        assert_eq!(
+            server.install(&owner.did, owner.key, expected(&owner, 6), v6.clone()),
+            Some(v6.clone())
+        );
+        assert_eq!(server.storage.get(&owner.key), Some(v6));
+    }
+
     /// This node remembers 7 after it expired: a repair for 6 finds nothing.
     #[tokio::test]
     async fn a_repair_below_a_remembered_position_finds_nothing() {
