@@ -68,7 +68,8 @@ and exposes Python bindings for application logic.
   receipts, round-trip-based retransmission and random message identifiers.
 
 **Runtime**
-- Concurrent sharded storage with a time-to-live and a byte budget.
+- Concurrent sharded storage with a time-to-live and a byte budget, kept on
+  disk across restarts when given a data directory.
 - A cache of signature verifications and verification pools sized to the CPU.
 - Python bindings (PyO3) that release the GIL during verification.
 

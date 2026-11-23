@@ -46,6 +46,16 @@ application.
 
 ### Added
 
+- Persistent replica storage: `ForgetfulStorage::persistent(dir, ttl,
+  max_storage_bytes)`, `Server(data_dir=..., flush_secs=3600)` in Python and
+  `DATA_DIR` in `dht_node`. A replica keeps each record in a file, written to
+  the device before it acknowledges the record, and serves it again after a
+  restart with the rest of its TTL; renewals are written every hour. A STORE
+  whose record cannot be written gets no answer.
+- The marker of an expired DID record: its position is remembered for one
+  more TTL, also across restarts, so that a replay of a lower position is
+  refused even when no node answers the check, and a GET or a repair returns
+  nothing below it.
 - `Server::repair` and the Python `Server.repair(did, failed_record, seq,
   key_hash)`: when a served record fails the application's check, the node
   fetches the record at the position and with the key the credential names,
@@ -82,6 +92,11 @@ application.
 
 ### Changed
 
+- Record expiries are wall clock times (milliseconds since the Unix epoch)
+  instead of the process's monotonic clock, so that a record keeps its TTL
+  across a restart. `StorageWriteStatus` and `ReplaceStatus` add
+  `WriteFailed`; `rules::decide_locally` takes what the replica holds as a
+  `Held` (a record, a marker, or nothing).
 - A replica keeps one record per DID and replaces it with any verified
   higher position. A lower position is refused as `Stale`, and another
   record at the same position as `Conflict`, logged as duplicity or as a

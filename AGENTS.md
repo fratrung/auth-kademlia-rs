@@ -21,9 +21,9 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 314 tests
-cargo test --features counters       # 317: also the counters' own tests
-cargo test --features testbed        # 318: also the testbed's FindHash lie switch
+cargo test                           # all 331 tests
+cargo test --features counters       # 334: also the counters' own tests
+cargo test --features testbed        # 335: also the testbed's FindHash lie switch
 cargo test <name>                    # single test, e.g. test_key_rotation_is_published_with_set
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -81,6 +81,11 @@ maturin develop --features python
 - `Server(sig_cache=True/False)` controls the ML-DSA signature cache (default
   `False`). Pass `sig_cache=True` to enable it in production for repeated-record
   workloads.
+- `Server(data_dir=None, flush_secs=3600)`: with `data_dir` the node keeps
+  the records it holds in that directory and serves them again after a
+  restart (`ForgetfulStorage::persistent`); renewed expiries reach the disk
+  every `flush_secs`. `RuntimeError` if the directory cannot be created or
+  read. Without it, records live in memory only.
 
 ## Tokio runtime — caller responsibility
 
@@ -128,7 +133,8 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/network/maintenance.rs` | Refresh and the hourly republication (through `KademliaProtocol::republish`), recovery tick, stats (`ServerStats`), saved state |
 | `src/crawling.rs` | Iterative lookup — `NodeSpiderCrawl` (find nodes) + `ValueSpiderCrawl` (find value; `search` with a deadline tells `NotFound` from `Incomplete`) |
 | `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `find_neighbors` returns the exact local top-k across known primary contacts, skipping failing ones (see Concurrency model); `touch_last_updated()` is called only for the bucket containing the lookup target — bucket staleness reflects lookup activity, not node additions |
-| `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day TTL and configurable byte budget (default 512 MiB), with lazy expiry on read; `insert_if_absent` and `replace_if` (compare and swap under the entry) |
+| `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day TTL and configurable byte budget (default 512 MiB), with lazy expiry on read; times in Unix milliseconds; `insert_if_absent` and `replace_if` (compare and swap under the entry); optionally persistent (`persistent`, `flush_renewals`); the marker of an expired DID record (`marker`, `record_or_marker`) |
+| `src/durable.rs` | The files of a persistent store, one per key: a record and its expiry, or a marker; atomic replacement (temporary file, fsync, rename, fsync of the directory) and loading |
 | `src/signature_cache.rs` | `SignatureCache` — moka bounded cache (SHA-256 key, TTL 1 h, 4096 entries) for ML-DSA-65 verification results |
 | `src/fragmentation.rs` | KADF fragmentation + reassembly (`encode_fragments`, `parse_fragment`, `accept_fragment`, `ReassemblyMap`) |
 | `src/retransmit.rs` | When to send a request again: per-peer round-trip estimate (`RoundTrips`, RFC 6298), `MAX_RESENDS`, bounds of the wait |
@@ -221,6 +227,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 
 ## Concurrency model
 - `ForgetfulStorage` is `Arc<ForgetfulStorage>` (no outer `RwLock`). All `IStorage` methods take `&self`; internal synchronization via `DashMap` shards.
+- A persistent store writes a new or changed record to its file, flushed to the device, before memory and before the write returns, under the lock of the entry: a STORE waits for the disk, and memory and disk never disagree between two concurrent writes. Writes are rare (a first copy, a rotation); a renewal of the same bytes changes memory only, and `flush_renewals` and `prune_expired` run on the blocking pool (`schedule_flush`, the stats tick). `Server::stop` flushes the renewals.
 - `rpc_store` uses `insert_if_absent` (DashMap `Entry` API) with atomic global byte reservation. Identical bytes are idempotent; active records are never evicted for capacity. A verified higher position replaces the stored record with `replace_if`, a compare and swap under the entry: if the record changed since the rules read it, the handler decides once more, and after a second change it sends no answer.
 - A STORE for a key the node does not hold waits for a lookup (see Key invariants), whose answers arrive through the receive workers. `handle_datagram` therefore runs it in its own task (`spawn_task`) instead of on the worker, and answers when it is done; at most `MAX_STORE_LOOKUPS` (256) wait at once, beyond that the STORE is dropped. Handled on the worker, 8 such STOREs at once left the lookups without their answers.
 - **Message ids** (ADR 0005, open point 25): each request draws its msg_id at random (`rand`), never one a pending request holds (`fresh_id`, under the lock of the pending map); an answer counts only if its id is pending for the address it comes from. An attacker who does not read the traffic cannot guess one; one who reads it still sees every id.
@@ -309,6 +316,21 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
   the testbed's `push` both run it.
 - The Status List GET keeps a quorum derived from `alpha`, not independently
   configurable: with `alpha = 3`, two byte-identical record responses, or `None`.
+- **Persistence** (ADR 0006, points 5 and 6): with a data directory a
+  replica's records survive a power cut. A write that cannot be made durable
+  changes nothing (`WriteFailed`), and the STORE gets no answer, so the
+  sender counts the replica as unavailable. Renewals of the same bytes reach
+  the disk with the next flush (`DEFAULT_FLUSH_INTERVAL`, one hour): a power
+  cut loses at most one interval of TTL, never a record. Expiries are wall
+  clock times, so a record keeps the rest of its TTL across a restart; never
+  restart a TTL from boot time.
+- **Marker**: once a DID record expires, its position is remembered for one
+  more TTL from its expiry, in memory and in its file, charged to the
+  budget. While it lives, a lower position is `Stale` without asking anyone
+  (`Held::Marker` in `decide_locally`), a GET returns nothing below it, and
+  a repair below it finds nothing; that position or a higher one goes
+  through the network check, and a record written over the marker replaces
+  it. Only a stored, verified record sets it; nothing extends it.
 - An empty replica checks the network before a STORE (`rpc_store`,
   `network_check`), for every DID record (`store_needs_lookup`): the Status List
   is exempt. It asks the nodes closest to the key for the `seq` and SHA-256 of
@@ -382,6 +404,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/crypto_tests.rs` | 19 | Crypto layer unit + DID handler unit tests |
 | `tests/routing_tests.rs` | 22 | Routing table unit tests |
 | `tests/storage_tests.rs` | 20 | `ForgetfulStorage` unit tests (includes `insert_if_absent` and `replace_if` cases) |
+| `tests/persistence_tests.rs` | 2 | A persistent replica over real UDP: its record served after a power cut with no peer; no answer when its disk refuses a write |
 | `tests/dht_integration.rs` | 1 | Legacy 3-node end-to-end scenario |
 | `tests/scenarios/replication.rs` | 1 | replication to a joining node (3-node join) |
 | `tests/scenarios/cache.rs` | 2 | SignatureCache hit-rate + false caching |
@@ -391,7 +414,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/quorum_tests.rs` | 16 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum and update, retry of a publication, a rotation that fills empty replicas, and the network check of a STORE to an empty replica |
 | `tests/repair_tests.rs` | 3 | Repair over real UDP: the expected record found, stored and served locally; no match without it; no answer |
 | `tests/chain_tests.rs` | 8 | Positions of one DID over real UDP: a rotation that reaches every replica, the owner restoring empty replicas, refusals of `set` that count only once shown, forged and old genuine records at empty replicas |
-| `src/**` (inline) | 199 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
+| `src/**` (inline) | 214 | Module-level `#[test]` blocks (incl. persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 
@@ -430,8 +453,10 @@ All tests are network-clean (loopback only) and run in parallel without interfer
 | 15938–15953 | STORE to an empty replica: network check |
 | 15954–15985 | positions of one DID (`tests/chain_tests.rs`) |
 | 16031–16039 | repair of a served record (`tests/repair_tests.rs`) |
+| 16040–16041 | GET below a remembered position (`src/network/read.rs`) |
+| 16042–16045 | persistent replica (`tests/persistence_tests.rs`) |
 
-When adding a new integration test use ports **16040+** and document them here (15900 is reserved below).
+When adding a new integration test use ports **16046+** and document them here (15900 is reserved below).
 
 | 15900 | resilience test: Node A victim (host-exposed UDP, Docker only) |
 
@@ -496,7 +521,8 @@ tmpfs, emptied once no container uses it, so a retriever never reads the DID of
 an earlier run. No key or seed is in `.env` or the compose file (ADR 0005, open
 point 17). Environment variables per container: `NODE_PORT`, `IS_SEED`,
 `BOOTSTRAP_ADDR`, `ROLE` (`publisher`|`retriever`), `RETRIEVE_KEY` (a DID to
-read instead of the file), `RUST_LOG`.
+read instead of the file), `DATA_DIR` (where the node keeps its records across
+restarts; in memory without it), `RUST_LOG`.
 
 Every Dockerfile builds on the Debian release it runs on (`bookworm`): the C
 code of AWS-LC links against the builder's glibc, and a binary built on a newer

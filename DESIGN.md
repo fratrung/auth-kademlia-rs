@@ -339,7 +339,12 @@ decides on its own, with what it holds:
   signing when the document is the same, as duplicity when it differs: only
   the owner, or a thief of that position's key, could have signed it.
 
-![Decision of a replica that receives a record: form and tree, then by what it holds: the network check, AlreadyStored, a verified higher position, Stale or Conflict](docs/design/replica-rules.png)
+A replica whose record expired remembers its position for one more TTL (the
+marker, section 11). A lower position is then `Stale` without asking
+anyone; that position or a higher one goes through the network check below,
+as at a replica that holds nothing.
+
+![Decision of a replica that receives a record: form and tree, then by what it holds or remembers: the network check, AlreadyStored, a verified higher position, Stale or Conflict](docs/design/replica-rules.png)
 
 *Source: [`docs/design/replica-rules.mmd`](docs/design/replica-rules.mmd).*
 
@@ -533,9 +538,25 @@ any list the issuer signed, an older one included.
 
 *Source: [`docs/design/repair.mmd`](docs/design/repair.mmd).*
 
-- **Expiry:** records expire 14 days after they were written. There is no
-  delete. An application that needs a record to stay must publish it again
-  before then.
+- **Expiry:** records expire 14 days after they were written or last
+  renewed. There is no delete. An application that needs a record to stay
+  must publish it again before then. Once a DID record expires, the replica
+  keeps only its key and position, the marker, for 14 more days from that
+  expiry: a replay of a lower position meanwhile is stale even if no node
+  answers its check. Only a stored, verified record sets a marker, and
+  nothing extends it.
+- **Restarts:** a replica given a data directory keeps each record in a file
+  and serves it again after a power cut, with the rest of its TTL, before any
+  other node answers. A new or changed record is on the device before the
+  replica acknowledges it; if the disk refuses the write, nothing changes
+  and the replica does not answer, so the sender counts it as unavailable.
+  A renewal of the same bytes only moves the expiry, so it reaches the disk
+  with the next hourly flush: a power cut loses at most an hour of TTL, which
+  the next renewal gives back. A file is replaced by writing a temporary one,
+  flushing it, renaming it over the old one and flushing the directory, so a
+  power cut leaves the old file or the new one. The marker of an expired
+  record lives in the same file. Without a data directory a replica restarts
+  empty, as before.
 
 ## 12. Concurrency and resource bounds
 
@@ -548,7 +569,12 @@ any list the issuer signed, an older one included.
   at once. Beyond that the STORE is dropped, as an overloaded node drops
   datagrams. Each check fetches at most `k − 1` records.
 - Storage holds at most 512 MiB by default and never evicts a live record to
-  make room: a full node answers `CapacityExceeded`.
+  make room: a full node answers `CapacityExceeded`. A marker costs its key
+  and 16 bytes.
+- With a data directory, a write of a new or changed record waits for the
+  device under the lock of its entry, so that memory and disk never
+  disagree. Such writes are rare, a first copy or a rotation; renewals,
+  expiries and the hourly flush run on the blocking pool.
 - Sending new nodes their records (section 11) scans the whole storage, so one
   scan runs at a time and at most 256 nodes wait for it. The bound is on the
   records, not on the routing table: a node met beyond it is still added. The
@@ -592,6 +618,13 @@ any list the issuer signed, an older one included.
   holder: the DID must be replaced. A lost store ends rotation the same way.
 - **A tree has 63 positions.** Once position 62 is published the DID cannot
   rotate again; moving to a new tree is not defined yet.
+- **Expiries follow the device's clock.** They are wall clock times, so that
+  a record keeps its TTL across a restart: a clock set forward expires
+  records early, one set back keeps them longer.
+- **The data directory is trusted.** Records read from it are verified again
+  before a GET returns them, but a party that can write it can plant a
+  marker that makes the replica refuse a DID's lower positions for its
+  lifetime.
 
 ## 14. How behaviour is measured
 

@@ -48,6 +48,12 @@ async def start(port: int, seeds: list[tuple[str, int]]) -> authkademlia_py.Serv
   and the Status List quorum derive from them.
 - `sig_cache=True` keeps the results of signature verifications for an hour;
   it pays off when the same records are read repeatedly.
+- `data_dir="/var/lib/dht"` keeps the records the node holds on disk, so that
+  after a power cut it serves them again, with the rest of their TTL, before
+  any other node answers. A new record is on disk before the node
+  acknowledges it; renewed expiries are written every `flush_secs` (3600 by
+  default). Without `data_dir` a restarted node is empty until other nodes
+  send it its records. On a device, prefer a persistent directory.
 - `issuer_path` is needed only on nodes that verify the Status List
   ([section 10](#10-the-status-list)).
 - Signature verification releases the GIL and runs on every core.

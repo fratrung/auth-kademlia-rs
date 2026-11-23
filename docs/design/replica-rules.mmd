@@ -2,20 +2,23 @@ flowchart TD
     IN["STORE of a record at position N of a DID"]
     FORM{"Canonical, bound to the key,<br/>key and code at N reach the root?"}
     HOLDS{"Does the replica<br/>hold a record?"}
+    MARK{"Does it remember<br/>a position M above N<br/>(marker of an expired record)?"}
     CHECK["Network check<br/>(empty replica diagram)"]
     SAME{"Same bytes?"}
     CMP{"N against the<br/>held position"}
     SIGH{"Signature verifies?"}
     SIGE{"Signature verifies?"}
     INV["InvalidRecord"]
-    AS["AlreadyStored"]
+    AS["AlreadyStored, the expiry renewed"]
     REP["Replace (compare and swap): Stored"]
     STALE["Stale"]
     CON["Conflict, the stored record stays<br/>logged as a repeated signing or as duplicity"]
     IN --> FORM
     FORM -- no --> INV
     FORM -- yes --> HOLDS
-    HOLDS -- no --> CHECK
+    HOLDS -- no --> MARK
+    MARK -- yes --> STALE
+    MARK -- no --> CHECK
     HOLDS -- yes --> SAME
     SAME -- yes --> AS
     SAME -- no --> CMP
