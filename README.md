@@ -55,6 +55,9 @@ and exposes Python bindings for application logic.
   every node checks any position against the DID alone.
 - Ordered records: a replica takes any verified higher position and refuses a
   lower one.
+- Owner custody: the device's seeds and codes stay in a custody that signs
+  each position once, on a calendar of rotations, never below the highest
+  activated, and early only with an authorization the application checks.
 - Post-quantum cryptography: ML-DSA-65 record signatures and ephemeral
   ML-KEM-768 key pairs for key agreement between devices, from `aws-lc-rs`.
 

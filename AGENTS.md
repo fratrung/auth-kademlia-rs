@@ -21,9 +21,9 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 331 tests
-cargo test --features counters       # 334: also the counters' own tests
-cargo test --features testbed        # 335: also the testbed's FindHash lie switch
+cargo test                           # all 357 tests
+cargo test --features counters       # 360: also the counters' own tests
+cargo test --features testbed        # 361: also the testbed's FindHash lie switch
 cargo test <name>                    # single test, e.g. test_key_rotation_is_published_with_set
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -66,10 +66,21 @@ maturin develop --features python
   them, and stores it; `ValueError` if `key_hash` is not 32 bytes.
 - `Server.update_status_list(value)` replaces the Status List, signed by the
   issuer; the first list is published with `set("status-list", value)`.
+- `Custody` is the owner's custody of one DID (`src/custody/`, file
+  backend): `Custody.provision(dir, template, start_secs, interval_secs)`
+  creates the DID and prepares position 0, `Custody(dir)` opens it; `did`,
+  `due()` (`{"status": "due"|"skipped"|"exhausted", "position": ...}`),
+  `prepare(position, template)`, `activate_early(position, template,
+  authorization, verifier)` with `verifier(did, position, authorization) ->
+  bool`, `skip(position)`, `pending()`, `published()`,
+  `mark_published(record)`. The template is JSON text without `id`, `seq`,
+  `prev`, `treeProof` and the key's `pub`. `ValueError` for a refused
+  request, `RuntimeError` for its files. It has no method that returns a
+  private key, a seed or a code no record has released; do not add one
+  (ADR 0006, Decision, Owner custody).
 - `MlDsaKeyManager.keypair_from_seed(seed)` returns the ML-DSA-65 key pair of a
-  32-byte seed, the same pair for the same seed: the application keeps only
-  the seed of each position's key, and builds the leaves of its tree from the
-  public keys (`docs/integration.md`).
+  32-byte seed, the same pair for the same seed. Applications publish through
+  `Custody`; this serves tests and tools that build records themselves.
 - `Server.stats()` exposes routing, storage-budget, and signature-cache
   counters.
 - `MlKemKeyManager(max_age_secs=30, max_outstanding=64)` gives one ML-KEM-768
@@ -134,7 +145,10 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/crawling.rs` | Iterative lookup — `NodeSpiderCrawl` (find nodes) + `ValueSpiderCrawl` (find value; `search` with a deadline tells `NotFound` from `Incomplete`) |
 | `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `find_neighbors` returns the exact local top-k across known primary contacts, skipping failing ones (see Concurrency model); `touch_last_updated()` is called only for the bucket containing the lookup target — bucket staleness reflects lookup activity, not node additions |
 | `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day TTL and configurable byte budget (default 512 MiB), with lazy expiry on read; times in Unix milliseconds; `insert_if_absent` and `replace_if` (compare and swap under the entry); optionally persistent (`persistent`, `flush_renewals`); the marker of an expired DID record (`marker`, `record_or_marker`) |
-| `src/durable.rs` | The files of a persistent store, one per key: a record and its expiry, or a marker; atomic replacement (temporary file, fsync, rename, fsync of the directory) and loading |
+| `src/durable.rs` | The files of a persistent store, one per key: a record and its expiry, or a marker; atomic replacement (`write_durably`: temporary file, fsync, rename, fsync of the directory, also used by the custody) and loading |
+| `src/custody/mod.rs` | The owner's custody of a DID: the `Custody` trait, the `Calendar` (`floor((now - T) / D)`), `Activation` (highest activated, skipped positions, `due`, `next_early`), `ActivationVerifier`, and the template the application writes (`draft_of`, `template_of`) |
+| `src/custody/file.rs` | `FileCustody`: the custody in a directory (`tree`, `secrets`, `state`, owner-only), the record of a position signed when due and written as the highest activated before it is returned, early activation, skip, and the erasure of the secrets below a published record |
+| `src/custody/acceptance_tests.rs` | The custody's acceptance cases on the file backend, with a clock the tests move |
 | `src/signature_cache.rs` | `SignatureCache` — moka bounded cache (SHA-256 key, TTL 1 h, 4096 entries) for ML-DSA-65 verification results |
 | `src/fragmentation.rs` | KADF fragmentation + reassembly (`encode_fragments`, `parse_fragment`, `accept_fragment`, `ReassemblyMap`) |
 | `src/retransmit.rs` | When to send a request again: per-peer round-trip estimate (`RoundTrips`, RFC 6298), `MAX_RESENDS`, bounds of the wait |
@@ -143,7 +157,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/auth_handler/did.rs` | The `did:iiot` DID: canonical suffix (`key_of_did`, `did_of_key`), canonical JSON (`canonical_bytes`, `parse_canonical`), the placeholder, and the errors of a record's form (`FormError`) |
 | `src/auth_handler/rules.rs` | The STORE rules as pure functions: `decide_locally` against the stored copy, `claims_to_fetch` and `shows_higher` for the network check of an empty replica, and `shown_against`, what a replica's record proves against a record being published |
 | `src/auth_handler/tree.rs` | The tree of rotation keys: the leaf and node hashes, the tree and its paths (`Tree`, `root_from_path`), the genesis whose SHA-256 is the DID (`Genesis`), the hashed initial body, the document of a position as the owner completes it (`document_at`), and step 1 of the rules, the form of a record for a key (`tree_form`: `seq`, `prev`, the key's hash; no signature) |
-| `src/auth_handler/owner.rs` | The owner's side of a tree in memory (`OwnerTree`): the keys and codes of the 64 positions from seeds, the genesis of a DID, and the signed record of a position from its draft body, checked by `tree_form` before it leaves; `signed_record` builds the record layout |
+| `src/auth_handler/owner.rs` | The owner's side of a tree in memory (`OwnerTree`, for tests, examples and the testbed): the keys and codes of the 64 positions from seeds, the genesis of a DID, and the signed record of a position from its draft body; `sign_position` signs one and checks it with `tree_form` before it leaves (shared with the custody); `signed_record` builds the record layout |
 | `src/auth_handler/test_tree.rs` | The 64 positions of one DID for the unit tests (`TreeOwner`), the tree and the DID computed with `sha2` alone, and the record helpers the tests share |
 | `src/crypto/signature_verifier.rs` | `SignatureVerifier` trait, `resolve_alg_and_length()`, algorithm registry |
 | `src/crypto/factory.rs` | `SignatureVerifierFactory` + `SignerFactory` — dispatch by algorithm string |
@@ -283,11 +297,18 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
   `AlreadyStored`. Retries must resend the saved bytes: another record at the
   same position, even the same document signed again, is refused as
   `Conflict` and logged, and the owner signs each position once.
-- **The owner never reuses a position**: it saves the highest activated
-  position before the record leaves, and never releases the code of a
-  skipped one (`docs/integration.md`). Custody of the seeds and codes is the
-  application's; `OwnerTree` holds them in memory for tests, examples and the
-  testbed.
+- **The owner never reuses a position** (`Custody`, ADR 0006 point 1): a
+  position is signed only when it is due (`Activation::due`: the calendar's
+  index or the highest activated, whichever is greater), and is written as
+  the highest activated, flushed to the device, before its record is
+  returned. Within its slot the same bytes come back; another template is
+  `AlreadySigned`. Nothing signs below the highest activated, after a
+  restart or with the clock set back. Early activation reaches only the next
+  position that is not skipped, and the application's verifier is called
+  before anything is signed, without the custody's lock (it may call back
+  into it). A skipped position is never signed nor its code released.
+  `OwnerTree` holds secrets in memory and enforces none of this: tests,
+  examples and the testbed only.
 - A remote DID GET takes no vote: `find_first_valid` returns the first record
   that passes the tree and signature checks (Kademlia §2.3), discards any
   that fail, and cancels the requests still in flight. The record is the
@@ -414,7 +435,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/quorum_tests.rs` | 16 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum and update, retry of a publication, a rotation that fills empty replicas, and the network check of a STORE to an empty replica |
 | `tests/repair_tests.rs` | 3 | Repair over real UDP: the expected record found, stored and served locally; no match without it; no answer |
 | `tests/chain_tests.rs` | 8 | Positions of one DID over real UDP: a rotation that reaches every replica, the owner restoring empty replicas, refusals of `set` that count only once shown, forged and old genuine records at empty replicas |
-| `src/**` (inline) | 214 | Module-level `#[test]` blocks (incl. persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
+| `src/**` (inline) | 240 | Module-level `#[test]` blocks (incl. the custody's acceptance cases and calendar, persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 

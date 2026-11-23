@@ -46,6 +46,18 @@ application.
 
 ### Added
 
+- Owner custody: the `custody` module, with the `Custody` trait and
+  `FileCustody`, and the Python class `Custody`. A custody keeps a DID's
+  seeds and codes, its calendar of rotations and its records in a
+  directory only the process's user can read. It signs a position only when
+  its slot has come, writes it as the highest activated position before the
+  record leaves, returns the same bytes for a retry, and never signs below
+  the highest activated, also after a restart or with the clock set back.
+  Before its slot only the next position can be activated, with an
+  authorization checked by a verifier the application supplies. A position
+  can be skipped for good. The application writes one template of the
+  document, and no method returns a private key, a seed or an unreleased
+  code. Publishing a record erases the secrets below it.
 - Persistent replica storage: `ForgetfulStorage::persistent(dir, ttl,
   max_storage_bytes)`, `Server(data_dir=..., flush_secs=3600)` in Python and
   `DATA_DIR` in `dht_node`. A replica keeps each record in a file, written to

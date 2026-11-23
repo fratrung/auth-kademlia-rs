@@ -203,7 +203,7 @@ tree, writes the body of position 0 with `did:iiot:self` in place of its own
 DID, and hashes the genesis of the two. The hash is both the DID and the DHT
 key. It then writes the DID into the document, adds `id` and the `treeProof`
 of position 0, signs it with the key of position 0, and publishes it with SET
-(section 6).
+(section 6). The library's custody does all of it (section 9).
 
 ## 4. Transport
 
@@ -491,7 +491,28 @@ DHT.
 
 An old record cannot be replayed as current at a replica that holds a higher
 one (`Stale`), nor at an empty replica while a holder of a higher one
-answers its check. Nothing reads a clock.
+answers its check. No node reads a clock to decide a position.
+
+**Custody.** The owner's side of these steps is the `Custody` trait
+(`src/custody/`), so that a backend inside a trusted execution environment
+can replace the first one, in files, and produce the same records. The
+application writes one template of its document; the custody fills in
+`seq`, `prev` and the position's key, adds the DID and the proof, and signs,
+so a code never passes through the application before its record. It signs
+a position only when its slot has come: from a start `T`, every interval
+`D`, the position due is `floor((now - T) / D)`, or the highest activated if
+greater. It writes a new position as the highest activated, flushed to the
+device, before returning its record; within the slot it returns the same
+bytes again, and it never signs below the highest activated. Before its slot
+only the next position that is not skipped can be activated, once, with an
+authorization the application's verifier accepts (the issuer's, in this
+project); the position due then becomes that one, so the next falls due at
+its normal boundary. A position whose key has leaked is skipped for good.
+Once a record is published, the secrets of the positions below it are
+erased. The file backend keeps the seeds and codes, the calendar and the
+records in a directory only the process's user can read: it trusts the
+device's clock and files, and enforcing the calendar against the host needs
+a backend that keeps its own.
 
 ## 10. Status List
 
@@ -616,6 +637,9 @@ any list the issuer signed, an older one included.
   higher position may store. The owner's next position supersedes it.
 - **A copy of all the seeds and codes** gives every future position to its
   holder: the DID must be replaced. A lost store ends rotation the same way.
+- **The file custody trusts its host.** A party that can write its files or
+  set the clock can move the calendar, and a custody restored from an older
+  backup can sign a published position again.
 - **A tree has 63 positions.** Once position 62 is published the DID cannot
   rotate again; moving to a new tree is not defined yet.
 - **Expiries follow the device's clock.** They are wall clock times, so that

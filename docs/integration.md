@@ -23,10 +23,10 @@ It states what the application must do for the guarantees of
 
 | The node | The application |
 |---|---|
-| Checks the form of every record, its key against the tree its DID commits to, and its signature | Builds the tree, the genesis and documents in canonical form, and computes the DID |
-| Keeps one record per DID, replaced by any verified higher position | Keeps the seeds and activation codes in protected storage, and releases a code only with its position |
-| Before an empty replica stores a record, looks for a node that shows a higher one | Signs each position once, saves it, and resends the saved bytes on every retry |
-| Republishes the records it holds every hour, and takes a higher one a replica shows | Never reuses a position: saves the highest one activated before publishing it |
+| Checks the form of every record, its key against the tree its DID commits to, and its signature | Writes the template of its document; its custody builds the tree, the genesis and the DID ([section 4](#4-creating-a-did)) |
+| Keeps one record per DID, replaced by any verified higher position | Keeps the custody's directory as private as a key; the custody releases a code only with its position |
+| Before an empty replica stores a record, looks for a node that shows a higher one | Publishes the record the custody prepares, and resends the saved bytes on every retry |
+| Republishes the records it holds every hour, and takes a higher one a replica shows | Prepares the position due; the custody signs each position once and never one below the highest activated |
 | Returns a verified record on a read, and on request fetches the one a credential names | Republishes its current record at least once every 24 hours, and decides whether the key it reads is trusted |
 
 ## 2. Running a node
@@ -64,10 +64,11 @@ async def start(port: int, seeds: list[tuple[str, int]]) -> authkademlia_py.Serv
 A Rust application uses `auth_kademlia_rs::network::Server` with the same
 operations, inside a Tokio runtime whose blocking pool is bounded by the
 number of cores, as [`examples/publish_did.rs`](../examples/publish_did.rs)
-shows. There the owner's side of section 4 is
-`auth_kademlia_rs::auth_handler::owner::OwnerTree`, which generates the
-secrets, gives the genesis and signs the record of a position; the formats
-are in `auth_handler::tree` (`Tree`, `Genesis`, `document_at`) and
+shows. The owner's side of sections 4 to 9 is the `Custody` trait of
+`auth_kademlia_rs::custody`, kept in files by `FileCustody`, with the same
+operations as the Python class; `auth_handler::owner::OwnerTree` holds a
+tree's secrets in memory, for tests and examples. The formats are in
+`auth_handler::tree` (`Tree`, `Genesis`, `document_at`) and
 `auth_handler::did` (`canonical_bytes`, `key_of_did`).
 
 ## 3. Record format
@@ -272,6 +273,10 @@ def parse_record(record: bytes):
 Services are written with the placeholder (`did:iiot:self#device`):
 `document` puts the DID in its place.
 
+An application that publishes through a custody (section 4) needs none of
+these helpers: the custody builds and signs every document. They describe
+the format, and let a test or a tool check a record.
+
 ## 4. Creating a DID
 
 The DID is the hash of the genesis, so it fixes the body of position 0 and
@@ -280,55 +285,79 @@ tree later.
 
 ![Creating a DID](design/did-creation.png)
 
+The owner's secrets live in a custody, a directory the application never
+reads: `Custody` generates them, signs every position and keeps the records,
+and no method returns a private key, a seed or a code no record has
+released.
+
 ```python
-import secrets
+import json
+import time
 
-key_manager = authkademlia_py.MlDsaKeyManager("keys")
+import authkademlia_py
 
-# 64 seeds and 64 codes, kept in protected storage.
-seeds = [secrets.token_bytes(32) for _ in range(POSITIONS)]
-codes = [secrets.token_bytes(32) for _ in range(POSITIONS)]
-public_keys = [key_manager.keypair_from_seed(seed)[0] for seed in seeds]
-levels = tree([leaf(i, public_keys[i], codes[i]) for i in range(POSITIONS)])
+WEEK = 7 * 24 * 3600
+
+
+def template(services=()) -> str:
+    """The document of every position, as the custody completes it: no
+    `id`, `seq`, `prev` or `treeProof`, no `pub` in the key, and the
+    placeholder wherever the document names its own DID."""
+    return json.dumps({
+        "@context": ["https://www.w3.org/ns/did/v1"],
+        "verificationMethod": [{
+            "id": PLACEHOLDER + "#k0",
+            "type": "JsonWebKey2020",
+            "controller": PLACEHOLDER,
+            "publicKeyJwk": {"kty": "AKP", "alg": "ML-DSA-65"},
+        }],
+        "authentication": [PLACEHOLDER + "#k0"],
+        "service": list(services),
+    })
+
 
 services = [{
     "id": PLACEHOLDER + "#device",
     "type": "DeviceAgent",
     "serviceEndpoint": "https://device.example/agent",
 }]
-initial = body(public_keys[0], 0, services=services)
-tree_genesis = genesis(sha256(canonical(initial)), levels[-1][0])
-did = did_of(tree_genesis)
-
-_, private_key = key_manager.keypair_from_seed(seeds[0])
-doc = document(initial, tree_genesis, codes[0], path(levels, 0))
-record_0 = signed_record(key_manager, private_key, doc)
+custody = authkademlia_py.Custody.provision(
+    "/var/lib/device/custody", template(services),
+    start_secs=int(time.time()), interval_secs=WEEK)
+did = custody.did
+record_0 = custody.pending()
 ```
 
-1. Generate a random seed and a random activation code for each of the 64
-   positions, the reserved one included: its leaf completes the tree. Derive
-   each public key from its seed and compute the leaves and the root.
-2. Write the body of position 0 with every field except `id` and
-   `treeProof`, and the placeholder `did:iiot:self` wherever the document
-   refers to its own DID.
-3. Build the genesis from the hash of that body and the root. The DID is
-   `did:iiot:` followed by the base64url SHA-256 of the canonical genesis;
-   the DHT key is the hash itself.
-4. Complete the document with the DID, `id` and `treeProof`, and sign it
-   with the key of position 0.
-5. **Save before sending:** the DID, the genesis, `record_0` as the
-   published record, position 0 as the highest activated, and the seeds and
-   codes in protected storage ([section 9](#9-key-custody)).
+`provision` does every step of the diagram, and returns once its files are
+on the device:
 
-`keypair_from_seed` gives the same key pair for the same 32-byte seed, so
-the application keeps only seeds, never private keys.
+1. It draws a random seed and a random activation code for each of the 64
+   positions, the reserved one included: its leaf completes the tree. It
+   derives each public key from its seed and computes the leaves and the
+   root.
+2. It completes the template as the body of position 0: `seq` 0 and the
+   key of position 0.
+3. It builds the genesis from the hash of that body and the root. The DID
+   is `did:iiot:` followed by the base64url SHA-256 of the canonical
+   genesis; the DHT key is the hash itself.
+4. It completes the document with the DID, `id` and `treeProof`, signs it
+   with the key of position 0, and keeps it as the record prepared,
+   `pending()`, with position 0 as the highest activated.
+
+The calendar is fixed here: position 0 is due from `start_secs`, and one
+more position every `interval_secs` (a week or a month is a deployment
+choice). A directory that already holds a custody is refused: a DID is
+provisioned once.
 
 ## 5. Publishing a record
 
-Every position, the first included, is published with the same call:
+Every position, the first included, is published with the same call, and
+the custody is told once a replica holds it:
 
 ```python
 result = await node.set_detailed(did, record)
+if result["status"] != "rejected":
+    custody.mark_published(record)
 ```
 
 `result["status"]` is `complete`, `degraded` or `rejected`; `result["reason"]`
@@ -366,56 +395,62 @@ it needs no record in between, and the owner sends nothing else. A change of
 services or endpoints is also a rotation.
 
 ```python
-async def rotate(node, key_manager, state, position, services):
-    """Publish `position`, above every position activated so far."""
-    if position <= state.highest or position >= RESERVED or position in state.skipped:
-        raise ValueError("position not available")
-    state.highest = position
-    state.save()                      # durably, before the record exists
-    public_key, private_key = key_manager.keypair_from_seed(state.seeds[position])
-    draft = body(public_key, position, previous_record=state.published,
-                 services=services)
-    doc = document(draft, state.genesis, state.codes[position],
-                   path(state.levels, position))
-    state.pending = signed_record(key_manager, private_key, doc)
-    state.save()                      # before sending it
-    result = await node.set_detailed(state.did, state.pending)
+async def rotate(node, custody, services):
+    """Publish the position due: a new record when its slot has come,
+    otherwise the record already signed for it."""
+    due = custody.due()
+    if due["status"] != "due":
+        return due      # skipped: wait for the next slot; exhausted: a new DID
+    record = custody.prepare(due["position"], template(services))
+    result = await node.set_detailed(custody.did, record)
     if result["status"] != "rejected":
-        state.published, state.pending = state.pending, None
-        state.save()
+        custody.mark_published(record)
     return result
 ```
 
-The order of the steps makes the rotation safe across a crash:
+The custody keeps the order that makes a rotation safe across a crash:
 
-1. Pick the position: the one due by the schedule, above the highest
-   activated, never a skipped one nor 63.
-2. Save it as the highest activated position, with a write the operating
-   system has flushed to storage, before the record is signed.
-3. Build its body with `seq` the position and `prev` the hash of the record
-   published before, and complete it with that position's code and path.
-4. Sign it once and save the record as pending.
-5. Publish it with `set_detailed`. Once a replica holds it, it is the
-   published record, and a degraded publication is completed by
-   republication ([section 7](#7-republishing)). Rejected because no replica
-   took it, it stays pending and is retried with the same bytes.
+1. **The position due.** From the start `T`, every interval `D`, the
+   position due is `floor((now - T) / D)`, or the highest activated if it is
+   higher. `prepare` signs only that one, and a request for any other is
+   refused (`ValueError`), however often it is made.
+2. **Saved before it leaves.** A new position is written as the highest
+   activated, flushed to the device, before `prepare` returns its record. A
+   restart, or a clock set back, never reopens a lower position.
+3. **Signed once.** Within the slot, `prepare` returns the same bytes again,
+   also after a restart; another template for a position already signed is
+   refused. Retries therefore always resend the saved bytes.
+4. **`prev`** names the record published before.
+5. **Published on request.** The record stays `pending()` until
+   `mark_published`: the application can have the issuer certify the new
+   key before it publishes, and keeps using the published one meanwhile.
+   Once a record is published, the custody erases the seeds and codes of
+   the positions below it.
 
-After a restart, a pending record is sent again from the saved bytes and is
-never signed again, and the highest activated position never goes back,
-even if the clock does.
+After an outage the device prepares the position due directly: back in the
+slot of 5 after publishing 2, it prepares 5 with `prev` naming record 2, and
+the codes of 3 and 4 are never released. When the calendar passes position
+62, `due()` reports `exhausted`: the device needs a new DID.
 
-**Schedule.** Rotation is periodic: from a start time `T`, every interval
-`D`, the position due is `floor((now - T) / D)`. The interval is a
-deployment choice, a week or a month. After an outage the device publishes
-the position due directly: back in the slot of 5 after publishing 2, it
-publishes 5 with `prev` naming record 2, and the codes of 3 and 4 are never
-released. A position may also be published before its slot when the current
-key has leaked ([section 9](#9-key-custody)): the position due is then the
-greater of the schedule's index and the highest activated position, so the
-next one is due at its normal time.
+**Before its slot.** When the current key has leaked, revoking its
+credential leaves the device without a usable key until the next boundary.
+The next position can then be activated at once, with an authorization the
+application checks:
 
-When position 62 has been published the tree is exhausted: the device needs
-a new DID.
+```python
+def verify(did: str, position: int, authorization: bytes) -> bool:
+    """True if the issuer signed `authorization` for `did` and `position`."""
+    ...
+
+record = custody.activate_early(position, template(services), authorization, verify)
+```
+
+The custody calls `verify` before it signs anything, and only for the next
+position that is neither activated nor skipped: never a lower one, a
+skipped one or 63, and never the same one twice. The position due is then
+the greater of the calendar's and this one, so the next position falls due
+at its normal boundary. The format of the authorization and who signs it
+belong to the application.
 
 ## 7. Republishing
 
@@ -423,7 +458,7 @@ At least once every 24 hours, and whenever the device comes back online,
 send the published record again with the saved bytes:
 
 ```python
-await node.set_detailed(state.did, state.published)
+await node.set_detailed(custody.did, custody.published())
 ```
 
 Replicas holding the record republish it every hour, and an empty replica
@@ -491,27 +526,34 @@ def is_canonical_did(did: str) -> bool:
 
 ## 9. Key custody
 
-- **The seeds and codes** of the 64 positions are the DID's secrets. Keep
-  them in a secure element, TPM, TEE or HSM where the device has one, and
-  derive a key pair only to sign its position. A copy of all of them gives
-  every future position to whoever holds it.
-- **A code stays private** until the record of its position is published;
-  the record makes it public.
-- **After a rotation**, once the new position is published and its
-  credential issued, erase the seeds below it. Retries resend saved bytes and
-  need no key.
+- **The custody's directory** holds the seeds and codes of the 64 positions
+  (`secrets`), the public tree and calendar (`tree`), and the records
+  (`state`), readable by the process's user alone. Whoever can read
+  `secrets` holds every future position: keep the directory on encrypted
+  storage and back it up as a private key. A copy restored from an older
+  backup has an older highest activated position, and can sign again a
+  position already published.
+- **The file backend trusts the device's clock and files.** Whoever can
+  write them can move the calendar; enforcing it against the host needs a
+  backend inside a TEE or a secure element, behind the same Rust trait
+  (`auth_kademlia_rs::custody::Custody`), with the same record format.
+- **A code stays private** until the record of its position leaves the
+  custody, which `prepare` or `activate_early` returns.
+- **After a rotation**, `mark_published` erases the seeds and codes below the
+  published position. Retries resend saved bytes and need no key.
 - **A stolen current key** cannot sign a higher position, which needs that
   position's key and its unreleased code. It can sign another document at
   the current position, whose code is public: replicas holding the genuine
   one refuse it, but an empty replica may store it. Publish the next
-  position at once, even before its slot, and have the credential of the
-  stolen key revoked. When and with what authorization to rotate early is
+  position at once with `activate_early`, and have the credential of the
+  stolen key revoked. When to rotate early, and with what authorization, is
   the application's decision, typically signed by the issuer, which issues
   the new credential; the nodes never see it.
-- **A leaked seed of a future position**: skip that position for good,
-  across restarts, and never release its code.
-- **Lost seeds and codes**: no further rotation is possible, and the device
-  needs a new DID.
+- **A leaked seed of a future position**: `custody.skip(position)`. It is
+  never signed nor its code released, across restarts; when it falls due,
+  `due()` reports `skipped` until the next one.
+- **A lost custody**: no further rotation is possible, and the device needs
+  a new DID.
 
 ## 10. The Status List
 
@@ -548,8 +590,8 @@ to the old one are issued again.
 | `set_detailed` report without stale counts | `stale_rejections` and `unproven_refusals`; reason `newer_version`; `existing_record` only when a replica shows another record at the same position |
 | `update("status-list", value, None)` | `update_status_list(value)` |
 | `Ed25519KeyManager` | Removed: records are signed with ML-DSA-65 only |
+| — | `Custody`: the owner's seeds, codes, calendar and records |
 | — | `MlDsaKeyManager.keypair_from_seed(seed)` |
 
-The application now keeps the seeds and codes of its tree, the published
-record and the highest activated position, and republishes at least once
-every 24 hours.
+The application now provisions a custody for each DID, publishes the records
+it prepares, and republishes at least once every 24 hours.
