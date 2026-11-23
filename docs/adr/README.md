@@ -16,3 +16,4 @@ still holds; superseded, that the later ADR replaces all of it.
 | [0003](0003-ml-dsa-records-and-ephemeral-ml-kem.md) | ML-DSA-65 for records, ephemeral ML-KEM-768 outside the DHT | Accepted |
 | [0004](0004-sha-256-ids-and-canonical-uuid.md) | SHA-256 keys, 256-bit ids, and the canonical UUID | Accepted, amended by [0005](0005-self-certifying-dids-and-pre-rotation.md) |
 | [0005](0005-self-certifying-dids-and-pre-rotation.md) | Self-certifying DIDs and a pre-rotated chain of versions | Accepted |
+| [0006](0006-merkle-committed-rotation-keys.md) | Commit a DID's rotation keys in a Merkle tree | Proposed |
