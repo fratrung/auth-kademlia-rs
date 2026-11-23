@@ -1,0 +1,1371 @@
+{
+  "config": {
+    "nodes": 127,
+    "k": 20,
+    "alpha": 3,
+    "seeds": 3,
+    "subnet": "10.213",
+    "profile": "wan-eu",
+    "delay_ms": 6.8,
+    "jitter_ms": 0.0,
+    "loss_pct": 0.0,
+    "cpus": null,
+    "image": "auth-kademlia-testbed:adr0006"
+  },
+  "args": {
+    "command": "outage",
+    "owner": "node-1",
+    "lost": [
+      4,
+      7,
+      8,
+      12,
+      16
+    ],
+    "rounds": 5,
+    "rotations": 1,
+    "owner_returns": true,
+    "reads": false,
+    "joiners": 0,
+    "settle": 0.3,
+    "wait": 1.0,
+    "func": null
+  },
+  "rounds": [
+    {
+      "did": "did:iiot:rhGbClFcIw_1uqxKWqfkeGGlbfNowJaCPQlHK80TAKY",
+      "lost": 4,
+      "replicas": 20,
+      "victims": [
+        "node-57",
+        "node-47",
+        "node-45",
+        "node-13"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "29ad4750d92d",
+        "0efaa2f16dfe"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 16,
+        "older": 0,
+        "other": 0,
+        "none": 4
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 315,
+        "Stored": 5
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:RlPTH_9sYqJcPmY1bYEawlZFlMTMTbrxuOGVvIDS-0o",
+      "lost": 4,
+      "replicas": 20,
+      "victims": [
+        "node-96",
+        "node-29",
+        "node-125",
+        "node-3"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "bbecbd3a9db2",
+        "a40722bd01d7"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 16,
+        "older": 0,
+        "other": 0,
+        "none": 4
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 315,
+        "Stored": 5
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:waKFxQ_zQ23HtnWszdXcntVH0nqfhR43xiGOrd5z0Bw",
+      "lost": 4,
+      "replicas": 20,
+      "victims": [
+        "node-18",
+        "node-15",
+        "node-62",
+        "node-35"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "b4f35667836f",
+        "c457f4fb967e"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 16,
+        "older": 0,
+        "other": 0,
+        "none": 4
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 315,
+        "Stored": 5
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:-YuNiSAfz3t8qkdlHmBo4SSDOJo1AjyWbmESXALvZBY",
+      "lost": 4,
+      "replicas": 20,
+      "victims": [
+        "node-40",
+        "node-112",
+        "node-22",
+        "node-100"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "a8eed0e1800e",
+        "34302f3d5cfd"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 16,
+        "older": 0,
+        "other": 0,
+        "none": 4
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 315,
+        "Stored": 5
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:7q6Fs0OGZvS8dysGS87QXkBuMDaWwF5AzuN6tIOr3C0",
+      "lost": 4,
+      "replicas": 20,
+      "victims": [
+        "node-8",
+        "node-95",
+        "node-9",
+        "node-59"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "8580453def47",
+        "4003a554b3a4"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 16,
+        "older": 0,
+        "other": 0,
+        "none": 4
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 315,
+        "Stored": 5
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:whoZjJGv701RtSjBOJa_UjzjB7nKiPZvEDlXvj2Rlos",
+      "lost": 7,
+      "replicas": 20,
+      "victims": [
+        "node-9",
+        "node-59",
+        "node-95",
+        "node-8",
+        "node-85",
+        "node-122",
+        "node-89"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "e9a52d95a46f",
+        "5f30ea6de7b6"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 13,
+        "older": 0,
+        "other": 0,
+        "none": 7
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 252,
+        "Stored": 8
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:bZ_G6wKYXVzYhfWvbm5LpXBrk_vEACybfn6jToyHABI",
+      "lost": 7,
+      "replicas": 20,
+      "victims": [
+        "node-113",
+        "node-92",
+        "node-19",
+        "node-88",
+        "node-52",
+        "node-33",
+        "node-80"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "ba2c5bacd07f",
+        "66afbbd65743"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 13,
+        "older": 0,
+        "other": 0,
+        "none": 7
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 252,
+        "Stored": 8
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:ZtAsQN0D6rSjDegYo9EhsSl_HaAC7hwL9OlCtg1AxYc",
+      "lost": 7,
+      "replicas": 20,
+      "victims": [
+        "node-80",
+        "node-33",
+        "node-42",
+        "node-119",
+        "node-27",
+        "node-24",
+        "node-16"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "ff3a9f57c3d0",
+        "059bc3c5f152"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 13,
+        "older": 0,
+        "other": 0,
+        "none": 7
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 252,
+        "Stored": 8
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:S1Cws7vpWMU-Eg9Pou72857GZkcUJveO9F9rOl_GC2E",
+      "lost": 7,
+      "replicas": 20,
+      "victims": [
+        "node-29",
+        "node-24",
+        "node-27",
+        "node-42",
+        "node-119",
+        "node-25",
+        "node-69"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "ba5bfd34a005",
+        "38accae5263c"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 13,
+        "older": 0,
+        "other": 0,
+        "none": 7
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 252,
+        "Stored": 8
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:RkDz9cX5AxezSx7iOuAiv_Je_OkFcyIlZrG_aQhB138",
+      "lost": 7,
+      "replicas": 20,
+      "victims": [
+        "node-41",
+        "node-66",
+        "node-69",
+        "node-77",
+        "node-70",
+        "node-25",
+        "node-113"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "c34323099fea",
+        "3ab3a136d9c6"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 13,
+        "older": 0,
+        "other": 0,
+        "none": 7
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 252,
+        "Stored": 8
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:CXelsiGYHm1A69SYSyK2KzvME__pdyvMnBFFvTF7wrA",
+      "lost": 8,
+      "replicas": 19,
+      "victims": [
+        "node-7",
+        "node-101",
+        "node-63",
+        "node-73",
+        "node-6",
+        "node-74",
+        "node-83",
+        "node-91"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "7966670bdf81",
+        "2f332046b0a4"
+      ],
+      "before": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 11,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "after_push": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 210,
+        "Stored": 10
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:C-YJhxZfJapVWdHzOyKz6VBLw6T8I4ynsQg8Sx_W8ek",
+      "lost": 8,
+      "replicas": 19,
+      "victims": [
+        "node-72",
+        "node-84",
+        "node-83",
+        "node-36",
+        "node-78",
+        "node-56",
+        "node-121",
+        "node-126"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "4074b6592b5b",
+        "519e2c59a3a1"
+      ],
+      "before": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 11,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "after_push": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 210,
+        "Stored": 10
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:Bba8eLQgv7unzi4NbVrllswhC2DLCOhEDbgDsJZa69k",
+      "lost": 8,
+      "replicas": 20,
+      "victims": [
+        "node-84",
+        "node-103",
+        "node-39",
+        "node-86",
+        "node-6",
+        "node-74",
+        "node-63",
+        "node-73"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "b79404be502f",
+        "921c14ef8cf9"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 12,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 231,
+        "Stored": 9
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:Ikp6TSCUnj8bLhwA1FU3ul90OQBaMySr4YaUrhCmm6k",
+      "lost": 8,
+      "replicas": 19,
+      "victims": [
+        "node-117",
+        "node-75",
+        "node-120",
+        "node-124",
+        "node-116",
+        "node-48",
+        "node-32",
+        "node-98"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "796e97ef6f2c",
+        "2f0e0f550ca2"
+      ],
+      "before": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 11,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "after_push": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 210,
+        "Stored": 10
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:5XvpfqEbWmb53sVerGvsLBZUpuIltuxGF6mok6P2Mro",
+      "lost": 8,
+      "replicas": 20,
+      "victims": [
+        "node-8",
+        "node-95",
+        "node-59",
+        "node-9",
+        "node-115",
+        "node-89",
+        "node-122",
+        "node-85"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "5a6e732d37c9",
+        "8b1363e1f417"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 12,
+        "older": 0,
+        "other": 0,
+        "none": 8
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 231,
+        "Stored": 9
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:HvmHw5K3HHwBwnp1FabgZlktjW2D19Ll6iy_9ltoEL8",
+      "lost": 12,
+      "replicas": 20,
+      "victims": [
+        "node-49",
+        "node-72",
+        "node-84",
+        "node-91",
+        "node-83",
+        "node-78",
+        "node-99",
+        "node-121",
+        "node-56",
+        "node-126",
+        "node-36",
+        "node-101"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "3bd3ca41b3ee",
+        "b755b88f2ce3"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 147,
+        "Stored": 13
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:1H9jih5T1Knv41c_oWjcscYDIYCrE2YS1-owkMtcyIo",
+      "lost": 12,
+      "replicas": 20,
+      "victims": [
+        "node-115",
+        "node-89",
+        "node-122",
+        "node-85",
+        "node-26",
+        "node-93",
+        "node-102",
+        "node-127",
+        "node-62",
+        "node-35",
+        "node-15",
+        "node-18"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "457c26a119a1",
+        "b759f94023b9"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 147,
+        "Stored": 13
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:jKWZiZv_F1KkU8n0xAjyvbnKS7L3hYZINyz-muOQS9Q",
+      "lost": 12,
+      "replicas": 20,
+      "victims": [
+        "node-30",
+        "node-11",
+        "node-114",
+        "node-104",
+        "node-14",
+        "node-123",
+        "node-12",
+        "node-5",
+        "node-118",
+        "node-43",
+        "node-81",
+        "node-28"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "aab402797e9b",
+        "7e70e07ea344"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 147,
+        "Stored": 13
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:zwYVC_O4GRle4kz4b7WTv0HvfKwUWbMa-jO7OJ3XEw0",
+      "lost": 12,
+      "replicas": 20,
+      "victims": [
+        "node-67",
+        "node-76",
+        "node-21",
+        "node-20",
+        "node-89",
+        "node-115",
+        "node-85",
+        "node-122",
+        "node-95",
+        "node-8",
+        "node-9",
+        "node-59"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "c820a803ea1f",
+        "ec1ac641d28d"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 147,
+        "Stored": 13
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:wXFsfOGuiVFOtGe52_8e88qqFKZCbMv37TmtTLJcvWc",
+      "lost": 12,
+      "replicas": 20,
+      "victims": [
+        "node-18",
+        "node-15",
+        "node-62",
+        "node-35",
+        "node-40",
+        "node-22",
+        "node-112",
+        "node-100",
+        "node-65",
+        "node-53",
+        "node-71",
+        "node-20"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "6fff15c5101c",
+        "32f3606ac595"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 8,
+        "older": 0,
+        "other": 0,
+        "none": 12
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 147,
+        "Stored": 13
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:WF8DsPX8nlaplh_5YU3rOwSNXh7uj4UT41MBQSA6f00",
+      "lost": 16,
+      "replicas": 20,
+      "victims": [
+        "node-25",
+        "node-70",
+        "node-69",
+        "node-77",
+        "node-66",
+        "node-3",
+        "node-41",
+        "node-125",
+        "node-96",
+        "node-29",
+        "node-24",
+        "node-27",
+        "node-119",
+        "node-42",
+        "node-80",
+        "node-33"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "efd76cc42531",
+        "815178f5e9a7"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 63,
+        "Stored": 17
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:F8wZqok9YIFluTjjMbZ74LpvTAk5UehOFwG7mvgAg4Y",
+      "lost": 16,
+      "replicas": 20,
+      "victims": [
+        "node-7",
+        "node-48",
+        "node-32",
+        "node-116",
+        "node-78",
+        "node-126",
+        "node-121",
+        "node-56",
+        "node-99",
+        "node-36",
+        "node-91",
+        "node-49",
+        "node-72",
+        "node-84",
+        "node-83",
+        "node-6"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "8cae27fa16f0",
+        "ac9848ef20a5"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 63,
+        "Stored": 17
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:kbaEd-UM0QtHWs0pFIX54xSNR6GYgskKk_h2R3Wm-m8",
+      "lost": 16,
+      "replicas": 20,
+      "victims": [
+        "node-114",
+        "node-11",
+        "node-30",
+        "node-108",
+        "node-94",
+        "node-111",
+        "node-107",
+        "node-34",
+        "node-90",
+        "node-109",
+        "node-43",
+        "node-44",
+        "node-81",
+        "node-28",
+        "node-123",
+        "node-12"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "f0c3f6059ae8",
+        "688f5289fa02"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 63,
+        "Stored": 17
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:ZQOcxfTBbyM4Zv4qpa3tjvT-oCo9wbPKR4cAB-Q-lmM",
+      "lost": 16,
+      "replicas": 20,
+      "victims": [
+        "node-61",
+        "node-54",
+        "node-10",
+        "node-52",
+        "node-88",
+        "node-19",
+        "node-33",
+        "node-80",
+        "node-119",
+        "node-42",
+        "node-24",
+        "node-27",
+        "node-37",
+        "node-113",
+        "node-16",
+        "node-31"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "54ce68d5105d",
+        "7d3613f4d6c6"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 63,
+        "Stored": 17
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:ySmUCKn7aITDls8FBaDvgB22cOQzsBBQgymSc2z0gVE",
+      "lost": 16,
+      "replicas": 20,
+      "victims": [
+        "node-9",
+        "node-59",
+        "node-8",
+        "node-95",
+        "node-40",
+        "node-112",
+        "node-22",
+        "node-100",
+        "node-18",
+        "node-15",
+        "node-62",
+        "node-35",
+        "node-21",
+        "node-67",
+        "node-76",
+        "node-65"
+      ],
+      "publication": "complete",
+      "rotations": [
+        "complete"
+      ],
+      "versions": [
+        "8ae51cc99e23",
+        "b2dc36e9fa4c"
+      ],
+      "before": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "after_loss": {
+        "current": 4,
+        "older": 0,
+        "other": 0,
+        "none": 16
+      },
+      "after_push": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "push_answers": {
+        "AlreadyStored": 63,
+        "Stored": 17
+      },
+      "owner_republish": "complete",
+      "after_owner": {
+        "current": 20,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    }
+  ]
+}

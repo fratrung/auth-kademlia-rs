@@ -1,0 +1,174 @@
+=== 2026-11-23 13:30:26 start (all) on auth-kademlia-testbed:adr0006
+=== 2026-11-23 13:30:26 adr0006-lan-up: up lan 127 20 0
+=== 2026-11-23 13:30:47 adr0006-lan-up: exit 0, host drops 0
+=== 2026-11-23 13:30:47 adr0006-lan-e1: testbed/measure.py publish --rounds 20
+=== 2026-11-23 13:31:26 adr0006-lan-e1: exit 0, host drops 0
+=== 2026-11-23 13:31:26 adr0006-lan-update: testbed/measure.py update --rounds 20 --restart 1
+=== 2026-11-23 13:32:30 adr0006-lan-update: exit 0, host drops 0
+=== 2026-11-23 13:32:30 adr0006-lan-e2: testbed/measure.py publish --rounds 20 --watchers 0 --counters
+=== 2026-11-23 13:34:30 adr0006-lan-e2: exit 0, host drops 0
+=== 2026-11-23 13:34:30 adr0006-lan-update-counters: testbed/measure.py update --rounds 10 --restart 1 --counters
+=== 2026-11-23 13:35:30 adr0006-lan-update-counters: exit 0, host drops 0
+=== 2026-11-23 13:35:30 adr0006-lan-down: testbed/testbed.py down
+=== 2026-11-23 13:35:39 adr0006-lan-down: exit 0, host drops 0
+=== 2026-11-23 13:35:39 adr0006-wan-eu-up: up wan-eu 127 20 0
+=== 2026-11-23 13:36:00 adr0006-wan-eu-up: exit 0, host drops 0
+=== 2026-11-23 13:36:00 adr0006-wan-eu-e1: testbed/measure.py publish --rounds 20
+=== 2026-11-23 13:36:41 adr0006-wan-eu-e1: exit 0, host drops 0
+=== 2026-11-23 13:36:41 adr0006-wan-eu-update: testbed/measure.py update --rounds 20 --restart 1
+=== 2026-11-23 13:37:53 adr0006-wan-eu-update: exit 0, host drops 0
+=== 2026-11-23 13:37:53 adr0006-wan-eu-e2: testbed/measure.py publish --rounds 20 --watchers 0 --counters
+=== 2026-11-23 13:39:55 adr0006-wan-eu-e2: exit 0, host drops 0
+=== 2026-11-23 13:39:55 adr0006-wan-eu-update-counters: testbed/measure.py update --rounds 10 --restart 1 --counters
+=== 2026-11-23 13:40:59 adr0006-wan-eu-update-counters: exit 0, host drops 0
+=== 2026-11-23 13:40:59 adr0006-wan-eu-down: testbed/testbed.py down
+=== 2026-11-23 13:41:07 adr0006-wan-eu-down: exit 0, host drops 0
+=== 2026-11-23 13:41:07 adr0006-wan-atlantic-up: up wan-atlantic 127 20 0
+=== 2026-11-23 13:41:29 adr0006-wan-atlantic-up: exit 0, host drops 0
+=== 2026-11-23 13:41:29 adr0006-wan-atlantic-e1: testbed/measure.py publish --rounds 20
+=== 2026-11-23 13:42:18 adr0006-wan-atlantic-e1: exit 0, host drops 0
+=== 2026-11-23 13:42:18 adr0006-wan-atlantic-update: testbed/measure.py update --rounds 20 --restart 1
+=== 2026-11-23 13:43:52 adr0006-wan-atlantic-update: exit 0, host drops 0
+=== 2026-11-23 13:43:52 adr0006-wan-atlantic-update-counters: testbed/measure.py update --rounds 10 --restart 1 --counters
+=== 2026-11-23 13:45:08 adr0006-wan-atlantic-update-counters: exit 0, host drops 0
+=== 2026-11-23 13:45:08 adr0006-wan-atlantic-down: testbed/testbed.py down
+=== 2026-11-23 13:45:16 adr0006-wan-atlantic-down: exit 0, host drops 0
+=== 2026-11-23 13:45:16 adr0006-wan-eu-loss0.5-up: up wan-eu 127 20 0.5
+=== 2026-11-23 13:45:37 adr0006-wan-eu-loss0.5-up: exit 0, host drops 0
+=== 2026-11-23 13:45:37 adr0006-wan-eu-loss0.5-e1: testbed/measure.py publish --rounds 40
+=== 2026-11-23 13:47:12 adr0006-wan-eu-loss0.5-e1: exit 0, host drops 0
+=== 2026-11-23 13:47:12 adr0006-wan-eu-loss0.5-update: testbed/measure.py update --rounds 20 --restart 1
+=== 2026-11-23 13:48:38 adr0006-wan-eu-loss0.5-update: exit 0, host drops 0
+=== 2026-11-23 13:48:38 adr0006-wan-eu-loss0.5-e2: testbed/measure.py publish --rounds 40 --watchers 0 --counters
+=== 2026-11-23 13:52:50 adr0006-wan-eu-loss0.5-e2: exit 0, host drops 508
+=== 2026-11-23 13:52:50 adr0006-wan-eu-loss0.5-update-counters: testbed/measure.py update --rounds 10 --restart 1 --counters
+=== 2026-11-23 13:53:59 adr0006-wan-eu-loss0.5-update-counters: exit 0, host drops 0
+=== 2026-11-23 13:53:59 adr0006-wan-eu-loss0.5-down: testbed/testbed.py down
+=== 2026-11-23 13:54:07 adr0006-wan-eu-loss0.5-down: exit 0, host drops 0
+=== 2026-11-23 13:54:07 k3-lan-up: up lan 10 3 0
+=== 2026-11-23 13:54:09 k3-lan-up: exit 0, host drops 0
+=== 2026-11-23 13:54:09 k3-lan-race-start: testbed/attack.py start --mode race
+=== 2026-11-23 13:54:11 k3-lan-race-start: exit 0, host drops 0
+=== 2026-11-23 13:54:11 k3-lan-race: testbed/attack.py race --rounds 20
+=== 2026-11-23 13:54:50 k3-lan-race: exit 0, host drops 0
+=== 2026-11-23 13:54:50 k3-lan-race-stop: testbed/attack.py stop
+=== 2026-11-23 13:54:50 k3-lan-race-stop: exit 0, host drops 0
+=== 2026-11-23 13:54:50 k3-lan-down: testbed/testbed.py down
+=== 2026-11-23 13:54:51 k3-lan-down: exit 0, host drops 0
+=== 2026-11-23 13:54:51 k3-wan-eu-up: up wan-eu 10 3 0
+=== 2026-11-23 13:54:53 k3-wan-eu-up: exit 0, host drops 0
+=== 2026-11-23 13:54:53 k3-wan-eu-race-start: testbed/attack.py start --mode race
+=== 2026-11-23 13:54:55 k3-wan-eu-race-start: exit 0, host drops 0
+=== 2026-11-23 13:54:55 k3-wan-eu-race: testbed/attack.py race --rounds 20
+=== 2026-11-23 13:55:40 k3-wan-eu-race: exit 0, host drops 0
+=== 2026-11-23 13:55:40 k3-wan-eu-race-stop: testbed/attack.py stop
+=== 2026-11-23 13:55:40 k3-wan-eu-race-stop: exit 0, host drops 0
+=== 2026-11-23 13:55:40 k3-wan-eu-burst-start: testbed/attack.py start --mode burst
+=== 2026-11-23 13:55:42 k3-wan-eu-burst-start: exit 0, host drops 0
+=== 2026-11-23 13:55:42 k3-wan-eu-burst: testbed/attack.py race --rounds 20
+=== 2026-11-23 13:56:27 k3-wan-eu-burst: exit 0, host drops 0
+=== 2026-11-23 13:56:27 k3-wan-eu-burst-stop: testbed/attack.py stop
+=== 2026-11-23 13:56:27 k3-wan-eu-burst-stop: exit 0, host drops 0
+=== 2026-11-23 13:56:27 k3-wan-eu-restart-control: testbed/attack.py restart --rounds 20
+=== 2026-11-23 13:57:59 k3-wan-eu-restart-control: exit 0, host drops 0
+=== 2026-11-23 13:57:59 k3-wan-eu-persist-start: testbed/attack.py start --mode persist
+=== 2026-11-23 13:58:00 k3-wan-eu-persist-start: exit 0, host drops 0
+=== 2026-11-23 13:58:00 k3-wan-eu-persist: testbed/attack.py restart --rounds 20
+=== 2026-11-23 13:59:31 k3-wan-eu-persist: exit 0, host drops 0
+=== 2026-11-23 13:59:31 k3-wan-eu-persist-stop: testbed/attack.py stop
+=== 2026-11-23 13:59:31 k3-wan-eu-persist-stop: exit 0, host drops 0
+=== 2026-11-23 13:59:31 k3-wan-eu-successor-start: testbed/attack.py start --mode successor
+=== 2026-11-23 13:59:33 k3-wan-eu-successor-start: exit 0, host drops 0
+=== 2026-11-23 13:59:33 k3-wan-eu-successor: testbed/attack.py restart --rounds 20 --no-crash
+=== 2026-11-23 14:00:52 k3-wan-eu-successor: exit 0, host drops 0
+=== 2026-11-23 14:00:52 k3-wan-eu-successor-stop: testbed/attack.py stop
+=== 2026-11-23 14:00:52 k3-wan-eu-successor-stop: exit 0, host drops 0
+=== 2026-11-23 14:00:52 k3-wan-eu-down: testbed/testbed.py down
+=== 2026-11-23 14:00:54 k3-wan-eu-down: exit 0, host drops 0
+=== 2026-11-23 14:00:54 k3-wan-atlantic-up: up wan-atlantic 10 3 0
+=== 2026-11-23 14:00:58 k3-wan-atlantic-up: exit 0, host drops 0
+=== 2026-11-23 14:00:58 k3-wan-atlantic-race-start: testbed/attack.py start --mode race
+=== 2026-11-23 14:00:59 k3-wan-atlantic-race-start: exit 0, host drops 0
+=== 2026-11-23 14:00:59 k3-wan-atlantic-race: testbed/attack.py race --rounds 20
+=== 2026-11-23 14:01:58 k3-wan-atlantic-race: exit 0, host drops 0
+=== 2026-11-23 14:01:58 k3-wan-atlantic-race-stop: testbed/attack.py stop
+=== 2026-11-23 14:01:58 k3-wan-atlantic-race-stop: exit 0, host drops 0
+=== 2026-11-23 14:01:58 k3-wan-atlantic-down: testbed/testbed.py down
+=== 2026-11-23 14:01:59 k3-wan-atlantic-down: exit 0, host drops 0
+=== 2026-11-23 14:01:59 k20-wan-eu-up: up wan-eu 127 20 0
+=== 2026-11-23 14:02:21 k20-wan-eu-up: exit 0, host drops 0
+=== 2026-11-23 14:02:21 k20-wan-eu-race-start: testbed/attack.py start --mode race
+=== 2026-11-23 14:02:22 k20-wan-eu-race-start: exit 0, host drops 0
+=== 2026-11-23 14:02:22 k20-wan-eu-race: testbed/attack.py race --rounds 20
+=== 2026-11-23 14:03:36 k20-wan-eu-race: exit 0, host drops 0
+=== 2026-11-23 14:03:36 k20-wan-eu-race-stop: testbed/attack.py stop
+=== 2026-11-23 14:03:36 k20-wan-eu-race-stop: exit 0, host drops 0
+=== 2026-11-23 14:03:36 k20-wan-eu-burst-start: testbed/attack.py start --mode burst
+=== 2026-11-23 14:03:38 k20-wan-eu-burst-start: exit 0, host drops 0
+=== 2026-11-23 14:03:38 k20-wan-eu-burst: testbed/attack.py race --rounds 20
+=== 2026-11-23 14:04:53 k20-wan-eu-burst: exit 0, host drops 0
+=== 2026-11-23 14:04:53 k20-wan-eu-burst-stop: testbed/attack.py stop
+=== 2026-11-23 14:04:53 k20-wan-eu-burst-stop: exit 0, host drops 0
+=== 2026-11-23 14:04:53 k20-wan-eu-restart-control: testbed/attack.py restart --rounds 20
+=== 2026-11-23 14:07:12 k20-wan-eu-restart-control: exit 0, host drops 0
+=== 2026-11-23 14:07:12 k20-wan-eu-persist-start: testbed/attack.py start --mode persist
+=== 2026-11-23 14:07:13 k20-wan-eu-persist-start: exit 0, host drops 0
+=== 2026-11-23 14:07:13 k20-wan-eu-persist: testbed/attack.py restart --rounds 20
+=== 2026-11-23 14:09:42 k20-wan-eu-persist: exit 0, host drops 0
+=== 2026-11-23 14:09:42 k20-wan-eu-persist-stop: testbed/attack.py stop
+=== 2026-11-23 14:09:43 k20-wan-eu-persist-stop: exit 0, host drops 0
+=== 2026-11-23 14:09:43 k20-wan-eu-successor-start: testbed/attack.py start --mode successor
+=== 2026-11-23 14:09:44 k20-wan-eu-successor-start: exit 0, host drops 0
+=== 2026-11-23 14:09:44 k20-wan-eu-successor: testbed/attack.py restart --rounds 20 --no-crash
+=== 2026-11-23 14:11:52 k20-wan-eu-successor: exit 0, host drops 0
+=== 2026-11-23 14:11:52 k20-wan-eu-successor-stop: testbed/attack.py stop
+=== 2026-11-23 14:11:52 k20-wan-eu-successor-stop: exit 0, host drops 0
+=== 2026-11-23 14:11:52 k20-wan-eu-liars0: testbed/measure.py update --rounds 20 --restart 1 --counters --liars 0
+=== 2026-11-23 14:14:01 k20-wan-eu-liars0: exit 0, host drops 0
+=== 2026-11-23 14:14:01 k20-wan-eu-liars1: testbed/measure.py update --rounds 20 --restart 1 --counters --liars 1
+=== 2026-11-23 14:16:13 k20-wan-eu-liars1: exit 0, host drops 0
+=== 2026-11-23 14:16:13 k20-wan-eu-liars12: testbed/measure.py update --rounds 20 --restart 1 --counters --liars 12
+=== 2026-11-23 14:18:55 k20-wan-eu-liars12: exit 0, host drops 0
+=== 2026-11-23 14:18:55 k20-wan-eu-liars13: testbed/measure.py update --rounds 20 --restart 1 --counters --liars 13
+=== 2026-11-23 14:21:40 k20-wan-eu-liars13: exit 0, host drops 0
+=== 2026-11-23 14:21:40 k20-wan-eu-liars18: testbed/measure.py update --rounds 20 --restart 1 --counters --liars 18
+=== 2026-11-23 14:24:39 k20-wan-eu-liars18: exit 0, host drops 0
+=== 2026-11-23 14:24:39 k20-wan-eu-spoof-guessed-start: testbed/attack.py start --mode spoof --spoof-ids guessed
+=== 2026-11-23 14:24:40 k20-wan-eu-spoof-guessed-start: exit 0, host drops 0
+=== 2026-11-23 14:24:40 k20-wan-eu-spoof-guessed: testbed/measure.py update --rounds 20 --restart 1 --counters
+=== 2026-11-23 14:26:52 k20-wan-eu-spoof-guessed: exit 0, host drops 0
+=== 2026-11-23 14:26:52 k20-wan-eu-spoof-guessed-stop: testbed/attack.py stop
+=== 2026-11-23 14:26:52 k20-wan-eu-spoof-guessed-stop: exit 0, host drops 0
+=== 2026-11-23 14:26:52 k20-wan-eu-spoof-observed-start: testbed/attack.py start --mode spoof --spoof-ids observed
+=== 2026-11-23 14:26:53 k20-wan-eu-spoof-observed-start: exit 0, host drops 0
+=== 2026-11-23 14:26:53 k20-wan-eu-spoof-observed: testbed/measure.py update --rounds 20 --restart 1 --counters
+=== 2026-11-23 14:29:02 k20-wan-eu-spoof-observed: exit 0, host drops 0
+=== 2026-11-23 14:29:02 k20-wan-eu-spoof-observed-stop: testbed/attack.py stop
+=== 2026-11-23 14:29:02 k20-wan-eu-spoof-observed-stop: exit 0, host drops 0
+=== 2026-11-23 14:29:02 k20-wan-eu-churn-liars0: testbed/measure.py churn --duration 600 --liars 0
+=== 2026-11-23 14:39:04 k20-wan-eu-churn-liars0: exit 0, host drops 0
+=== 2026-11-23 14:39:04 k20-wan-eu-churn-liars1: testbed/measure.py churn --duration 600 --liars 1
+=== 2026-11-23 14:49:05 k20-wan-eu-churn-liars1: exit 0, host drops 0
+=== 2026-11-23 14:49:05 k20-wan-eu-churn-liars13: testbed/measure.py churn --duration 600 --liars 13
+=== 2026-11-23 14:59:08 k20-wan-eu-churn-liars13: exit 0, host drops 0
+=== 2026-11-23 14:59:08 k20-wan-eu-down: testbed/testbed.py down
+=== 2026-11-23 14:59:16 k20-wan-eu-down: exit 0, host drops 0
+=== 2026-11-23 14:59:16 outage-wan-eu-up: up wan-eu 127 20 0
+=== 2026-11-23 14:59:37 outage-wan-eu-up: exit 0, host drops 0
+=== 2026-11-23 14:59:37 outage-wan-eu-outage: testbed/measure.py outage --lost 4 7 8 12 16 --rounds 5 --owner-returns
+=== 2026-11-23 15:05:57 outage-wan-eu-outage: exit 0, host drops 0
+=== 2026-11-23 15:05:57 outage-wan-eu-down: testbed/testbed.py down
+=== 2026-11-23 15:06:05 outage-wan-eu-down: exit 0, host drops 0
+=== 2026-11-23 15:06:05 reads-wan-eu-up: up wan-eu 130 20 0
+=== 2026-11-23 15:06:27 reads-wan-eu-up: exit 0, host drops 0
+=== 2026-11-23 15:06:27 reads-wan-eu-attacker-start: testbed/attack.py start --mode persist --period 1000 --did-ttl 60
+=== 2026-11-23 15:06:29 reads-wan-eu-attacker-start: exit 0, host drops 0
+=== 2026-11-23 15:06:29 reads-wan-eu-outage-reads: testbed/measure.py outage --lost 8 12 16 20 --rounds 5 --reads --joiners 3 --owner-returns
+=== 2026-11-23 15:17:37 reads-wan-eu-outage-reads: exit 0, host drops 0
+=== 2026-11-23 15:17:37 reads-wan-eu-attacker-log: testbed/attack.py logs
+=== 2026-11-23 15:17:38 reads-wan-eu-attacker-log: exit 0, host drops 0
+=== 2026-11-23 15:17:38 reads-wan-eu-attacker-stop: testbed/attack.py stop
+=== 2026-11-23 15:17:39 reads-wan-eu-attacker-stop: exit 0, host drops 0
+=== 2026-11-23 15:17:39 reads-wan-eu-down: testbed/testbed.py down
+=== 2026-11-23 15:17:47 reads-wan-eu-down: exit 0, host drops 0
+=== 2026-11-23 15:17:47 done

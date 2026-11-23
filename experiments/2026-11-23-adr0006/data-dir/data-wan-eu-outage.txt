@@ -1,0 +1,35 @@
+outage: replicas lost [4, 8, 12, 16, 20], 5 rounds each, owner node-1 offline, then back, 127 nodes, k=20, profile wan-eu, image auth-kademlia-testbed:adr0006-data, records on disk
+lost round  before    after loss  after push  owner back  push answers
+   4     1  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 399, Stored 1
+   4     2  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 399, Stored 1
+   4     3  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 399, Stored 1
+   4     4  19/0/0    19/0/0      19/0/0      19/0/0      AlreadyStored 378, Stored 2
+   4     5  19/0/0    19/0/0      19/0/0      19/0/0      AlreadyStored 378, Stored 2
+   8     1  19/0/0    19/0/0      19/0/0      19/0/0      AlreadyStored 378, Stored 2
+   8     2  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 399, Stored 1
+   8     3  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 399, Stored 1
+   8     4  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 399, Stored 1
+   8     5  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 399, Stored 1
+  12     1  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 399, Stored 1
+  12     2  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 399, Stored 1
+  12     3  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 399, Stored 1
+  12     4  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 399, Stored 1
+  12     5  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 399, Stored 1
+  16     1  19/0/0    19/0/0      19/0/0      19/0/0      AlreadyStored 379, Stored 1
+  16     2  19/0/0    19/0/0      19/0/0      19/0/0      AlreadyStored 378, Stored 2
+  16     3  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 399, Stored 1
+  16     4  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 399, Stored 1
+  16     5  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 399, Stored 1
+  20     1  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 399, Stored 1
+  20     2  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 398, Stored 2
+  20     3  19/0/0    19/0/0      19/0/0      19/0/0      AlreadyStored 378, Stored 2
+  20     4  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 399, Stored 1
+  20     5  20/0/0    20/0/0      20/0/0      20/0/0      AlreadyStored 399, Stored 1
+
+summary (copies of the current version on the replicas, owner left out)
+   4 lost: after the loss median 20, min 19, max 20 (n=5); after the holders' republication median 20, min 19, max 20 (n=5); fully restored 5/5; after the owner's return median 20, min 19, max 20 (n=5), fully restored 5/5
+   8 lost: after the loss median 20, min 19, max 20 (n=5); after the holders' republication median 20, min 19, max 20 (n=5); fully restored 5/5; after the owner's return median 20, min 19, max 20 (n=5), fully restored 5/5
+  12 lost: after the loss median 20, min 20, max 20 (n=5); after the holders' republication median 20, min 20, max 20 (n=5); fully restored 5/5; after the owner's return median 20, min 20, max 20 (n=5), fully restored 5/5
+  16 lost: after the loss median 20, min 19, max 20 (n=5); after the holders' republication median 20, min 19, max 20 (n=5); fully restored 5/5; after the owner's return median 20, min 19, max 20 (n=5), fully restored 5/5
+  20 lost: after the loss median 20, min 19, max 20 (n=5); after the holders' republication median 20, min 19, max 20 (n=5); fully restored 5/5; after the owner's return median 20, min 19, max 20 (n=5), fully restored 5/5
+  details: testbed/.generated/outage-wan-eu-20261123-185515.json

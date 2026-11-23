@@ -1,0 +1,970 @@
+{
+  "config": {
+    "nodes": 127,
+    "k": 20,
+    "alpha": 3,
+    "seeds": 3,
+    "subnet": "10.213",
+    "profile": "wan-eu",
+    "delay_ms": 6.8,
+    "jitter_ms": 0.0,
+    "loss_pct": 0.5,
+    "cpus": null,
+    "image": "auth-kademlia-testbed:adr0006"
+  },
+  "args": {
+    "command": "update",
+    "owner": "node-1",
+    "rounds": 20,
+    "rotations": 1,
+    "restart": 1,
+    "counters": false,
+    "settle": 0.3,
+    "wait": 0.5,
+    "liars": 0,
+    "lie": "on",
+    "func": null
+  },
+  "rounds": [
+    {
+      "did": "did:iiot:QiaBv77iebsqZ9WhxJr_iGCZrSIqmLbaKCsi6dstIK0",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "578cc0149031",
+        "d79f0c74fc23"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 89.8,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-42"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:xDZ8G5fTWvLdMzmD4Ipb_kFiPJz-Tw3QM8RMaIvU-yM",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "041c7600dbcb",
+        "99fbfc055442"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 89.4,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-95"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:sk2b36cFaQFKz5CKbkqKf9ERB-n7gp1bgm1ClUkkIC4",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "f952a86fe91b",
+        "e79a6c8eb715"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 90.3,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-64"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:3oOhvrSK6Ti1Pay9zv1cmm7W-KdkiH__j_XNVtIPfs0",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "6d8b466878a4",
+        "8f69c24a8e5f"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 61.5,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-40"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:P4-pgSY7d2UFE8hu8wzexb9RuPm3-awJMFHta6m-D8Q",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "1f24a9d7e70a",
+        "406da9440585"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 261.4,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-48"
+      ],
+      "replicas": {
+        "current": 18,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:mNTjGfjkn88gy6nyRxQ7qtgKFUUmJ68CcBYUQdZ8vaw",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "1540c3fd78b8",
+        "080a446b4ae6"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 192.5,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-12"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:DR6KLP-T4cRrp3tv0S6PR94DaDx5tPG0LSn9CjV42b0",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "a8c314d56f4f",
+        "764701280187"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 92.5,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-83"
+      ],
+      "replicas": {
+        "current": 18,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:UzZdGuiaJJwKlbZopUZHfBrzPCJesMf0_8iFdIiWqJU",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "38fa86506f1b",
+        "1c9cd76f7453"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 106.8,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-70"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:dbhc_1X_jY4axffLf2aBIISYlrCqqq-F3SeHOdfU4bg",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "b73a8ace9279",
+        "c47bc198324b"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 189.5,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-16"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:iH2ry0UytIHLaxXa60YZqbJR1t8LrJKLFFSf4znBH6k",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "44f5f8aaad8a",
+        "faf6363e3fe3"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 91.5,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-28"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:tJ7PAqVEz7zsQ--yiTDm07LLX4MQOGOySB962lwXtKU",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "51fd88bdffb6",
+        "2192508c466d"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 93.4,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-2"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:AvmldEgnNk3zABerNnbvZfGnrPY4-kY97CDbfRcj3gM",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "9e67542c2ec6",
+        "56f45423b643"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 197.6,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-126"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:K9WpyFiQ0aHamYjHMMnhp4Mq7IlzKt5K5EGXuvj0e74",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "c6b3d4f1140f",
+        "3629992743f8"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 577.7,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-32"
+      ],
+      "replicas": {
+        "current": 18,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:CNdeh5iDE5WuJf8IUwcz5KRRGATfXlWRiTKABURllSE",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "657c93d9c841",
+        "9ef1635d163c"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 241.2,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-126"
+      ],
+      "replicas": {
+        "current": 18,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:9HTMAlDDzdKCwF6Ou6CqFTNC6EJNKgr0UsVz7KVZJbU",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "b85c20009e67",
+        "0d993b0b66d8"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 95.1,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-15"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:wfD0o7IgQfUtbAvJ3AAOy1U9YG29vzI437x_J6yXTvk",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "a24758b5db71",
+        "e14c50e3d71d"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 139.1,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-100"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:x8p0ed1J5khZbE7ZNRrg7DJX3Ipo9Jn1W962lIodta0",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "25189d521d68",
+        "84c6cfa6d4d0"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 95.1,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-20"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:8wBov2u79M8ReqYDgsdxyvLNKrTLSbOJ3sAaljrDIBE",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "62dd8a1770f4",
+        "236e62ca77be"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 143.0,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-112"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:cIWvGhmxjtIJHdH5qt-7BnAfoEkQ8-0D54RFuHeZiJM",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "564edafc1125",
+        "4cfd5bb86450"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 1106.7,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-41"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    },
+    {
+      "did": "did:iiot:03FJiB3eRqXACR6kGTgDgH1yav0dTy-07GGIwW6oX_Y",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "3728f697efd1",
+        "adcce9ae5413"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 194.4,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-127"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      }
+    }
+  ]
+}

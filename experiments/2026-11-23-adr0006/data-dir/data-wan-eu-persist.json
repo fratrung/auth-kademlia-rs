@@ -1,0 +1,198 @@
+{
+  "config": {
+    "nodes": 127,
+    "k": 20,
+    "alpha": 3,
+    "seeds": 3,
+    "subnet": "10.213",
+    "profile": "wan-eu",
+    "delay_ms": 6.8,
+    "jitter_ms": 0.0,
+    "loss_pct": 0.0,
+    "cpus": null,
+    "image": "auth-kademlia-testbed:adr0006-data",
+    "data_dir": true
+  },
+  "rounds": [
+    {
+      "victim": "node-3",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-18",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-12",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-36",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-38",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-29",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-48",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-40",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-44",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-54",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-69",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-85",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-76",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-70",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-88",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-109",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-120",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-115",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-122",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-125",
+      "publish": "complete",
+      "after": "owner",
+      "forged_copies": 0,
+      "nodes": 126,
+      "forged_reads": 0,
+      "reads": 3
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+race: 20 rounds, owner node-1, 127 nodes, k=20, profile wan-eu, image auth-kademlia-testbed:adr0006
+round  victim   before   update         after       others    forged reads
+    1  node-4   empty    complete       owner       19/19      0/3
+    2  node-7   empty    complete       owner       18/18      0/3
+    3  node-32  empty    complete       owner       18/18      0/3
+    4  node-14  empty    complete       owner       19/19      0/3
+    5  node-39  empty    complete       owner       18/18      0/3
+    6  node-56  empty    complete       owner       18/18      0/3
+    7  node-72  empty    complete       owner       19/19      0/3
+    8  node-73  empty    complete       owner       19/19      0/3
+    9  node-42  empty    complete       owner       19/19      0/3
+   10  node-42  empty    complete       owner       19/19      0/3
+   11  node-50  empty    complete       owner       19/19      0/3
+   12  node-86  empty    complete       owner       18/18      0/3
+   13  node-104 empty    complete       owner       19/19      0/3
+   14  node-103 empty    complete       owner       18/18      0/3
+   15  node-93  empty    complete       owner       19/19      0/3
+   16  node-92  empty    complete       owner       19/19      0/3
+   17  node-96  empty    complete       owner       19/19      0/3
+   18  node-115 empty    complete       owner       19/19      0/3
+   19  node-121 empty    complete       owner       19/19      0/3
+   20  node-127 empty    complete       owner       19/19      0/3
+
+summary
+  victim empty before the update: 20/20
+  victim after the update holds owner: 20/20
+  victim after the update holds attacker: 0/20
+  victim after the update holds old: 0/20
+  victim after the update holds empty: 0/20
+  owner's update: complete 20
+  other replicas holding the owner's record: 374/374
+  plain reads returning the forged record: 0/60
+  attacker: 316 attacks, sent 0.9 ms (median) after seeing the request
+  attacker's answers: Some(InvalidRecord) 316
+  details: testbed/.generated/race-wan-eu-20261123-140336.json

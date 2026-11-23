@@ -1,0 +1,2510 @@
+{
+  "config": {
+    "nodes": 127,
+    "k": 20,
+    "alpha": 3,
+    "seeds": 3,
+    "subnet": "10.213",
+    "profile": "wan-eu",
+    "delay_ms": 6.8,
+    "jitter_ms": 0.0,
+    "loss_pct": 0.0,
+    "cpus": null,
+    "image": "auth-kademlia-testbed:adr0006"
+  },
+  "args": {
+    "command": "update",
+    "owner": "node-1",
+    "rounds": 20,
+    "rotations": 1,
+    "restart": 1,
+    "counters": true,
+    "settle": 0.3,
+    "wait": 0.5,
+    "liars": 0,
+    "lie": "on",
+    "func": null
+  },
+  "rounds": [
+    {
+      "did": "did:iiot:9tFL2JkEMPVvXlz8IQD_KS9I2bXYmEqUzGmMg_R8iLo",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "0e563c518d89",
+        "69fca6243841"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 90.4,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-26"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22694
+          },
+          "FindValueNodes": {
+            "datagrams": 2,
+            "bytes": 2269
+          },
+          "Received": {
+            "datagrams": 20,
+            "bytes": 420
+          },
+          "Store": {
+            "datagrams": 120,
+            "bytes": 144600
+          },
+          "StoreResult": {
+            "datagrams": 20,
+            "bytes": 500
+          },
+          "FindHash": {
+            "datagrams": 21,
+            "bytes": 1785
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 44572,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:UnZDoOjNYMrWmVLPXPT7D1x3c82TAYOZ3VMdAhIFtQ4",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "24ed91811c50",
+        "4e4c9ffde418"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 60.9,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-41"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22637
+          },
+          "FindValueNodes": {
+            "datagrams": 1,
+            "bytes": 1133
+          },
+          "Received": {
+            "datagrams": 20,
+            "bytes": 420
+          },
+          "Store": {
+            "datagrams": 120,
+            "bytes": 144600
+          },
+          "StoreResult": {
+            "datagrams": 20,
+            "bytes": 500
+          },
+          "FindHash": {
+            "datagrams": 20,
+            "bytes": 1700
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 15374,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            1,
+            0,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:qOCCiVZOvcEq9Uf4TmgoX9YulfvBcq6NB2AH5yzOvEY",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "bc107a6a6413",
+        "1ec121195a0c"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 89.9,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-45"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22695
+          },
+          "FindValueNodes": {
+            "datagrams": 2,
+            "bytes": 2270
+          },
+          "Received": {
+            "datagrams": 20,
+            "bytes": 420
+          },
+          "Store": {
+            "datagrams": 120,
+            "bytes": 144600
+          },
+          "StoreResult": {
+            "datagrams": 20,
+            "bytes": 500
+          },
+          "FindHash": {
+            "datagrams": 21,
+            "bytes": 1785
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 44002,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:qOsE70OxAJWduEXgzLEbVllGFzEl5UZEsGYIfx6p9Uw",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "b644cba7e3c1",
+        "f512de1dae6f"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 90.4,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-57"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22694
+          },
+          "FindValueNodes": {
+            "datagrams": 2,
+            "bytes": 2270
+          },
+          "Received": {
+            "datagrams": 20,
+            "bytes": 420
+          },
+          "Store": {
+            "datagrams": 120,
+            "bytes": 144600
+          },
+          "StoreResult": {
+            "datagrams": 20,
+            "bytes": 500
+          },
+          "FindHash": {
+            "datagrams": 21,
+            "bytes": 1785
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 45355,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:F70TJS16KZibN8NkrjFUvl9NOQVvPga4Ye_8LBCKe5U",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "4dbeb0c41f43",
+        "e8139f51bcef"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 89.7,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-99"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22715
+          },
+          "FindValueNodes": {
+            "datagrams": 2,
+            "bytes": 2270
+          },
+          "Received": {
+            "datagrams": 20,
+            "bytes": 420
+          },
+          "Store": {
+            "datagrams": 120,
+            "bytes": 144600
+          },
+          "StoreResult": {
+            "datagrams": 20,
+            "bytes": 500
+          },
+          "FindHash": {
+            "datagrams": 21,
+            "bytes": 1785
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 44344,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:mXJi23QD_XBIQlvM_XBRhMClcUhy1Vtk6NF8IBDqFyM",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "32d2915d25ed",
+        "2d2d30176c07"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 91.2,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-12"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22770
+          },
+          "FindValueNodes": {
+            "datagrams": 3,
+            "bytes": 3417
+          },
+          "Received": {
+            "datagrams": 20,
+            "bytes": 420
+          },
+          "Store": {
+            "datagrams": 120,
+            "bytes": 144600
+          },
+          "StoreResult": {
+            "datagrams": 20,
+            "bytes": 500
+          },
+          "FindHash": {
+            "datagrams": 22,
+            "bytes": 1870
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 45211,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:KmDh5GBnXtXCgeVnWzM7w9t4u9sPluPlfQIZiAr-xOs",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "5a7f208b82ac",
+        "849ce3a0d78c"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 92.4,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-98"
+      ],
+      "replicas": {
+        "current": 18,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22732
+          },
+          "FindValueNodes": {
+            "datagrams": 5,
+            "bytes": 5680
+          },
+          "Received": {
+            "datagrams": 19,
+            "bytes": 399
+          },
+          "Store": {
+            "datagrams": 114,
+            "bytes": 137370
+          },
+          "StoreResult": {
+            "datagrams": 19,
+            "bytes": 475
+          },
+          "FindHash": {
+            "datagrams": 24,
+            "bytes": 2040
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 46042,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:pzEBhgR4w8368F-2kwW4kVS-tw_aEf-fmUA4Ed0Wqdo",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "8028fa67927f",
+        "5b4603f9e645"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 92.0,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-45"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22659
+          },
+          "FindValueNodes": {
+            "datagrams": 4,
+            "bytes": 4532
+          },
+          "Received": {
+            "datagrams": 20,
+            "bytes": 420
+          },
+          "Store": {
+            "datagrams": 120,
+            "bytes": 144600
+          },
+          "StoreResult": {
+            "datagrams": 20,
+            "bytes": 500
+          },
+          "FindHash": {
+            "datagrams": 23,
+            "bytes": 1955
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 45056,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:W3WVnCS7cOMOsQgZalzf8BhAO1pKCwSrip15u81mIR0",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "f1cc52e40f9c",
+        "88c590b3fe1f"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 94.9,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-96"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22641
+          },
+          "FindValueNodes": {
+            "datagrams": 8,
+            "bytes": 9049
+          },
+          "Received": {
+            "datagrams": 20,
+            "bytes": 420
+          },
+          "Store": {
+            "datagrams": 120,
+            "bytes": 144600
+          },
+          "StoreResult": {
+            "datagrams": 20,
+            "bytes": 500
+          },
+          "FindHash": {
+            "datagrams": 27,
+            "bytes": 2295
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 48269,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:w7oCnu9L0Jij0aoHYTwrmQAHytrKihqF7vj4GP1Uihk",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "45a8fe7e9c0a",
+        "6ff6d2ddabdc"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 92.4,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-15"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22678
+          },
+          "FindValueNodes": {
+            "datagrams": 6,
+            "bytes": 6804
+          },
+          "Received": {
+            "datagrams": 20,
+            "bytes": 420
+          },
+          "Store": {
+            "datagrams": 120,
+            "bytes": 144600
+          },
+          "StoreResult": {
+            "datagrams": 20,
+            "bytes": 500
+          },
+          "FindHash": {
+            "datagrams": 25,
+            "bytes": 2125
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 46832,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:51L1isHHeBNuZaKH9VDTV1wdgqKKgg8yXEx3f7g-ee8",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "e38ef9ca5f3b",
+        "40f0a8c22ebc"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 94.4,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-68"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22693
+          },
+          "FindValueNodes": {
+            "datagrams": 8,
+            "bytes": 9080
+          },
+          "Received": {
+            "datagrams": 20,
+            "bytes": 420
+          },
+          "Store": {
+            "datagrams": 120,
+            "bytes": 144600
+          },
+          "StoreResult": {
+            "datagrams": 20,
+            "bytes": 500
+          },
+          "FindHash": {
+            "datagrams": 27,
+            "bytes": 2295
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 48104,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:HQJXONWUL12EtTy9URi_dF92xvd4GXoOTyXAkVQB3lI",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "d53866c9e8e9",
+        "6d2b76f7dee2"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 90.6,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-101"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22714
+          },
+          "FindValueNodes": {
+            "datagrams": 5,
+            "bytes": 5674
+          },
+          "Received": {
+            "datagrams": 20,
+            "bytes": 420
+          },
+          "Store": {
+            "datagrams": 120,
+            "bytes": 144600
+          },
+          "StoreResult": {
+            "datagrams": 20,
+            "bytes": 500
+          },
+          "FindHash": {
+            "datagrams": 24,
+            "bytes": 2040
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 45077,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:ZfyhPZzgEsy4Wfv5SqIKV8w1ZDeD7gcGYdYn0rj8sVo",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "3fddf270b662",
+        "ae0a345730da"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 92.5,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-88"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22675
+          },
+          "FindValueNodes": {
+            "datagrams": 6,
+            "bytes": 6805
+          },
+          "Received": {
+            "datagrams": 20,
+            "bytes": 420
+          },
+          "Store": {
+            "datagrams": 120,
+            "bytes": 144600
+          },
+          "StoreResult": {
+            "datagrams": 20,
+            "bytes": 500
+          },
+          "FindHash": {
+            "datagrams": 25,
+            "bytes": 2125
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 46136,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:7xwxw935yK6HKlvx-E4ugENSjKk7gsTHu8Chowoeq6E",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "25fdee42f175",
+        "a110fccfc643"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 95.3,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-115"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22712
+          },
+          "FindValueNodes": {
+            "datagrams": 8,
+            "bytes": 9080
+          },
+          "Received": {
+            "datagrams": 20,
+            "bytes": 420
+          },
+          "Store": {
+            "datagrams": 120,
+            "bytes": 144600
+          },
+          "StoreResult": {
+            "datagrams": 20,
+            "bytes": 500
+          },
+          "FindHash": {
+            "datagrams": 27,
+            "bytes": 2295
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 48207,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:rayjVpIXTGEKJR9VbVmTEBZXPfgsIFP3V7sAc427VYk",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "fa943b26283b",
+        "a8509de515d4"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 92.7,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-60"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22672
+          },
+          "FindValueNodes": {
+            "datagrams": 6,
+            "bytes": 6804
+          },
+          "Received": {
+            "datagrams": 20,
+            "bytes": 420
+          },
+          "Store": {
+            "datagrams": 120,
+            "bytes": 144600
+          },
+          "StoreResult": {
+            "datagrams": 20,
+            "bytes": 500
+          },
+          "FindHash": {
+            "datagrams": 25,
+            "bytes": 2125
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 46446,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:H-dNeubx3gX-CGBj6KxIetgsZ2TN2N0m9eFe4HGl1X0",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "e7b54d9045f8",
+        "73dd7565936e"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 92.8,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-63"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22713
+          },
+          "FindValueNodes": {
+            "datagrams": 5,
+            "bytes": 5679
+          },
+          "Received": {
+            "datagrams": 20,
+            "bytes": 420
+          },
+          "Store": {
+            "datagrams": 120,
+            "bytes": 144600
+          },
+          "StoreResult": {
+            "datagrams": 20,
+            "bytes": 500
+          },
+          "FindHash": {
+            "datagrams": 24,
+            "bytes": 2040
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 46399,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:oqDZBvDwXASx1GdWLOlmQIOYQSpuo2ibgJiIbeYlMQ4",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "4870d4adedf9",
+        "c4857db36ba9"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 98.9,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-114"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22664
+          },
+          "FindValueNodes": {
+            "datagrams": 14,
+            "bytes": 15854
+          },
+          "Received": {
+            "datagrams": 20,
+            "bytes": 420
+          },
+          "Store": {
+            "datagrams": 120,
+            "bytes": 144600
+          },
+          "StoreResult": {
+            "datagrams": 20,
+            "bytes": 500
+          },
+          "FindHash": {
+            "datagrams": 33,
+            "bytes": 2805
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 52816,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:xwfhgN7fKZ_o6PCNaIuyvanRhJEloU-oT0jcXORKgCA",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "1d25fa54bb76",
+        "11bbdda5ad9b"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 95.3,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-65"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22676
+          },
+          "FindValueNodes": {
+            "datagrams": 8,
+            "bytes": 9072
+          },
+          "Received": {
+            "datagrams": 20,
+            "bytes": 420
+          },
+          "Store": {
+            "datagrams": 120,
+            "bytes": 144600
+          },
+          "StoreResult": {
+            "datagrams": 20,
+            "bytes": 500
+          },
+          "FindHash": {
+            "datagrams": 27,
+            "bytes": 2295
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 47659,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:O-5VnO7U2UhQhmJPeZhVKooZg6SSgYRpvPb5iwnudwE",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "403067cb63f8",
+        "3148cfe16452"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 98.7,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-72"
+      ],
+      "replicas": {
+        "current": 18,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22731
+          },
+          "FindValueNodes": {
+            "datagrams": 13,
+            "bytes": 14780
+          },
+          "Received": {
+            "datagrams": 19,
+            "bytes": 399
+          },
+          "Store": {
+            "datagrams": 114,
+            "bytes": 137370
+          },
+          "StoreResult": {
+            "datagrams": 19,
+            "bytes": 475
+          },
+          "FindHash": {
+            "datagrams": 32,
+            "bytes": 2720
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 51146,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    },
+    {
+      "did": "did:iiot:Wz9yVYpKxz2-tR0t3y7o37fPmgpmej-KrHr53j20IIY",
+      "liars": [],
+      "lie": "on",
+      "publish": "complete",
+      "publish_report": {
+        "stored": 20,
+        "already_present": 0,
+        "unavailable": 0,
+        "conflicts": 0,
+        "stale": 0,
+        "unproven_refusals": 0,
+        "invalid": 0
+      },
+      "versions": [
+        "759e89e1ed01",
+        "9930b693b8be"
+      ],
+      "rotations": [
+        {
+          "outcome": "complete",
+          "ms": 95.3,
+          "after_restart": true
+        }
+      ],
+      "victims": [
+        "node-10"
+      ],
+      "replicas": {
+        "current": 19,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "restarted": {
+        "current": 1,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "reads": {
+        "current": 126,
+        "older": 0,
+        "other": 0,
+        "none": 0
+      },
+      "counters": {
+        "sent": {
+          "FindHashHit": {
+            "datagrams": 19,
+            "bytes": 1159
+          },
+          "FindNode": {
+            "datagrams": 20,
+            "bytes": 1700
+          },
+          "FindNodeResult": {
+            "datagrams": 20,
+            "bytes": 22639
+          },
+          "FindValueNodes": {
+            "datagrams": 10,
+            "bytes": 11321
+          },
+          "Received": {
+            "datagrams": 20,
+            "bytes": 420
+          },
+          "Store": {
+            "datagrams": 120,
+            "bytes": 144600
+          },
+          "StoreResult": {
+            "datagrams": 20,
+            "bytes": 500
+          },
+          "FindHash": {
+            "datagrams": 29,
+            "bytes": 2465
+          }
+        },
+        "resends_to_measured_peers": 0,
+        "resends_to_unmeasured_peers": 0,
+        "checks": {
+          "accepted": 1,
+          "accepted_with_silence": 0,
+          "duration_ms": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "duration_total_us": 47523,
+          "fetch_duration_ms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fetches": 0,
+          "invalid": 0,
+          "nobody_to_ask": 0,
+          "rounds": [
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          "superseded": 0,
+          "unshown_claims": 0
+        }
+      }
+    }
+  ]
+}

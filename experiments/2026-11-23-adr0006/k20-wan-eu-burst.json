@@ -1,0 +1,217 @@
+{
+  "config": {
+    "nodes": 127,
+    "k": 20,
+    "alpha": 3,
+    "seeds": 3,
+    "subnet": "10.213",
+    "profile": "wan-eu",
+    "delay_ms": 6.8,
+    "jitter_ms": 0.0,
+    "loss_pct": 0.0,
+    "cpus": null,
+    "image": "auth-kademlia-testbed:adr0006"
+  },
+  "rounds": [
+    {
+      "victim": "node-15",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-9",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-32",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 18,
+      "others": 18,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-29",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-31",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-53",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-48",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 18,
+      "others": 18,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-55",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 18,
+      "others": 18,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-51",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-62",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-86",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 18,
+      "others": 18,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-76",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-103",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 18,
+      "others": 18,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-93",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-77",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-101",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 18,
+      "others": 18,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-112",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-120",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 18,
+      "others": 18,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-115",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    },
+    {
+      "victim": "node-111",
+      "before": "empty",
+      "update": "complete",
+      "after": "owner",
+      "others_owner": 19,
+      "others": 19,
+      "forged_reads": 0,
+      "reads": 3
+    }
+  ]
+}

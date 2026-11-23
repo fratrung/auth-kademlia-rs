@@ -1,0 +1,43 @@
+outage: replicas lost [8, 12, 16, 20], 5 rounds each, owner node-1 offline, then back, 130 nodes, k=20, profile wan-eu, image auth-kademlia-testbed:adr0006
+lost round  before    after loss  after push  owner back  reads, owner off  reads, owner back joiners read  push answers
+reads: current/older/other/none (other: a record signed by a key of no version of the DID)
+joiners: node-128, node-129, node-130, outside the network until the worst moment of each round
+   8     1  20/0/0    12/0/8      20/0/0      20/0/0      126/0/0/0         126/0/0/0         3/0/0/0       AlreadyStored 231, Stored 9
+   8     2  20/0/0    12/0/8      20/0/0      20/0/0      126/0/0/0         126/0/0/0         3/0/0/0       AlreadyStored 231, Stored 9
+   8     3  19/0/0    11/0/8      19/0/0      19/0/0      126/0/0/0         126/0/0/0         3/0/0/0       AlreadyStored 210, Stored 10
+   8     4  19/0/0    11/0/8      19/0/0      19/0/0      126/0/0/0         126/0/0/0         3/0/0/0       AlreadyStored 210, Stored 10
+   8     5  19/0/0    11/0/8      19/0/0      19/0/0      126/0/0/0         126/0/0/0         3/0/0/0       AlreadyStored 210, Stored 10
+  12     1  20/0/0    8/0/12      20/0/0      20/0/0      126/0/0/0         126/0/0/0         3/0/0/0       AlreadyStored 147, Stored 13
+  12     2  20/0/0    8/0/12      20/0/0      20/0/0      126/0/0/0         126/0/0/0         3/0/0/0       AlreadyStored 147, Stored 13
+  12     3  20/0/0    8/0/12      20/0/0      20/0/0      126/0/0/0         126/0/0/0         3/0/0/0       AlreadyStored 147, Stored 13
+  12     4  20/0/0    8/0/12      20/0/0      20/0/0      126/0/0/0         126/0/0/0         3/0/0/0       AlreadyStored 147, Stored 13
+  12     5  20/0/0    8/0/12      20/0/0      20/0/0      126/0/0/0         126/0/0/0         3/0/0/0       AlreadyStored 147, Stored 13
+  16     1  20/0/0    4/0/16      20/0/0      20/0/0      126/0/0/0         126/0/0/0         3/0/0/0       AlreadyStored 63, Stored 17
+  16     2  20/0/0    4/0/16      20/0/0      20/0/0      126/0/0/0         126/0/0/0         3/0/0/0       AlreadyStored 63, Stored 17
+  16     3  20/0/0    4/0/16      20/0/0      20/0/0      126/0/0/0         126/0/0/0         3/0/0/0       AlreadyStored 63, Stored 17
+  16     4  20/0/0    4/0/16      20/0/0      20/0/0      126/0/0/0         126/0/0/0         3/0/0/0       AlreadyStored 63, Stored 17
+  16     5  20/0/0    4/0/16      20/0/0      20/0/0      126/0/0/0         126/0/0/0         3/0/0/0       AlreadyStored 63, Stored 17
+  20     1  20/0/0    0/0/20      0/0/20      20/0/0      0/0/0/126         126/0/0/0         0/0/0/3       
+  20     2  20/0/0    0/0/20      0/0/20      20/0/0      0/0/0/126         126/0/0/0         0/0/0/3       
+  20     3  20/0/0    0/0/20      0/0/20      20/0/0      0/0/0/126         126/0/0/0         0/0/0/3       
+  20     4  20/0/0    0/0/20      0/0/20      20/0/0      0/0/0/126         126/0/0/0         0/0/0/3       
+  20     5  20/0/0    0/0/20      0/0/20      20/0/0      0/0/0/126         126/0/0/0         0/0/0/3       
+
+summary (copies of the current version on the replicas, owner left out)
+   8 lost: after the loss median 11, min 11, max 12 (n=5); after the holders' republication median 19, min 19, max 20 (n=5); fully restored 5/5; after the owner's return median 19, min 19, max 20 (n=5), fully restored 5/5
+      reads, owner offline: current 630, older 0, other 0, none 0, no reply 0 (of 630)
+      reads, owner back: current 630, older 0, other 0, none 0, no reply 0 (of 630)
+      reads, nodes joining with the owner offline: current 15, older 0, other 0, none 0, no reply 0 (of 15)
+  12 lost: after the loss median 8, min 8, max 8 (n=5); after the holders' republication median 20, min 20, max 20 (n=5); fully restored 5/5; after the owner's return median 20, min 20, max 20 (n=5), fully restored 5/5
+      reads, owner offline: current 630, older 0, other 0, none 0, no reply 0 (of 630)
+      reads, owner back: current 630, older 0, other 0, none 0, no reply 0 (of 630)
+      reads, nodes joining with the owner offline: current 15, older 0, other 0, none 0, no reply 0 (of 15)
+  16 lost: after the loss median 4, min 4, max 4 (n=5); after the holders' republication median 20, min 20, max 20 (n=5); fully restored 5/5; after the owner's return median 20, min 20, max 20 (n=5), fully restored 5/5
+      reads, owner offline: current 630, older 0, other 0, none 0, no reply 0 (of 630)
+      reads, owner back: current 630, older 0, other 0, none 0, no reply 0 (of 630)
+      reads, nodes joining with the owner offline: current 15, older 0, other 0, none 0, no reply 0 (of 15)
+  20 lost: after the loss median 0, min 0, max 0 (n=5); after the holders' republication median 0, min 0, max 0 (n=5); fully restored 0/5; after the owner's return median 20, min 20, max 20 (n=5), fully restored 5/5
+      reads, owner offline: current 0, older 0, other 0, none 630, no reply 0 (of 630)
+      reads, owner back: current 630, older 0, other 0, none 0, no reply 0 (of 630)
+      reads, nodes joining with the owner offline: current 0, older 0, other 0, none 15, no reply 0 (of 15)
+  details: testbed/.generated/outage-wan-eu-20261123-151737.json

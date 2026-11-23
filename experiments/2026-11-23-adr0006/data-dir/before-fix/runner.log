@@ -1,0 +1,20 @@
+=== 2026-11-23 15:19:04 start on auth-kademlia-testbed:adr0006-data
+=== 2026-11-23 15:19:04 data-wan-eu-up: testbed/testbed.py up --nodes 127 --k 20 --alpha 3 --profile wan-eu --data-dir --image auth-kademlia-testbed:adr0006-data --no-build
+=== 2026-11-23 15:19:25 data-wan-eu-up: exit 0, host drops 0
+=== 2026-11-23 15:19:25 data-wan-eu-restart-control: testbed/attack.py restart --rounds 20
+=== 2026-11-23 15:21:45 data-wan-eu-restart-control: exit 0, host drops 0
+=== 2026-11-23 15:21:45 data-wan-eu-persist-start: testbed/attack.py start --mode persist
+=== 2026-11-23 15:21:46 data-wan-eu-persist-start: exit 0, host drops 0
+=== 2026-11-23 15:21:46 data-wan-eu-persist: testbed/attack.py restart --rounds 20
+=== 2026-11-23 15:25:10 data-wan-eu-persist: exit 0, host drops 0
+=== 2026-11-23 15:25:10 data-wan-eu-persist-stop: testbed/attack.py stop
+=== 2026-11-23 15:25:11 data-wan-eu-persist-stop: exit 0, host drops 0
+=== 2026-11-23 15:25:11 data-wan-eu-update: testbed/measure.py update --rounds 20 --restart 1
+=== 2026-11-23 15:26:22 data-wan-eu-update: exit 0, host drops 0
+=== 2026-11-23 15:26:22 data-wan-eu-churn: testbed/measure.py churn --duration 600 --liars 0
+=== 2026-11-23 15:36:24 data-wan-eu-churn: exit 0, host drops 0
+=== 2026-11-23 15:36:24 data-wan-eu-outage: testbed/measure.py outage --lost 4 8 12 16 20 --rounds 5 --owner-returns
+=== 2026-11-23 15:45:23 data-wan-eu-outage: exit 0, host drops 398
+=== 2026-11-23 15:45:23 data-wan-eu-down: testbed/testbed.py down
+=== 2026-11-23 15:45:31 data-wan-eu-down: exit 0, host drops 0
+=== 2026-11-23 15:45:31 done

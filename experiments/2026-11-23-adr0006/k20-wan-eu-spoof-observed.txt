@@ -1,0 +1,54 @@
+update: 20 rounds, 1 rotation(s) each, 1 replica(s) restarted before the last, owner node-1, 127 nodes, k=20, profile wan-eu, image auth-kademlia-testbed:adr0006
+round  outcome           update  replicas cur/old/none  restarted cur/old/none  reads cur/old/none
+    1  complete         75.7 ms  18/0/0                 1/0/0                   126/0/0
+    2  complete         59.7 ms  18/0/0                 1/0/0                   126/0/0
+    3  complete         96.8 ms  19/0/0                 1/0/0                   126/0/0
+    4  complete         88.9 ms  19/0/0                 1/0/0                   126/0/0
+    5  complete         90.2 ms  19/0/0                 1/0/0                   126/0/0
+    6  complete         89.0 ms  19/0/0                 1/0/0                   126/0/0
+    7  complete         91.2 ms  19/0/0                 1/0/0                   126/0/0
+    8  complete        106.3 ms  19/0/0                 1/0/0                   126/0/0
+    9  complete        103.2 ms  18/0/0                 1/0/0                   126/0/0
+   10  complete         99.7 ms  19/0/0                 1/0/0                   126/0/0
+   11  complete        102.1 ms  19/0/0                 1/0/0                   126/0/0
+   12  complete         91.1 ms  19/0/0                 1/0/0                   126/0/0
+   13  complete         91.3 ms  19/0/0                 1/0/0                   126/0/0
+   14  complete        102.4 ms  18/0/0                 1/0/0                   126/0/0
+   15  complete        104.2 ms  19/0/0                 1/0/0                   126/0/0
+   16  complete         92.6 ms  19/0/0                 1/0/0                   126/0/0
+   17  complete        114.1 ms  19/0/0                 1/0/0                   126/0/0
+   18  complete         94.2 ms  19/0/0                 1/0/0                   126/0/0
+   19  complete         91.0 ms  19/0/0                 1/0/0                   126/0/0
+   20  complete        110.3 ms  19/0/0                 1/0/0                   126/0/0
+
+summary
+  publication of position 0: complete 20
+    stored replicas per publication: median 20, min 20, max 20 (n=20)
+    unavailable replicas per publication: median 0, min 0, max 0 (n=20)
+    conflicts replicas per publication: median 0, min 0, max 0 (n=20)
+    stale replicas per publication: median 0, min 0, max 0 (n=20)
+    unproven_refusals replicas per publication: median 0, min 0, max 0 (n=20)
+  last rotation: complete 20
+  rotation time, no replica restarted: no samples
+  rotation time, after the restart: median 93.4 ms, p95 110.3 ms, max 114.1 ms (n=20)
+  replicas not restarted: current 376/376, older 0, other 0, none 0
+  restarted replicas: current 20/20, older 0, other 0, none 0
+  reads by every other node: current 2520/2520, older 0, other 0, none 0
+  sent by all nodes per update (median of 20): 177.0 KiB, 252 datagrams
+    FindHash              2.0 KiB     24 datagrams
+    FindHashHit           1.1 KiB     19 datagrams
+    FindNode              1.7 KiB     20 datagrams
+    FindNodeResult       22.2 KiB     20 datagrams
+    FindValue             0.0 KiB      0 datagrams
+    FindValueHit          0.0 KiB      0 datagrams
+    FindValueNodes        5.5 KiB      5 datagrams
+    Received              0.4 KiB     20 datagrams
+    Store               141.2 KiB    120 datagrams
+    StoreResult           0.5 KiB     20 datagrams
+  resends in all rounds: 0 to measured peers, 0 to peers never measured
+  checks in all rounds: accepted 20, accepted_with_silence 0, superseded 0, unshown_claims 53, nobody_to_ask 0, invalid 0
+  checks that fetched claimed records: 10, by whole check duration: <=50 ms: 1, <=100 ms: 9
+  check lookups by rounds: 1: 2, 2: 18, 3: 0, 4: 0, 5+: 0
+  check lookups by duration: <=25 ms: 1, <=50 ms: 10, <=100 ms: 9
+  check lookup mean duration: 48.8 ms
+  details: testbed/.generated/update-wan-eu-20261123-142902.json

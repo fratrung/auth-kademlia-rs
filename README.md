@@ -194,20 +194,18 @@ DID and its tree of keys, rotates, republishes and resolves other DIDs.
 The implementation was evaluated on a Docker testbed of 127 nodes with a
 replication factor of 20, under LAN conditions and WAN latencies derived from
 published backbone measurements, against an attacker that observes all traffic.
-These results were measured with the previous record format, a chain of
-versions each committing to the next key; the measurements of the current
-format are being repeated ([EXPERIMENTS.md](EXPERIMENTS.md)).
 
 | Aspect | Result |
 |---|---|
-| Publication latency (median) | 9 ms LAN, 91 ms WAN Europe, 433 ms WAN Trans-Atlantic |
+| Publication latency (median) | 9 ms LAN, 91 ms WAN Europe, 436 ms WAN Trans-Atlantic, as with the previous record format |
 | Availability after publication | 12,600 of 12,600 reads succeeded |
-| Key rotation | a replica restarted empty received the new version in 120 of 120 rounds |
-| Rotation traffic | 31% lower than the previous record format |
+| Key rotation | a replica restarted empty received the new position in 120 of 120 rounds |
+| Rotation traffic | 172 KiB at `k` = 20, 30% lower than with UUID DIDs |
 | Forged records | none stored in 200 rounds of race, burst, persistent and forged-successor attacks |
-| Forged answers | none accepted from an attacker unable to observe message identifiers |
-| Replicas lost with the owner offline | refilled by the other holders while at least 13 of 20 remain; below that, restored by the owner's return in 25 of 25 rounds |
+| Nodes that lie or spoof answers | up to 18 of the 19 other replicas lying, or an attacker answering for them under the identifiers it observes, blocked no publication and no rotation |
+| Replicas lost with the owner offline | refilled by the other holders down to 4 holders left; with every replica lost, restored by the owner's return |
 | Readers in the worst case | with the owner offline, replicas lost and a persistent attacker, no forged record stored or read, by nodes in the network or just joined |
+| Records on disk | a replica that crashes comes back with its records: no copy lost, also with all 20 replicas crashed at once; every read after a rotation got the current position |
 
 [EXPERIMENTS.md](EXPERIMENTS.md) reports the setup, the results and the
 measured limitations of every experiment; the raw data is in

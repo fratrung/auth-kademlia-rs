@@ -1,0 +1,31 @@
+restart: 20 rounds, owner node-1, 127 nodes, k=20, profile wan-eu, image auth-kademlia-testbed:adr0006-data, records on disk
+round  victim   publish    after     forged copies  forged reads
+    1  node-3   complete   owner     0/126          0/3
+    2  node-11  complete   owner     0/126          0/3
+    3  node-32  complete   owner     0/126          0/3
+    4  node-14  complete   owner     0/126          0/3
+    5  node-49  complete   owner     0/126          0/3
+    6  node-55  complete   owner     0/126          0/3
+    7  node-47  complete   owner     0/126          0/3
+    8  node-33  complete   owner     0/126          0/3
+    9  node-74  complete   owner     0/126          0/3
+   10  node-73  complete   owner     0/126          0/3
+   11  node-68  complete   owner     0/126          0/3
+   12  node-66  complete   owner     0/126          0/3
+   13  node-64  complete   owner     0/126          0/3
+   14  node-103 complete   owner     0/126          0/3
+   15  node-93  complete   owner     0/126          0/3
+   16  node-101 complete   owner     0/126          0/3
+   17  node-105 complete   owner     0/126          0/3
+   18  node-120 complete   owner     0/126          0/3
+   19  node-112 complete   owner     0/126          0/3
+   20  node-123 complete   owner     0/126          0/3
+
+summary
+  restarted replica holds owner: 20/20
+  restarted replica holds attacker: 0/20
+  restarted replica holds empty: 0/20
+  owner's publication: complete 20
+  nodes holding a forged record: 0/2520 (all nodes but the owner, every round)
+  plain reads returning the forged record: 0/60
+  details: testbed/.generated/restart-wan-eu-20261123-152145.json
