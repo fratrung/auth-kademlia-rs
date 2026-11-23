@@ -45,6 +45,10 @@ pub enum FormError {
     Field(&'static str),
     #[error("the DID does not belong to the key")]
     WrongKey,
+    /// The leaf of the document's key and code does not reach the root of
+    /// its genesis (ADR 0006, Decision 3).
+    #[error("the key and code are not those of the position in the tree")]
+    NotInTree,
 }
 
 /// What step 1 of the rules reads from a record (ADR 0005, section 3).
@@ -156,7 +160,7 @@ fn after_did<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
 }
 
 /// Whether any string value of `value` is the placeholder, or a DID URL of it.
-fn holds_placeholder(value: &Value) -> bool {
+pub(crate) fn holds_placeholder(value: &Value) -> bool {
     match value {
         Value::String(text) => after_did(text, PLACEHOLDER).is_some(),
         Value::Array(items) => items.iter().any(holds_placeholder),
@@ -167,7 +171,7 @@ fn holds_placeholder(value: &Value) -> bool {
 
 /// Replace `from` by `to` in every string value that is `from` or a DID URL
 /// of it. Object keys are not changed.
-fn replace_did(value: &mut Value, from: &str, to: &str) {
+pub(crate) fn replace_did(value: &mut Value, from: &str, to: &str) {
     match value {
         Value::String(text) => {
             if let Some(rest) = after_did(text, from) {
@@ -185,7 +189,7 @@ fn replace_did(value: &mut Value, from: &str, to: &str) {
 }
 
 /// The `id` of a document, a DID with a canonical suffix, and its key.
-fn id_of(doc: &Value) -> Result<(&str, [u8; ID_LEN]), FormError> {
+pub(crate) fn id_of(doc: &Value) -> Result<(&str, [u8; ID_LEN]), FormError> {
     let did = doc
         .get("id")
         .and_then(Value::as_str)

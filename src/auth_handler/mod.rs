@@ -30,6 +30,9 @@ pub mod did;
 pub mod rules;
 #[cfg(test)]
 pub(crate) mod test_chain;
+#[cfg(test)]
+pub(crate) mod test_tree;
+pub mod tree;
 
 #[derive(Debug, Error)]
 pub enum AuthHandlerError {
