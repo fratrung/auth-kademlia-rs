@@ -31,18 +31,16 @@ pub trait Signer: Send + Sync {
     fn sign(&self, private_key: &[u8], message: &[u8]) -> Result<Vec<u8>, VerifierError>;
 }
 
-/// Resolve a canonical algorithm string (e.g. `"ML-DSA-65"`) into
-/// `(algorithm_name, signature_byte_length)`.
+/// Resolve the algorithm name of a record header into
+/// `(algorithm_name, signature_byte_length)`. The only algorithm is ML-DSA-65
+/// (ADR 0003).
 ///
-/// Record headers must use one of these exact spellings. Accepting whitespace,
-/// zero-padded levels, or other aliases would make distinct byte strings
-/// authenticate as the same logical record. Which of these a DID record may
-/// use is decided in `auth_handler.rs`: only ML-DSA-65 (ADR 0003).
+/// The header must use the exact spelling. Accepting whitespace, zero-padded
+/// levels, or other aliases would make distinct byte strings authenticate as
+/// the same logical record.
 pub fn resolve_alg_and_length(algorithm_str: &str) -> Result<(String, usize), VerifierError> {
     match algorithm_str {
         ML_DSA_65 => Ok((ML_DSA_65.to_string(), mldsa::signature_len())),
-        "RSA" => Ok(("RSA".to_string(), 256)),
-        "Ed25519" => Ok(("Ed25519".to_string(), 64)),
         other => Err(VerifierError::UnsupportedAlgorithm(other.to_string())),
     }
 }
@@ -50,20 +48,6 @@ pub fn resolve_alg_and_length(algorithm_str: &str) -> Result<(String, usize), Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn resolve_rsa() {
-        let (alg, len) = resolve_alg_and_length("RSA").unwrap();
-        assert_eq!(alg, "RSA");
-        assert_eq!(len, 256);
-    }
-
-    #[test]
-    fn resolve_ed25519() {
-        let (alg, len) = resolve_alg_and_length("Ed25519").unwrap();
-        assert_eq!(alg, "Ed25519");
-        assert_eq!(len, 64);
-    }
 
     #[test]
     fn resolve_ml_dsa_65_from_the_crate() {
@@ -88,15 +72,17 @@ mod tests {
 
     #[test]
     fn resolve_unknown_errors() {
-        assert!(resolve_alg_and_length("ECDSA").is_err());
+        for alg in ["ECDSA", "Ed25519", "RSA"] {
+            assert!(resolve_alg_and_length(alg).is_err(), "{alg}");
+        }
     }
 
     #[test]
     fn resolve_noncanonical_aliases_errors() {
         for alias in [
-            "RSA ",
-            " RSA",
-            "Ed25519\n",
+            "ML-DSA-65 ",
+            " ML-DSA-65",
+            "ML-DSA-65\n",
             "ML-DSA-065",
             "ML-DSA-65\0",
             "ml-dsa-65",

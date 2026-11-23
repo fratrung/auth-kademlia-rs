@@ -46,8 +46,8 @@ use tokio::sync::RwLock;
 
 use crate::auth_handler::{DIDSignatureVerifierHandler, SignatureVerifierHandler};
 use crate::crypto::key_manager::{
-    Ed25519KeyManager, KeyManager, KeyManagerError, MlDsaKeyManager, MlKemKeyManager,
-    EPHEMERAL_KEY_MAX_AGE, MAX_EPHEMERAL_KEYS,
+    KeyManager, KeyManagerError, MlDsaKeyManager, MlKemKeyManager, EPHEMERAL_KEY_MAX_AGE,
+    MAX_EPHEMERAL_KEYS,
 };
 use crate::network::{Server, ServerStats, SetOutcome, SetRejection, SetReport};
 use crate::storage::{ForgetfulStorage, DEFAULT_TTL};
@@ -617,103 +617,6 @@ impl PyMlKemKeyManager {
     }
 }
 
-/// Ed25519 key manager exposed to Python.
-///
-/// Args:
-///     keys_dir (str): Directory for key files.
-#[pyclass(name = "Ed25519KeyManager")]
-pub struct PyEd25519KeyManager {
-    inner: Ed25519KeyManager,
-}
-
-#[pymethods]
-impl PyEd25519KeyManager {
-    #[new]
-    fn new(keys_dir: String) -> Self {
-        Self {
-            inner: Ed25519KeyManager::new(PathBuf::from(keys_dir)),
-        }
-    }
-
-    fn generate_keypair<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
-        py.allow_threads(|| self.inner.generate_keypair())
-            .map(|(pk, sk)| (PyBytes::new_bound(py, &pk), PyBytes::new_bound(py, &sk)))
-            .map_err(km_err)
-    }
-
-    fn store_public_key(
-        &self,
-        py: Python<'_>,
-        key_name: String,
-        public_key: Vec<u8>,
-    ) -> PyResult<()> {
-        py.allow_threads(|| self.inner.store_public_key(&key_name, &public_key))
-            .map_err(km_err)
-    }
-
-    fn store_private_key(
-        &self,
-        py: Python<'_>,
-        key_name: String,
-        private_key: Vec<u8>,
-    ) -> PyResult<()> {
-        py.allow_threads(|| self.inner.store_private_key(&key_name, &private_key))
-            .map_err(km_err)
-    }
-
-    fn get_public_key<'py>(
-        &self,
-        py: Python<'py>,
-        key_name: String,
-    ) -> PyResult<Bound<'py, PyBytes>> {
-        py.allow_threads(|| self.inner.get_public_key(&key_name))
-            .map(|v| PyBytes::new_bound(py, &v))
-            .map_err(km_err)
-    }
-
-    fn get_private_key<'py>(
-        &self,
-        py: Python<'py>,
-        key_name: String,
-    ) -> PyResult<Bound<'py, PyBytes>> {
-        py.allow_threads(|| self.inner.get_private_key(&key_name))
-            .map(|v| PyBytes::new_bound(py, &v))
-            .map_err(km_err)
-    }
-
-    fn get_jose_format(&self, public_key: Vec<u8>) -> HashMap<String, String> {
-        self.inner.get_jose_format(&public_key)
-    }
-
-    fn sign<'py>(
-        &self,
-        py: Python<'py>,
-        private_key: Vec<u8>,
-        message: Vec<u8>,
-    ) -> PyResult<Bound<'py, PyBytes>> {
-        py.allow_threads(|| self.inner.sign(&private_key, &message))
-            .map(|v| PyBytes::new_bound(py, &v))
-            .map_err(km_err)
-    }
-
-    fn verify_signature(
-        &self,
-        py: Python<'_>,
-        public_key: Vec<u8>,
-        message: Vec<u8>,
-        signature: Vec<u8>,
-    ) -> PyResult<bool> {
-        py.allow_threads(|| {
-            self.inner
-                .verify_signature(&public_key, &message, &signature)
-        })
-        .map_err(km_err)
-    }
-}
-
 /// Ensure the Tokio runtime uses a bounded blocking thread pool.
 ///
 /// Runtime configuration is automatic at module import and server creation.
@@ -737,6 +640,5 @@ fn authkademlia_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyServer>()?;
     m.add_class::<PyMlDsaKeyManager>()?;
     m.add_class::<PyMlKemKeyManager>()?;
-    m.add_class::<PyEd25519KeyManager>()?;
     Ok(())
 }

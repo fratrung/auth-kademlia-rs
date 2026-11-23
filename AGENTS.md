@@ -21,9 +21,9 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 360 tests
-cargo test --features counters       # 364: also the counters' own tests
-cargo test --features testbed        # 365: also the testbed's FindHash lie switch
+cargo test                           # all 342 tests
+cargo test --features counters       # 346: also the counters' own tests
+cargo test --features testbed        # 347: also the testbed's FindHash lie switch
 cargo test <name>                    # single test, e.g. test_update_did_record_key_rotation
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -135,9 +135,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/crypto/signature_verifier.rs` | `SignatureVerifier` trait, `resolve_alg_and_length()`, algorithm registry |
 | `src/crypto/factory.rs` | `SignatureVerifierFactory` + `SignerFactory` — dispatch by algorithm string |
 | `src/crypto/mldsa.rs` | ML-DSA-65 from `aws-lc-rs`: `MlDsa65KeyPair` (generate, from a 32-byte seed, sign, raw public key, expanded private key), verifier + signer (pure ML-DSA, empty context), `signature_len()`/`public_key_len()`, `ML_DSA_65` name |
-| `src/crypto/ed25519.rs` | Ed25519 verifier + signer |
-| `src/crypto/rsa.rs` | RSA verifier + signer |
-| `src/crypto/key_manager.rs` | `KeyManager` — keypair generation, storage, sign/verify helpers (`MlDsaKeyManager`, with `keypair_from_seed`; `Ed25519KeyManager`); `MlKemKeyManager` — ephemeral ML-KEM-768 pairs, one per handshake, in memory only, expiring after 30 s, at most 64 given out (ADR 0003) |
+| `src/crypto/key_manager.rs` | `KeyManager` — keypair generation, storage, sign/verify helpers (`MlDsaKeyManager`, with `keypair_from_seed`); `MlKemKeyManager` — ephemeral ML-KEM-768 pairs, one per handshake, in memory only, expiring after 30 s, at most 64 given out (ADR 0003) |
 | `src/node.rs` | `Node` struct, full **256-bit** XOR distance (`long_id: U256`, no folding), `from_id`; `NodeHeap` shortlist backed by a distance-sorted `Vec`, which keeps every node a lookup met so that one beyond `k` replaces a peer that did not answer (reads see the closest `k`), while `add_reported` takes at most `k` nodes per answer; `Display` shows `ip:port` for real peers, `<key:hex8>` for key-space targets |
 | `src/utils.rs` | `digest()` (SHA-256 → `[u8; 32]`), `digest_bytes()`, `ID_LEN = 32`, `STATUS_LIST_KEY` (ADR 0004) |
 | `scripts/dht_node.rs` | Docker container entry point (`publisher` / `retriever` roles, the DID passed through `/shared/did`) |
@@ -159,8 +157,8 @@ A node accepts only `ML-DSA-65` records (ADR 0003): `record_algorithm()` in
 `src/auth_handler/mod.rs` refuses any other algorithm field, for DID Documents,
 key rotations and the Status List. `resolve_alg_and_length()` in
 `src/crypto/signature_verifier.rs` gives the signature length, from
-`aws-lc-rs` (`mldsa::signature_len()`), never from a literal; it also knows `Ed25519`
-(64 B) and `RSA` (256 B), which no record may use. The DID Document holds one
+`aws-lc-rs` (`mldsa::signature_len()`), never from a literal; it knows no other
+algorithm. The DID Document holds one
 key, an RFC 9964 JWK in `verificationMethod[0]`:
 `{"kty": "AKP", "alg": "ML-DSA-65", "pub": <base64url>}`, the raw key: the
 verifier refuses a key of another length, such as the DER `SubjectPublicKeyInfo`
@@ -361,7 +359,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | File | Count | Notes |
 |---|---|---|
 | `tests/network_tests.rs` | 17 | Full multi-node integration tests (real UDP) |
-| `tests/crypto_tests.rs` | 24 | Crypto layer unit + DID handler unit tests |
+| `tests/crypto_tests.rs` | 19 | Crypto layer unit + DID handler unit tests |
 | `tests/routing_tests.rs` | 22 | Routing table unit tests |
 | `tests/storage_tests.rs` | 20 | `ForgetfulStorage` unit tests (includes `insert_if_absent` and `replace_if` cases) |
 | `tests/dht_integration.rs` | 1 | Legacy 3-node end-to-end scenario |
@@ -372,7 +370,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/scenarios/crypto.rs` | 4 | End-to-end crypto invariants (tamper, injection, downgrade, revocation) |
 | `tests/quorum_tests.rs` | 20 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum, delayed UPDATE commit, retry of an applied UPDATE, UPDATE to replicas without the record, and the network check of a STORE to an empty replica |
 | `tests/chain_tests.rs` | 14 | Chains of versions over real UDP (ADR 0005): `set` refuses a later version, forged versions at empty replicas, the replay below the quorum and to replicas behind, the closed gap, version 0 signed twice, refusals of `set` that count only once shown |
-| `src/**` (inline) | 233 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID derivation with a Python test vector, the Merkle tree and genesis of ADR 0006 with a Python test vector, the STORE and UPDATE rules, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 4 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
+| `src/**` (inline) | 220 | Module-level `#[test]` blocks (incl. Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID derivation with a Python test vector, the Merkle tree and genesis of ADR 0006 with a Python test vector, the STORE and UPDATE rules, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 4 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 

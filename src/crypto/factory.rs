@@ -1,10 +1,8 @@
 //! Signature verifier and signer factories: the implementation for an
-//! algorithm name, as `resolve_alg_and_length` spells it (`"ML-DSA-65"`,
-//! `"Ed25519"`, `"RSA"`). Only exact names are accepted.
+//! algorithm name, as `resolve_alg_and_length` spells it. Only ML-DSA-65
+//! exists, and only its exact name is accepted.
 
-use crate::crypto::ed25519::{Ed25519SignatureVerifier, Ed25519Signer};
 use crate::crypto::mldsa::{MlDsa65SignatureVerifier, MlDsa65Signer, ML_DSA_65};
-use crate::crypto::rsa::{RSASignatureVerifier, RSASigner};
 use crate::crypto::signature_verifier::{SignatureVerifier, Signer, VerifierError};
 
 pub struct SignatureVerifierFactory;
@@ -15,8 +13,6 @@ impl SignatureVerifierFactory {
     pub fn get_verifier(algorithm: &str) -> Result<Box<dyn SignatureVerifier>, VerifierError> {
         match algorithm {
             ML_DSA_65 => Ok(Box::new(MlDsa65SignatureVerifier)),
-            "Ed25519" => Ok(Box::new(Ed25519SignatureVerifier)),
-            "RSA" => Ok(Box::new(RSASignatureVerifier)),
             other => Err(VerifierError::UnsupportedAlgorithm(other.to_string())),
         }
     }
@@ -27,8 +23,6 @@ impl SignerFactory {
     pub fn get_signer(algorithm: &str) -> Result<Box<dyn Signer>, VerifierError> {
         match algorithm {
             ML_DSA_65 => Ok(Box::new(MlDsa65Signer)),
-            "Ed25519" => Ok(Box::new(Ed25519Signer)),
-            "RSA" => Ok(Box::new(RSASigner)),
             other => Err(VerifierError::UnsupportedAlgorithm(other.to_string())),
         }
     }
@@ -52,13 +46,16 @@ mod tests {
     }
 
     #[test]
-    fn factory_returns_ed25519_verifier() {
-        assert!(SignatureVerifierFactory::get_verifier("Ed25519").is_ok());
-    }
-
-    #[test]
     fn factory_unknown_algorithm_errors() {
-        for alg in ["ECDSA", "Dilithium-2", "ML-DSA-44", "ML", "ML-DSA-65 "] {
+        for alg in [
+            "ECDSA",
+            "Ed25519",
+            "RSA",
+            "Dilithium-2",
+            "ML-DSA-44",
+            "ML",
+            "ML-DSA-65 ",
+        ] {
             assert!(
                 SignatureVerifierFactory::get_verifier(alg).is_err(),
                 "{alg}"

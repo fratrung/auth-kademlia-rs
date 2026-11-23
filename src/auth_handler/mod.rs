@@ -61,8 +61,8 @@ pub const RECORD_ALGORITHM: &str = ML_DSA_65;
 
 /// Abstract handler for signature operations performed by the DHT.
 ///
-/// Implementing this trait allows callers to plug in different verification
-/// strategies (e.g. ML-DSA, Ed25519) without changing the protocol layer.
+/// Implementing this trait allows callers to plug in another verification
+/// strategy without changing the protocol layer.
 pub trait SignatureVerifierHandler: Send + Sync {
     /// Verify that the DID Document carried by the signed record identifies
     /// the requested DHT key.

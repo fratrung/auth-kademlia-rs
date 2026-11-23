@@ -104,6 +104,9 @@ application.
 
 - DIDs based on UUIDs, the `auth_signature` of updates, and the `uuid`
   dependency.
+- Ed25519 and RSA signing and verification, `Ed25519KeyManager` in Python,
+  and the `ed25519-dalek` and `rsa` dependencies. No record could use them:
+  records are signed with ML-DSA-65 only.
 
 ### Security
 

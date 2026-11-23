@@ -53,20 +53,14 @@ serde          = { version = "1", features = ["derive"] }
 serde_json     = "1"
 bincode        = "1"
 
-# Cryptography / encoding. The protocol hashes with AWS-LC; sha2 serves RSA
-# verification and the tests, which compute expected digests independently.
-sha2               = "0.10"
+# Encoding and randomness
 base64             = "0.22"
 hex                = "0.4"
 rand               = "0.8"
 
-# Post-quantum, from AWS-LC (ADR 0003): ML-DSA-65 for records, ephemeral
+# AWS-LC (ADR 0003): ML-DSA-65 for records, SHA-256, and ephemeral
 # ML-KEM-768 in the key manager
 aws-lc-rs          = { version = "1.19", default-features = false, features = ["aws-lc-sys", "alloc"] }
-# Ed25519
-ed25519-dalek      = { version = "2", features = ["rand_core"] }
-# RSA
-rsa                = { version = "0.9", features = ["sha2"] }
 
 # Data structures
 indexmap       = "2"
@@ -91,6 +85,8 @@ libc = { version = "0.2", optional = true }
 
 
 [dev-dependencies]
+# The tests compute expected SHA-256 digests independently of AWS-LC.
+sha2               = "0.10"
 tokio              = { version = "1", features = ["full", "test-util"] }
 futures            = "0.3"
 env_logger         = "0.11"

@@ -1,8 +1,7 @@
-/// Key managers: ML-DSA-65 and Ed25519 key pairs, and ephemeral ML-KEM-768
-/// key pairs.
+/// Key managers: ML-DSA-65 key pairs, and ephemeral ML-KEM-768 key pairs.
 ///
-/// Mirrors the Python `KeyManager` ABC and its concrete implementations:
-/// `MlDsaKeyManager`, `Ed25519KeyManager`.
+/// Mirrors the Python `KeyManager` ABC and its implementation
+/// `MlDsaKeyManager`.
 ///
 /// `MlDsaKeyManager` handles ML-DSA-65 only, the algorithm of every record
 /// (ADR 0003). `MlKemKeyManager` gives out one ML-KEM-768 key pair per
@@ -26,7 +25,6 @@ use aws_lc_rs::kem::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use thiserror::Error;
 
-use crate::crypto::ed25519::{Ed25519SignatureVerifier, Ed25519Signer};
 use crate::crypto::mldsa::{MlDsa65KeyPair, MlDsa65SignatureVerifier, MlDsa65Signer, ML_DSA_65};
 use crate::crypto::signature_verifier::{SignatureVerifier, Signer, VerifierError};
 
@@ -369,87 +367,6 @@ impl MlKemKeyManager {
     }
 }
 
-/// Key manager for Ed25519 (classical signature scheme).
-pub struct Ed25519KeyManager {
-    keys_dir: PathBuf,
-}
-
-impl Ed25519KeyManager {
-    pub fn new(keys_dir: impl Into<PathBuf>) -> Self {
-        let keys_dir = keys_dir.into();
-        fs::create_dir_all(&keys_dir).ok();
-        Self { keys_dir }
-    }
-
-    /// Sign `message` with the 32-byte Ed25519 `private_key` seed.
-    pub fn sign(&self, private_key: &[u8], message: &[u8]) -> Result<Vec<u8>, KeyManagerError> {
-        Ok(Ed25519Signer.sign(private_key, message)?)
-    }
-
-    /// Verify `signature` over `message` against the 32-byte `public_key`.
-    pub fn verify_signature(
-        &self,
-        public_key: &[u8],
-        message: &[u8],
-        signature: &[u8],
-    ) -> Result<bool, KeyManagerError> {
-        Ok(Ed25519SignatureVerifier.verify(public_key, signature, message)?)
-    }
-}
-
-impl KeyManager for Ed25519KeyManager {
-    /// Returns `(public_key [32 bytes], private_key_seed [32 bytes])`.
-    fn generate_keypair(&self) -> Result<(Vec<u8>, Vec<u8>), KeyManagerError> {
-        use ed25519_dalek::SigningKey;
-        use rand::rngs::OsRng;
-        use rand::RngCore;
-
-        let mut seed = [0u8; 32];
-        OsRng.fill_bytes(&mut seed);
-        let signing_key = SigningKey::from_bytes(&seed);
-        let public_key = signing_key.verifying_key().to_bytes().to_vec();
-        let private_key = signing_key.to_bytes().to_vec();
-        Ok((public_key, private_key))
-    }
-
-    fn store_public_key(&self, key_name: &str, public_key: &[u8]) -> Result<(), KeyManagerError> {
-        write_key(
-            &self.keys_dir.join(format!("{}.public", key_name)),
-            public_key,
-        )
-    }
-
-    fn store_private_key(&self, key_name: &str, private_key: &[u8]) -> Result<(), KeyManagerError> {
-        write_key(
-            &self.keys_dir.join(format!("{}.private", key_name)),
-            private_key,
-        )
-    }
-
-    fn get_public_key(&self, key_name: &str) -> Result<Vec<u8>, KeyManagerError> {
-        read_key(
-            &self.keys_dir.join(format!("{}.public", key_name)),
-            key_name,
-        )
-    }
-
-    fn get_private_key(&self, key_name: &str) -> Result<Vec<u8>, KeyManagerError> {
-        read_key(
-            &self.keys_dir.join(format!("{}.private", key_name)),
-            key_name,
-        )
-    }
-
-    /// JWK format: `{"kty": "OKP", "crv": "Ed25519", "x": <base64url>}`.
-    fn get_jose_format(&self, public_key: &[u8]) -> HashMap<String, String> {
-        HashMap::from([
-            ("kty".into(), "OKP".into()),
-            ("crv".into(), "Ed25519".into()),
-            ("x".into(), b64encode_key(public_key)),
-        ])
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -642,43 +559,6 @@ mod tests {
         out_of_range[0] = 0xFF;
         out_of_range[1] |= 0x0F;
         assert!(MlKemKeyManager::encapsulate(&out_of_range).is_err());
-    }
-
-    #[test]
-    fn ed25519_generate_store_retrieve() {
-        let km = Ed25519KeyManager::new(tmp_dir());
-        let (pk, sk) = km.generate_keypair().unwrap();
-        km.store_public_key("carol", &pk).unwrap();
-        km.store_private_key("carol", &sk).unwrap();
-        assert_eq!(km.get_public_key("carol").unwrap(), pk);
-        assert_eq!(km.get_private_key("carol").unwrap(), sk);
-    }
-
-    #[test]
-    fn ed25519_sign_verify_roundtrip() {
-        let km = Ed25519KeyManager::new(tmp_dir());
-        let (pk, sk) = km.generate_keypair().unwrap();
-        let msg = b"hello ed25519 key manager";
-        let sig = km.sign(&sk, msg).unwrap();
-        assert!(km.verify_signature(&pk, msg, &sig).unwrap());
-    }
-
-    #[test]
-    fn ed25519_tampered_message_rejected() {
-        let km = Ed25519KeyManager::new(tmp_dir());
-        let (pk, sk) = km.generate_keypair().unwrap();
-        let sig = km.sign(&sk, b"original").unwrap();
-        assert!(!km.verify_signature(&pk, b"tampered", &sig).unwrap());
-    }
-
-    #[test]
-    fn ed25519_jose_format() {
-        let km = Ed25519KeyManager::new(tmp_dir());
-        let (pk, _) = km.generate_keypair().unwrap();
-        let jose = km.get_jose_format(&pk);
-        assert_eq!(jose["kty"], "OKP");
-        assert_eq!(jose["crv"], "Ed25519");
-        assert!(!jose["x"].is_empty());
     }
 
     #[test]

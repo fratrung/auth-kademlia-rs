@@ -2,11 +2,10 @@
 //!
 //! Context: every record stored in the DHT carries an algorithm tag, a raw
 //! signature, and a DID Document. A node accepts only ML-DSA-65 records (ADR
-//! 0003); the Ed25519 and RSA implementations stay in `crypto/`, reachable
-//! through `SignatureVerifierFactory` / `SignerFactory` but by no record.
+//! 0003), the only algorithm `crypto/` implements.
 //!
 //! These tests cover:
-//!   1. Sign-then-verify round-trips for ML-DSA-65 and Ed25519.
+//!   1. Sign-then-verify round-trips for ML-DSA-65.
 //!   2. Rejection of tampered messages and wrong keys.
 //!   3. Factory dispatch correctness and unknown-algorithm errors.
 //!   4. Algorithm-string to signature-length resolution.
@@ -16,9 +15,8 @@
 use std::path::PathBuf;
 
 use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
+use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng;
 use serde_json::{json, Value};
 
 use auth_kademlia_rs::auth_handler::{DIDSignatureVerifierHandler, SignatureVerifierHandler};
@@ -163,22 +161,16 @@ fn test_sort_json_keys_is_deterministic_and_canonical() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn test_resolve_rsa_length() {
-    let (alg, len) = resolve_alg_and_length("RSA").unwrap();
-    assert_eq!(alg, "RSA");
-    assert_eq!(len, 256);
-}
-
-#[test]
-fn test_resolve_ed25519_length() {
-    let (alg, len) = resolve_alg_and_length("Ed25519").unwrap();
-    assert_eq!(alg, "Ed25519");
-    assert_eq!(len, 64);
-}
-
-#[test]
 fn test_resolve_unknown_algorithm_fails() {
-    for alg in ["ECDSA", "ML-DSA", "Dilithium", "Dilithium-2", "ML-DSA-44"] {
+    for alg in [
+        "ECDSA",
+        "Ed25519",
+        "RSA",
+        "ML-DSA",
+        "Dilithium",
+        "Dilithium-2",
+        "ML-DSA-44",
+    ] {
         assert!(resolve_alg_and_length(alg).is_err(), "{alg}");
     }
 }
@@ -196,17 +188,14 @@ fn test_factory_unknown_algorithm_returns_error() {
 
 #[test]
 fn test_factory_known_algorithms_return_ok() {
-    for alg in &["ML-DSA-65", "Ed25519", "RSA"] {
+    assert!(SignatureVerifierFactory::get_verifier("ML-DSA-65").is_ok());
+    assert!(SignerFactory::get_signer("ML-DSA-65").is_ok());
+    for alg in ["Ed25519", "RSA"] {
         assert!(
-            SignatureVerifierFactory::get_verifier(alg).is_ok(),
-            "get_verifier({}) should succeed",
-            alg
+            SignatureVerifierFactory::get_verifier(alg).is_err(),
+            "{alg}"
         );
-        assert!(
-            SignerFactory::get_signer(alg).is_ok(),
-            "get_signer({}) should succeed",
-            alg
-        );
+        assert!(SignerFactory::get_signer(alg).is_err(), "{alg}");
     }
 }
 
@@ -261,56 +250,6 @@ fn test_ml_dsa_65_wrong_key_rejected() {
         !verifier.verify(&wrong_pk, &sig, msg).unwrap(),
         "signature must not verify under a different public key"
     );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Ed25519 sign / verify
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_ed25519_sign_and_verify() {
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let verifying_key = signing_key.verifying_key();
-    let private_bytes = signing_key.to_bytes(); // 32-byte seed
-    let public_bytes = verifying_key.to_bytes(); // 32 bytes
-    let msg = b"ed25519 test message";
-
-    let signer = SignerFactory::get_signer("Ed25519").unwrap();
-    let sig = signer.sign(&private_bytes, msg).unwrap();
-
-    let verifier = SignatureVerifierFactory::get_verifier("Ed25519").unwrap();
-    assert!(
-        verifier.verify(&public_bytes, &sig, msg).unwrap(),
-        "valid Ed25519 signature must verify"
-    );
-}
-
-#[test]
-fn test_ed25519_tampered_message_rejected() {
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let private_bytes = signing_key.to_bytes();
-    let public_bytes = signing_key.verifying_key().to_bytes();
-
-    let signer = SignerFactory::get_signer("Ed25519").unwrap();
-    let sig = signer.sign(&private_bytes, b"original").unwrap();
-
-    let verifier = SignatureVerifierFactory::get_verifier("Ed25519").unwrap();
-    assert!(!verifier.verify(&public_bytes, &sig, b"tampered").unwrap());
-}
-
-#[test]
-fn test_ed25519_wrong_key_rejected() {
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let wrong_key = SigningKey::generate(&mut OsRng);
-    let private_bytes = signing_key.to_bytes();
-    let wrong_pub = wrong_key.verifying_key().to_bytes();
-    let msg = b"signed with key A";
-
-    let signer = SignerFactory::get_signer("Ed25519").unwrap();
-    let sig = signer.sign(&private_bytes, msg).unwrap();
-
-    let verifier = SignatureVerifierFactory::get_verifier("Ed25519").unwrap();
-    assert!(!verifier.verify(&wrong_pub, &sig, msg).unwrap());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -503,16 +442,13 @@ fn an_ml_dsa_65_record_whose_key_says_otherwise_is_refused() {
 #[test]
 fn records_with_another_algorithm_are_refused() {
     let handler = DIDSignatureVerifierHandler::new(PathBuf::from("unused"));
-    let signing_key = SigningKey::generate(&mut OsRng);
+    let signing_key = Ed25519KeyPair::generate().unwrap();
     let did = some_did();
     let jwk = json!({ "kty": "OKP", "crv": "Ed25519",
-                      "x": base64url(signing_key.verifying_key().as_bytes()) });
+                      "x": base64url(signing_key.public_key().as_ref()) });
     let doc = build_did_doc_mldsa65(&did, jwk);
-    let ed25519_sig = SignerFactory::get_signer("Ed25519")
-        .unwrap()
-        .sign(&signing_key.to_bytes(), &canonical_json(&doc))
-        .unwrap();
-    let ed25519_record = build_record("Ed25519", &ed25519_sig, &doc);
+    let ed25519_sig = signing_key.sign(&canonical_json(&doc));
+    let ed25519_record = build_record("Ed25519", ed25519_sig.as_ref(), &doc);
     assert!(!matches!(
         handler.handle_signature_verification(&ed25519_record),
         Ok(true)
