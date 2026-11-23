@@ -1,0 +1,51 @@
+% How a DID and its first record are derived: operations in boxes, the
+% values they pass on the arrows.
+\documentclass[border=12pt]{standalone}
+\input{figure-style}
+\begin{document}
+\begin{tikzpicture}[
+  op/.append style={minimum width=4.2cm, minimum height=9mm},
+  lbl/.style={data, pos=0.5},
+]
+  % inputs
+  \node[secret, minimum width=4.2cm] (seeds) at (0,0)
+    {\textbf{for each position} $i = 0 \ldots 63$\\ a seed $s_i$ and a random code $c_i$\\ {\footnotesize 32 bytes each, kept by the owner}};
+  \node[public, minimum width=4.6cm] (body) at (9,0)
+    {\textbf{body of position 0}\\ key $pk_0$, seq 0, services,\\ own DID written as did:iiot:self};
+
+  % left column: the tree
+  \node[op] (keygen) at (0,-2.0) {ML-DSA-65 key pair};
+  \node[op] (leaf)   at (0,-3.9) {leaf hash};
+  \node[op] (merkle) at (0,-5.8) {Merkle tree, height 6};
+  \draw[flow] (seeds) -- node[lbl] {$s_i$} (keygen);
+  \draw[flow] (keygen) -- node[lbl] {$pk_i$} (leaf);
+  \draw[flow] (seeds.west) to[out=200, in=160] node[data, left] {$c_i$} (leaf.west);
+  \draw[flow] (leaf) -- node[lbl] {$\ell_i = \text{SHA-256}(\texttt{0x00} \Vert i \Vert pk_i \Vert c_i)$} (merkle);
+
+  % right column: the hashed body
+  \node[op, minimum width=4.6cm] (bodyhash) at (9,-3.9) {SHA-256 of the canonical JSON};
+  \draw[flow] (body) -- node[lbl] {$\textit{body}_0$} (bodyhash);
+
+  % centre: genesis, DID, document, record
+  \node[op, minimum width=5.0cm] (genesis) at (4.5,-7.6)
+    {genesis\\[-1pt] {\footnotesize\normalfont hashAlg, height, sigAlg, version,}\\ {\footnotesize\normalfont initialBodyHash, root}};
+  \node[op] (didhash) at (4.5,-9.9) {SHA-256, base64url};
+  \node[strong, minimum width=5.6cm, minimum height=9mm] (did) at (4.5,-11.7)
+    {DID = did:iiot: + suffix \quad{\normalfont DHT key = the hash}};
+  \node[op, minimum width=5.6cm] (doc) at (4.5,-13.6)
+    {document 0\\[-1pt] {\footnotesize\normalfont $\textit{body}_0$ with the DID, id, treeProof = ($c_0$, genesis, path)}};
+  \node[op] (sign) at (4.5,-15.5) {ML-DSA-65 signature with $sk_0$};
+  \node[result, minimum width=5.6cm, minimum height=9mm] (rec) at (4.5,-17.3)
+    {\textbf{record 0} = algorithm $\Vert$ signature $\Vert$ document};
+
+  \draw[flow] ([xshift=6mm]merkle.south) |- node[data, pos=0.3] {root} (genesis.west);
+  \draw[flow] (bodyhash.south) |- node[data, pos=0.3] {initialBodyHash} (genesis.east);
+  \draw[flow] (genesis) -- node[lbl] {canonical JSON} (didhash);
+  \draw[flow] (didhash) -- (did);
+  \draw[flow] (did) -- (doc);
+  \draw[flow] ([xshift=-6mm]merkle.south) |- node[data, pos=0.3] {path of $\ell_0$} (doc.west);
+  \draw[flow] (body.east) -- ++(0.7,0) |- node[data, pos=0.3] {$\textit{body}_0$} (doc.east);
+  \draw[flow] (doc) -- (sign);
+  \draw[flow] (sign) -- (rec);
+\end{tikzpicture}
+\end{document}

@@ -635,15 +635,32 @@ read records: update it with any change to the Python API, the record format
 or the owner's duties.
 
 ## Diagrams (`docs/design/`)
-`DESIGN.md` shows each diagram as a PNG next to its Mermaid source (`*.mmd`),
-because the GitHub mobile app does not draw Mermaid blocks. Edit the `.mmd`,
-then draw it again with mermaid-cli and commit both:
-```
-cd docs/design && mmdc -i store-check.mmd -o store-check.png -b white -s 2 -w 1000
-```
-On Ubuntu 23.10+ headless Chrome needs `-p` with a puppeteer config holding
-`{"args": ["--no-sandbox"]}`. In a sequence diagram a `;` ends the statement,
-so do not use it inside a note or a message.
+`DESIGN.md` shows each figure as a PNG next to its source, because the
+GitHub mobile app does not draw Mermaid blocks. Edit the source, draw it
+again, and commit both.
+
+- **Message sequences** (`*.mmd`, Mermaid): every exchange between nodes.
+  They use the theme in `docs/design/mermaid.json` (Lato, navy actors, no
+  mirrored actors):
+  ```
+  cd docs/design && mmdc -c mermaid.json -i store-check.mmd -o store-check.png -b white -s 2
+  ```
+  A `rect` with a low-opacity colour marks the outcome of a branch:
+  `rgba(47, 143, 78, 0.10)` stored, `rgba(201, 138, 27, 0.10)` `Stale` or
+  `Conflict`, `rgba(192, 57, 43, 0.07)` refused. In a sequence diagram a `;`
+  ends the statement, so do not use it inside a note or a message. On Ubuntu
+  23.10+ headless Chrome needs `-p` with a puppeteer config holding
+  `{"args": ["--no-sandbox"]}`.
+- **Structures** (`*.tex`, TikZ): the tree of keys (`key-tree`), the
+  derivation of a DID (`did-creation`), two nodes, their layers and what
+  the layers exchange (`architecture`). They share `figure-style.tex` (Lato and the colours of
+  the Mermaid theme) and are built with XeLaTeX, then turned into PNG with
+  `pdftoppm`, keeping the build files out of the repository:
+  ```
+  cd docs/design && xelatex -output-directory=/tmp key-tree.tex && pdftoppm -png -r 220 -singlefile /tmp/key-tree.pdf key-tree
+  ```
+- **Rules** are tables in `DESIGN.md`, not figures: the decision of a
+  replica (section 7) is a table of what it holds against what it receives.
 
 ## Adding a new crypto algorithm
 Records accept one algorithm, ML-DSA-65 (ADR 0003); accepting another one in

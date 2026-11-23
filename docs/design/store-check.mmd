@@ -5,20 +5,26 @@ sequenceDiagram
     participant C as Nodes closest to the DID
     S->>R: STORE(key, record at position N)
     Note over R: the record proves its own key,<br/>but a higher position may exist
+    rect rgba(192, 57, 43, 0.07)
     opt record not in form, or its key not in the tree at N
-        R-->>S: InvalidRecord (nobody asked)
+        R-->>S: InvalidRecord, nobody asked
     end
-    R->>C: FindHash(key), all of them at once, deadline 2 s
+    end
+    R->>C: FindHash(key) to all of them at once, deadline 2 s
     C-->>R: position and SHA-256 of their record, or closer nodes
     opt some nodes claim a position above N
-        R->>C: FindValue(key), one per distinct claim,<br/>to the closest node that made it, at most k-1, at once
+        R->>C: FindValue(key), one per distinct claim,<br/>to the closest node that made it, at most k − 1, at once
         C-->>R: their record, or nothing
-        Note over R: a record counts if it hashes to the claim,<br/>is in the tree at a higher position and its signature verifies
+        Note over R: a record counts if it hashes to the claim,<br/>is in the tree at a higher position<br/>and its signature verifies
     end
     alt a higher record verified
+        rect rgba(201, 138, 27, 0.10)
         Note over R: store the higher record
         R-->>S: Stale
+        end
     else none: claims not shown, silence, or nobody to ask
-        Note over R: verify the signature of the record sent,<br/>then insert if still absent
+        rect rgba(47, 143, 78, 0.10)
+        Note over R: verify the signature of the record sent,<br/>then insert it if still absent
         R-->>S: Stored
+        end
     end

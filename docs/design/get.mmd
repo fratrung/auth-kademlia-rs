@@ -5,18 +5,22 @@ sequenceDiagram
     participant N as Nodes closest to the DID
     A->>V: get(DID)
     alt the reader holds a valid local copy
+        rect rgba(47, 143, 78, 0.08)
         Note over V: returned at once, no network
-    else
+        end
+    else no local copy
         V->>N: FIND_VALUE(key), iterative
         N-->>V: record, or closer nodes
-        Note over V: first record whose key is in the tree at its position<br/>and whose signature verifies wins, no vote.<br/>A record that fails is discarded, nothing is stored
+        Note over V: the first record whose key is in the tree at its position<br/>and whose signature verifies wins, no vote.<br/>A record that fails is discarded, nothing is stored
     end
     V-->>A: record at position N
-    Note over A: compares the public key with the key in the<br/>Verifiable Credential, which names position M above N
+    Note over A: compares the public key with the key<br/>in the Verifiable Credential, which names position M above N
     opt the key fails the credential
+        rect rgba(91, 127, 174, 0.08)
         A->>V: repair(DID, record N, M, SHA-256 of key M)
         V->>N: FIND_VALUE(key), iterative, at most 5 s
         N-->>V: records: copies of N, lower ones, M, or higher
         Note over V: the first verified record at M with key M,<br/>unless a verified higher one came first,<br/>stored by the replica rules
         V-->>A: record M, or nothing
+        end
     end

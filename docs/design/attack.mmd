@@ -1,19 +1,25 @@
 sequenceDiagram
     autonumber
     participant O as Owner
-    participant A as Attacker (reads the traffic)
-    participant E as Empty replica (just restarted)
+    participant A as Attacker<br/>(reads the traffic)
+    participant E as Empty replica<br/>(just restarted)
     participant H as Other replicas
-    O->>E: STORE(position 1)
+    O->>H: STORE(position 1)
+    rect rgba(192, 57, 43, 0.07)
+    Note over A,E: a forged record
     A-->>A: sees it, signs a forged position 2 with the DID,<br/>the genesis and the path it read, and a key of its own
     A->>E: STORE(forged 2)
     Note over E: its key and code do not reach the root at 2
     E-->>A: InvalidRecord, nobody asked, nothing stored
+    end
+    rect rgba(201, 138, 27, 0.09)
+    Note over A,H: a genuine record replayed
     A->>E: STORE(genuine position 0, read on the wire earlier)
-    Note over E: in form and signed by key 0, but maybe superseded
+    Note over E: in form and signed by key 0,<br/>but maybe superseded
     E->>H: FindHash(key)
-    H-->>E: 1 and hash of record 1
+    H-->>E: position 1 and the hash of record 1
     E->>H: FindValue(key) to the closest that claimed 1
-    H-->>E: record 1, in the tree at 1, signature verifies
-    Note over E: store record 1
+    H-->>E: record 1: in the tree at 1, signature verifies
+    Note over E: stores record 1
     E-->>A: Stale
+    end

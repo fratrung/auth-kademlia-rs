@@ -4,9 +4,10 @@ This document explains how AuthKademlia-RS works and why: what a node stores,
 how records are published, read and rotated, and what each choice defends
 against. It describes the protocol, not the API: see `README.md` for usage,
 `docs/integration.md` for what an application must do, and `AGENTS.md` for
-the code map. The diagrams are PNG images drawn from the Mermaid sources in
-`docs/design/` (`*.mmd`), so that they show where Mermaid is not drawn, as in
-the GitHub mobile app.
+the code map. The figures are PNG images drawn from their sources in
+`docs/design/`, so that they show where Mermaid or LaTeX is not drawn, as in
+the GitHub mobile app: the message sequences from Mermaid (`*.mmd`), the tree,
+the derivation of a DID and the architecture from TikZ (`*.tex`).
 
 ## Contents
 
@@ -40,9 +41,9 @@ issuer.
 
 ### Architecture
 
-![Components of a node: network API, protocol, lookups and routing, transport, crypto and storage, under a Python or Rust application](docs/design/architecture.png)
+![Two nodes side by side, the owner's and a replica, each a stack of network API, protocol, lookups and routing, and transport, with crypto and storage beside it; the application above the owner's node uses its network API and the custody; the protocols exchange STORE, FIND_VALUE, FindHash and FIND_NODE, the lookups closer nodes, the transports UDP datagrams](docs/design/architecture.png)
 
-*Source: [`docs/design/architecture.mmd`](docs/design/architecture.mmd).*
+*Source: [`docs/design/architecture.tex`](docs/design/architecture.tex).*
 
 A node is one Rust process; the application above it, in Python through the
 PyO3 binding or in Rust, decides what to publish and when.
@@ -134,9 +135,9 @@ re-serialization.
 
 ### The tree and the genesis
 
-![The tree of a DID: 64 leaves, each the hash of a position, its key and its activation code; the root in the genesis, whose hash is the DID; a record carries its code and path](docs/design/key-tree.png)
+![The tree of a DID, drawn with 8 of its 64 leaves: each leaf the hash of a position, its key and its activation code; the path from leaf 5 to the root in bold, the siblings the record carries shaded; the root in the genesis, whose hash is the DID](docs/design/key-tree.png)
 
-*Source: [`docs/design/key-tree.mmd`](docs/design/key-tree.mmd).*
+*Source: [`docs/design/key-tree.tex`](docs/design/key-tree.tex).*
 
 At provisioning the owner generates, for each of 64 positions, an ML-DSA-65
 key pair from a 32-byte seed and an independent random 32-byte activation
@@ -194,9 +195,9 @@ the record of its position, so it guards a position only until then.
 
 ### Creating a DID
 
-![Creation of a DID: 64 seeds and codes, the leaves and the root, the body of position 0 with the placeholder, the genesis and its SHA-256, the document completed and signed](docs/design/did-creation.png)
+![Derivation of a DID: seeds give the key pairs, keys and codes the leaves, the leaves the root; the body of position 0 gives initialBodyHash; both enter the genesis, whose SHA-256 is the DID; document 0 is completed with the DID and the proof of leaf 0, and signed](docs/design/did-creation.png)
 
-*Source: [`docs/design/did-creation.mmd`](docs/design/did-creation.mmd).*
+*Source: [`docs/design/did-creation.tex`](docs/design/did-creation.tex).*
 
 A device creates its DID once, before publishing anything: it builds its
 tree, writes the body of position 0 with `did:iiot:self` in place of its own
@@ -325,28 +326,25 @@ A retry of the same record is safe: replicas that already hold it answer
 ## 7. Storing at a replica (STORE)
 
 A replica first checks the form of the record and its key against the tree
-(section 3, step 1). Then, if it already holds a record for the key, it
-decides on its own, with what it holds:
+(section 3, step 1). Then it decides by what it holds for the key, a record
+or the marker of an expired one (section 11), on its own unless it holds
+neither:
 
-- **The same bytes:** `AlreadyStored`, nothing verified; the expiry is
-  refreshed.
-- **A higher position:** once its signature verifies, it replaces the stored
-  record, by a compare and swap that fails if the record changed meanwhile.
-  The positions in between are not needed.
-- **A lower position:** `Stale`.
-- **Another record at the same position:** once its signature verifies,
-  `Conflict`, and the stored record stays. It is logged as a repeated
-  signing when the document is the same, as duplicity when it differs: only
-  the owner, or a thief of that position's key, could have signed it.
+| The replica holds | The record received, at position N | Answer |
+|---|---|---|
+| anything, or nothing | not canonical, or its key and code do not reach the root at N | `InvalidRecord`; nobody is asked |
+| the same bytes | | `AlreadyStored`; nothing verified, the expiry refreshed |
+| a record at M < N | its signature verifies | `Stored`: it replaces M, by a compare and swap that fails if the record changed meanwhile |
+| a record at M > N, or the marker of M > N | | `Stale`; nobody is asked |
+| another record at N | its signature verifies | `Conflict`: the held record stays |
+| a record | its signature does not verify | `InvalidRecord` |
+| nothing, or the marker of M ≤ N | | the network check below |
 
-A replica whose record expired remembers its position for one more TTL (the
-marker, section 11). A lower position is then `Stale` without asking
-anyone; that position or a higher one goes through the network check below,
-as at a replica that holds nothing.
-
-![Decision of a replica that receives a record: form and tree, then by what it holds or remembers: the network check, AlreadyStored, a verified higher position, Stale or Conflict](docs/design/replica-rules.png)
-
-*Source: [`docs/design/replica-rules.mmd`](docs/design/replica-rules.mmd).*
+The positions between M and N are not needed. A `Conflict` is logged as a
+repeated signing when the document is the same, as duplicity when it
+differs: only the owner, or a thief of that position's key, could have
+signed it. The marker remembers the position of an expired record for one
+more TTL.
 
 A replica that holds nothing knows the record is the owner's, since it
 proves its own key, but not whether the owner has published a higher

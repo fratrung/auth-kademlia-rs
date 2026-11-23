@@ -1,0 +1,38 @@
+% The look shared by the figures drawn with TikZ: the font and the colours
+% of the Mermaid diagrams (mermaid.json). Built with xelatex, see AGENTS.md.
+\usepackage[no-math]{fontspec}
+\setmainfont{Lato}
+\setsansfont{Lato}
+\renewcommand{\familydefault}{\sfdefault}
+\usepackage{amsmath}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc,fit,backgrounds}
+
+\definecolor{navy}{HTML}{1F3A5F}
+\definecolor{ink}{HTML}{1F2A37}
+\definecolor{muted}{HTML}{5C6B7E}
+\definecolor{blueFill}{HTML}{EEF4FB}
+\definecolor{blueLine}{HTML}{5B7FAE}
+\definecolor{greenFill}{HTML}{E3F4E8}
+\definecolor{greenLine}{HTML}{2F8F4E}
+\definecolor{amberFill}{HTML}{FDF1DC}
+\definecolor{amberLine}{HTML}{C98A1B}
+\definecolor{violetFill}{HTML}{F3EFFC}
+\definecolor{violetLine}{HTML}{7B61B8}
+\definecolor{greyFill}{HTML}{F6F8FB}
+\definecolor{greyLine}{HTML}{C3CCD7}
+
+\tikzset{
+  every picture/.style={font=\small, color=ink, line cap=round},
+  base/.style={rounded corners=3pt, line width=0.7pt, align=center, inner sep=5pt},
+  plain/.style={base, draw=greyLine, fill=white},
+  public/.style={base, draw=blueLine, fill=blueFill},
+  secret/.style={base, draw=violetLine, fill=violetFill},
+  result/.style={base, draw=greenLine, fill=greenFill},
+  carried/.style={base, draw=amberLine, fill=amberFill},
+  strong/.style={base, draw=navy, fill=navy, text=white, font=\small\bfseries},
+  op/.style={base, draw=navy, fill=white, line width=0.9pt, font=\small\bfseries},
+  flow/.style={-{Stealth[length=2.2mm]}, draw=muted, line width=0.7pt},
+  link/.style={draw=muted, line width=0.7pt},
+  data/.style={font=\footnotesize, fill=white, inner sep=1.5pt, text=ink},
+}
