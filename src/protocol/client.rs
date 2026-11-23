@@ -9,7 +9,7 @@ use async_trait::async_trait;
 
 use crate::crawling::{FindPayload, RawResponse, SpiderProtocol};
 use crate::node::Node;
-use crate::protocol::messages::{Frame, RpcMessage, StoreStatus, UpdateStatus, RECORD_HASH_LEN};
+use crate::protocol::messages::{Frame, RpcMessage, StoreStatus, RECORD_HASH_LEN};
 use crate::utils::ID_LEN;
 
 use super::KademliaProtocol;
@@ -119,45 +119,7 @@ impl KademliaProtocol {
         }
     }
 
-    /// Whether `peer` holds `value` after an UPDATE: it applied it, or held it.
-    pub async fn call_update_rpc(&self, peer: &Node, key: [u8; ID_LEN], value: Vec<u8>) -> bool {
-        matches!(
-            self.call_update_rpc_answer(peer, key, value).await,
-            Some(UpdateStatus::Updated | UpdateStatus::AlreadyStored)
-        )
-    }
-
-    /// The answer of `peer` to an UPDATE, or `None` when it gave none.
-    pub async fn call_update_rpc_answer(
-        &self,
-        peer: &Node,
-        key: [u8; ID_LEN],
-        value: Vec<u8>,
-    ) -> Option<UpdateStatus> {
-        let sock_addr = socket_addr_of(peer)?;
-        match self
-            .call(
-                sock_addr,
-                RpcMessage::Update {
-                    sender_id: self.source_node.id,
-                    key,
-                    value,
-                },
-            )
-            .await
-        {
-            Some(RpcMessage::UpdateResult { status }) => {
-                self.note_alive(peer).await;
-                Some(status)
-            }
-            _ => {
-                log::warn!("no response from {}", peer);
-                self.note_failure(peer).await;
-                None
-            }
-        }
-    }
-
+    /// Send an issuer-signed update of the Status List to `peer`.
     pub async fn call_status_list_update_rpc(
         &self,
         peer: &Node,

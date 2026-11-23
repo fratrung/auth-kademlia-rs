@@ -138,9 +138,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::super::did::PLACEHOLDER;
-    use super::super::test_chain::sha256;
-    use super::super::test_tree::{body, TreeOwner};
+    use super::super::test_tree::{body, sha256, TreeOwner, PLACEHOLDER};
     use super::super::tree::{TreeForm, PROOF};
     use super::super::{DIDSignatureVerifierHandler, SignatureVerifierHandler};
     use super::*;

@@ -10,9 +10,8 @@
 //! - the resends of a request, split by whether the round trip of its peer was
 //!   measured when the request was first sent (`RoundTrips::is_measured`);
 //! - the network check of a STORE to an empty replica (`rpc_store`,
-//!   `network_check`, ADR 0005): how it ended, by the rows of its rules, how
-//!   many rounds its lookup took, and how long it lasted, apart for the
-//!   checks that fetched the version before.
+//!   `network_check`): how it ended, how many rounds its lookup took, and how
+//!   long it lasted, apart for the checks that fetched claimed records.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -20,13 +19,11 @@ use std::time::Duration;
 use serde::Serialize;
 
 /// Message types, as `rpc_message_name` names them.
-pub const MESSAGE_TYPES: [&str; 17] = [
+pub const MESSAGE_TYPES: [&str; 15] = [
     "Ping",
     "Pong",
     "Store",
     "StoreResult",
-    "Update",
-    "UpdateResult",
     "UpdateStatusList",
     "UpdateStatusListResult",
     "FindNode",
@@ -47,35 +44,26 @@ pub const CHECK_ROUND_BUCKETS: usize = 5;
 /// holds the longer ones.
 pub const CHECK_DURATION_BOUNDS_MS: [u64; 8] = [10, 25, 50, 100, 200, 500, 1000, 2000];
 
-/// How the check of a STORE to an empty replica ended (ADR 0005, R2 and R5).
+/// How the check of a STORE to an empty replica ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CheckEnd {
-    /// The record fails the form (step 1): refused before any lookup.
+    /// The record fails the form: refused before any lookup.
     Invalid,
-    /// The node knew nobody to ask: no answer, without a lookup.
+    /// The node knew nobody to ask: accepted without a lookup.
     NobodyToAsk,
-    /// Accepted: the record was then verified.
+    /// Every node asked answered, and none showed a higher position.
     Accepted,
-    /// Nodes claim a newer version (the quorum for a version 0).
-    NewerClaimed,
-    /// A node holds another record at the same place.
-    OtherVersion,
-    /// A node holds a version N−1 the record does not follow.
-    NotFollowing,
-    /// A node holds a version below N−1 (open point 26).
-    HolderBehind,
-    /// The fetched version N−1 hashes to `prev` but does not hold.
-    FetchRefused,
-    /// Every node answered, with fewer votes than the quorum: no answer.
-    TooFewVotes,
-    /// A node asked did not answer by the deadline, or the fetch did not end
-    /// before it: no answer.
-    NoAnswer,
+    /// Some node did not answer by the deadline, and none showed a higher
+    /// position: accepted all the same.
+    AcceptedWithSilence,
+    /// A node showed a verified record at a higher position: refused as
+    /// stale, and that record stored instead.
+    Superseded,
 }
 
 /// Ends of a check, one counter each.
 #[cfg(feature = "counters")]
-const CHECK_ENDS: usize = CheckEnd::NoAnswer as usize + 1;
+const CHECK_ENDS: usize = CheckEnd::Superseded as usize + 1;
 
 /// Datagrams and bytes of one message type.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -90,17 +78,12 @@ pub struct CheckCounts {
     pub invalid: u64,
     pub nobody_to_ask: u64,
     pub accepted: u64,
-    pub newer_claimed: u64,
-    pub other_version: u64,
-    pub not_following: u64,
-    pub holder_behind: u64,
-    pub fetch_refused: u64,
-    pub too_few_votes: u64,
-    pub no_answer: u64,
-    /// Claims of another version 0 dropped by R2: the node that made the
-    /// claim did not show that version 0 when asked for it (open point 27).
+    pub accepted_with_silence: u64,
+    pub superseded: u64,
+    /// Claims of a higher position dropped: the node did not show a valid
+    /// record for its claim when asked for it.
     pub unshown_claims: u64,
-    /// Checks that fetched the version before (R5).
+    /// Checks that fetched claimed records.
     pub fetches: u64,
     /// Durations of those checks, whole check included
     /// (`CHECK_DURATION_BOUNDS_MS`, then longer).
@@ -151,8 +134,8 @@ impl Counters {
     }
 
     /// A check ended after a lookup of `rounds` rounds lasting `elapsed`;
-    /// `rounds` is 0 when no lookup ran. `fetched` when it fetched the
-    /// version before.
+    /// `rounds` is 0 when no lookup ran. `fetched` when it fetched claimed
+    /// records.
     #[inline]
     pub(crate) fn check(&self, end: CheckEnd, rounds: usize, elapsed: Duration, fetched: bool) {
         #[cfg(feature = "counters")]
@@ -161,7 +144,7 @@ impl Counters {
         let _ = (end, rounds, elapsed, fetched);
     }
 
-    /// `claims` claims of another version 0 dropped by R2, not shown.
+    /// `claims` claims of a higher position dropped, not shown.
     #[inline]
     pub(crate) fn unshown_claims(&self, claims: usize) {
         #[cfg(feature = "counters")]
@@ -261,13 +244,8 @@ mod enabled {
                     invalid: load(&self.ends[CheckEnd::Invalid as usize]),
                     nobody_to_ask: load(&self.ends[CheckEnd::NobodyToAsk as usize]),
                     accepted: load(&self.ends[CheckEnd::Accepted as usize]),
-                    newer_claimed: load(&self.ends[CheckEnd::NewerClaimed as usize]),
-                    other_version: load(&self.ends[CheckEnd::OtherVersion as usize]),
-                    not_following: load(&self.ends[CheckEnd::NotFollowing as usize]),
-                    holder_behind: load(&self.ends[CheckEnd::HolderBehind as usize]),
-                    fetch_refused: load(&self.ends[CheckEnd::FetchRefused as usize]),
-                    too_few_votes: load(&self.ends[CheckEnd::TooFewVotes as usize]),
-                    no_answer: load(&self.ends[CheckEnd::NoAnswer as usize]),
+                    accepted_with_silence: load(&self.ends[CheckEnd::AcceptedWithSilence as usize]),
+                    superseded: load(&self.ends[CheckEnd::Superseded as usize]),
                     unshown_claims: load(&self.unshown_claims),
                     fetches: load(&self.fetches),
                     fetch_duration_ms: self.fetch_durations.iter().map(load).collect(),
@@ -305,15 +283,20 @@ mod enabled {
             let counters = Counters::default();
             counters.check(CheckEnd::Invalid, 0, Duration::ZERO, false);
             counters.check(CheckEnd::Accepted, 1, Duration::from_millis(40), false);
-            counters.check(CheckEnd::HolderBehind, 2, Duration::from_millis(20), false);
-            counters.check(CheckEnd::NoAnswer, 7, Duration::from_millis(2001), true);
+            counters.check(CheckEnd::Superseded, 2, Duration::from_millis(20), false);
+            counters.check(
+                CheckEnd::AcceptedWithSilence,
+                7,
+                Duration::from_millis(2001),
+                true,
+            );
             let checks = counters.snapshot().checks;
             assert_eq!(
                 (
                     checks.invalid,
                     checks.accepted,
-                    checks.holder_behind,
-                    checks.no_answer
+                    checks.superseded,
+                    checks.accepted_with_silence
                 ),
                 (1, 1, 1, 1)
             );

@@ -19,37 +19,9 @@ pub enum StoreStatus {
     Conflict,
     CapacityExceeded,
     InvalidRecord,
-    /// The replica holds a newer version, verified (ADR 0005, R4).
+    /// The replica holds a record at a higher position, or verified one
+    /// during its check.
     Stale,
-    /// A node near the key claims a newer version, which it does not prove
-    /// (ADR 0005, R2 and R5).
-    NewerClaimed,
-    /// The replica holds version `seq`, below the one before the record
-    /// sent: it needs the versions in between first (ADR 0005).
-    MissingPrevious {
-        seq: u64,
-    },
-}
-
-/// Result of an UPDATE (ADR 0005, the UPDATE table): a write conditioned on
-/// the replica holding the version before.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
-pub enum UpdateStatus {
-    /// The record follows the stored version, and replaced it.
-    Updated,
-    /// The replica already holds this record.
-    AlreadyStored,
-    /// The replica lacks the version before: it holds version `seq`, or
-    /// nothing. The sender then sends the versions it misses, or a STORE.
-    MissingPrevious {
-        seq: Option<u64>,
-    },
-    /// The replica holds a newer version.
-    Stale,
-    /// Another record at the same place, or a fork of the version before.
-    Conflict,
-    CapacityExceeded,
-    InvalidRecord,
 }
 
 impl From<StorageWriteStatus> for StoreStatus {
@@ -78,14 +50,6 @@ pub enum RpcMessage {
     },
     StoreResult {
         status: StoreStatus,
-    },
-    Update {
-        sender_id: [u8; ID_LEN],
-        key: [u8; ID_LEN],
-        value: Vec<u8>,
-    },
-    UpdateResult {
-        status: UpdateStatus,
     },
     UpdateStatusList {
         sender_id: [u8; ID_LEN],
@@ -128,7 +92,7 @@ pub enum RpcMessage {
         seq: u64,
         hash: [u8; RECORD_HASH_LEN],
     },
-    /// Sent at once for a request that carries a record (`Store`, `Update`,
+    /// Sent at once for a request that carries a record (`Store`,
     /// `UpdateStatusList`), whose answer may take a while: the request
     /// arrived and is being handled, so the sender does not send it again yet.
     /// Sent again for each copy that arrives meanwhile.
@@ -177,7 +141,6 @@ pub(super) struct Frame {
 pub(super) enum ExpectedResponse {
     Pong,
     StoreResult,
-    UpdateResult,
     UpdateStatusListResult,
     FindNodeResult,
     FindValueResult,
@@ -190,7 +153,6 @@ impl ExpectedResponse {
         match message {
             RpcMessage::Ping { .. } => Self::Pong,
             RpcMessage::Store { .. } => Self::StoreResult,
-            RpcMessage::Update { .. } => Self::UpdateResult,
             RpcMessage::UpdateStatusList { .. } => Self::UpdateStatusListResult,
             RpcMessage::FindNode { .. } => Self::FindNodeResult,
             RpcMessage::FindValue { .. } => Self::FindValueResult,
@@ -200,7 +162,6 @@ impl ExpectedResponse {
             // does not compile until its expected answer is chosen here.
             RpcMessage::Pong { .. }
             | RpcMessage::StoreResult { .. }
-            | RpcMessage::UpdateResult { .. }
             | RpcMessage::UpdateStatusListResult { .. }
             | RpcMessage::FindNodeResult { .. }
             | RpcMessage::FindValueNodes { .. }
@@ -214,7 +175,6 @@ impl ExpectedResponse {
         match self {
             Self::Pong => matches!(message, RpcMessage::Pong { .. }),
             Self::StoreResult => matches!(message, RpcMessage::StoreResult { .. }),
-            Self::UpdateResult => matches!(message, RpcMessage::UpdateResult { .. }),
             Self::UpdateStatusListResult => {
                 matches!(message, RpcMessage::UpdateStatusListResult { .. })
             }
@@ -233,17 +193,13 @@ impl ExpectedResponse {
 
     /// Whether the request gets a receipt before its answer.
     pub(super) fn after_receipt(self) -> bool {
-        matches!(
-            self,
-            Self::StoreResult | Self::UpdateResult | Self::UpdateStatusListResult
-        )
+        matches!(self, Self::StoreResult | Self::UpdateStatusListResult)
     }
 
     pub(super) fn name(self) -> &'static str {
         match self {
             Self::Pong => "Pong",
             Self::StoreResult => "StoreResult",
-            Self::UpdateResult => "UpdateResult",
             Self::UpdateStatusListResult => "UpdateStatusListResult",
             Self::FindNodeResult => "FindNodeResult",
             Self::FindValueResult => "FindValueHit|FindValueNodes",
@@ -259,8 +215,6 @@ pub(super) fn rpc_message_name(message: &RpcMessage) -> &'static str {
         RpcMessage::Pong { .. } => "Pong",
         RpcMessage::Store { .. } => "Store",
         RpcMessage::StoreResult { .. } => "StoreResult",
-        RpcMessage::Update { .. } => "Update",
-        RpcMessage::UpdateResult { .. } => "UpdateResult",
         RpcMessage::UpdateStatusList { .. } => "UpdateStatusList",
         RpcMessage::UpdateStatusListResult { .. } => "UpdateStatusListResult",
         RpcMessage::FindNode { .. } => "FindNode",
@@ -279,13 +233,10 @@ pub(super) fn rpc_message_name(message: &RpcMessage) -> &'static str {
 /// record is handled, so the request gets a receipt first (`Received`).
 pub(super) fn carried_record(message: &RpcMessage) -> Option<&[u8]> {
     match message {
-        RpcMessage::Store { value, .. }
-        | RpcMessage::Update { value, .. }
-        | RpcMessage::UpdateStatusList { value, .. } => Some(value),
+        RpcMessage::Store { value, .. } | RpcMessage::UpdateStatusList { value, .. } => Some(value),
         RpcMessage::Ping { .. }
         | RpcMessage::Pong { .. }
         | RpcMessage::StoreResult { .. }
-        | RpcMessage::UpdateResult { .. }
         | RpcMessage::UpdateStatusListResult { .. }
         | RpcMessage::FindNode { .. }
         | RpcMessage::FindNodeResult { .. }
@@ -346,7 +297,7 @@ mod tests {
         assert_eq!(names, counted);
     }
 
-    /// Ids and keys are 32 bytes on the wire (ADR 0004). bincode writes the
+    /// Ids and keys are 32 bytes on the wire. bincode writes the
     /// 4-byte index of the variant, then each array without its length.
     #[test]
     fn ids_and_keys_are_32_bytes_on_the_wire() {

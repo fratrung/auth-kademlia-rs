@@ -5,7 +5,7 @@
 mod shared;
 
 #[allow(unused_imports)]
-pub use shared::{key_of, new_did_record, version0, Chain};
+pub use shared::{badly_signed_record, key_of, new_did_record, Chain};
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -75,7 +75,7 @@ where
     }
 }
 
-/// Version 0 of a new DID. Returns `(did, signed_record_bytes)`.
+/// Position 0 of a new DID. Returns `(did, signed_record_bytes)`.
 pub fn make_record() -> (String, Vec<u8>) {
     new_did_record()
 }

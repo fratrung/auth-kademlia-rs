@@ -9,7 +9,7 @@
 //!   1. Two-node bootstrap — nodes discover each other.
 //!   2. Cross-node publish & retrieve — Node A stores, Node B retrieves.
 //!   3. Idempotent retry and conflicting-value rejection.
-//!   4. Key-rotation update — a DID owner rotates their key (update flow).
+//!   4. Key rotation — a DID owner publishes a later position with `set`.
 //!   5. Invalid-signature rejection — malformed records are refused on `set`.
 //!   6. Bootstrap with no reachable peers — returns empty list gracefully.
 //!   7. DID identifier binding — a record cannot occupy another DID's key.
@@ -45,8 +45,8 @@ use auth_kademlia_rs::storage::IStorage;
 use auth_kademlia_rs::utils::{digest, ID_LEN};
 
 use common::{
-    build_signed_record, key_of, new_did_record, start_node, start_node_with_max_storage_bytes,
-    version0, Chain,
+    badly_signed_record, key_of, new_did_record, start_node, start_node_with_max_storage_bytes,
+    Chain,
 };
 
 /// Two nodes bootstrap from each other and end up in each other's routing table.
@@ -86,7 +86,7 @@ async fn test_set_on_node_a_and_get_from_node_b() {
         .await;
     sleep(Duration::from_millis(200)).await;
 
-    // Version 0 of a new DID.
+    // Position 0 of a new DID.
     let (key, record) = new_did_record();
 
     // Node A publishes the record.
@@ -131,7 +131,7 @@ async fn test_set_is_idempotent_but_rejects_conflicting_value() {
     let second = node.set(&key, record.clone()).await;
     assert_eq!(second, Some(true), "an identical retry must be idempotent");
 
-    // Another valid record at the same place, the same version 0 signed
+    // Another valid record at the same position, the same document signed
     // again, remains a conflict.
     let conflicting_record = chain.signed_again(0);
     assert!(
@@ -142,11 +142,11 @@ async fn test_set_is_idempotent_but_rejects_conflicting_value() {
     node.stop().await;
 }
 
-/// A DID owner rotates its key with `update`: version 1 is signed by the key
-/// version 0 committed to, and carries no other authorization. Every node then
-/// returns version 1.
+/// A DID owner rotates its key by publishing position 1 with `set`: it is
+/// signed by the key the tree commits to at position 1. Every node then
+/// returns it.
 #[tokio::test]
-async fn test_update_did_record_key_rotation() {
+async fn test_key_rotation_is_published_with_set() {
     let mut node1 = start_node(15730).await;
     let mut node2 = start_node(15731).await;
     let mut node3 = start_node(15732).await;
@@ -164,16 +164,16 @@ async fn test_update_did_record_key_rotation() {
     let stored = node2.set(&key, chain.version(0)).await;
     assert!(stored.unwrap_or(false), "initial store must succeed");
 
-    let updated = node3.update(&key, chain.version(1), chain.earlier(1)).await;
-    assert!(updated.unwrap_or(false), "key-rotation update must succeed");
+    let updated = node3.set(&key, chain.version(1)).await;
+    assert!(updated.unwrap_or(false), "the rotation must be published");
 
-    // Give the network a moment to propagate the update.
+    // Give the network a moment to propagate the rotation.
     sleep(Duration::from_millis(500)).await;
     for (name, node) in [("node1", &node1), ("node2", &node2)] {
         assert_eq!(
             node.get(&key).await,
             Some(chain.version(1)),
-            "{name} must return version 1 after the update"
+            "{name} must return position 1 after the rotation"
         );
     }
 
@@ -188,9 +188,8 @@ async fn test_update_did_record_key_rotation() {
 async fn test_invalid_signature_record_rejected_on_set() {
     let mut node = start_node(15750).await;
 
-    let correct = MlDsa65KeyPair::generate().unwrap();
-    let wrong = MlDsa65KeyPair::generate().unwrap(); // different secret key — mismatch!
-    let (key, invalid_record) = version0(correct.public_key(), &wrong);
+    let wrong = MlDsa65KeyPair::generate().unwrap(); // not the key in the document
+    let (key, invalid_record) = badly_signed_record(&wrong);
 
     let result = node.set(&key, invalid_record).await;
     assert!(
@@ -234,10 +233,10 @@ async fn test_bootstrap_unreachable_peer_returns_empty() {
     );
 }
 
-/// `update` must return None when the new version names the committed key but
-/// is not signed by it: its self-signature is invalid.
+/// Publishing position 1 with the right key in its document but another
+/// key's signature returns None, and the replicas keep position 0.
 #[tokio::test]
-async fn test_update_rejected_when_new_record_self_sig_invalid() {
+async fn test_rotation_rejected_when_its_self_signature_is_invalid() {
     let mut node1 = start_node(15780).await;
     let node2 = start_node(15781).await;
     let node3 = start_node(15885).await;
@@ -255,41 +254,32 @@ async fn test_update_rejected_when_new_record_self_sig_invalid() {
     let stored = node1.set(&key, chain.version(0)).await;
     assert!(stored.unwrap_or(false), "initial store must succeed");
 
-    let doc = chain.doc(
-        1,
-        Some(&chain.version(0)),
-        chain.keys[1].public_key(),
-        chain.keys[2].public_key(),
-    );
     let wrong = MlDsa65KeyPair::generate().unwrap();
-    let invalid_new_record = build_signed_record(&doc, &wrong, "ML-DSA-65");
+    let invalid_new_record = common::resign(&chain.version(1), &wrong);
 
-    let result = node2
-        .update(&key, invalid_new_record, chain.earlier(1))
-        .await;
+    let result = node2.set(&key, invalid_new_record).await;
     assert!(
         result.is_none(),
-        "update must be rejected when the new record's self-signature is invalid"
+        "a rotation whose self-signature is invalid must be rejected"
     );
     assert_eq!(
         node1.get(&key).await,
         Some(chain.version(0)),
-        "the original record must remain after a rejected update"
+        "the original record must remain after a rejected rotation"
     );
 
     node1.stop().await;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 9. Update rejected when signed by a key that was not committed (15782–15784)
+// 9. A rotation signed by a key outside the tree (15782–15784)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// `update` must return None when the new version is self-signed by a key
-/// the version before did not commit to: the owner's node sees it against
-/// the earlier versions it is given, and sends nothing. The original record
-/// survives.
+/// Publishing position 1 self-signed by a key that is not the tree's at
+/// that position returns None: the owner's node refuses it before sending
+/// anything. The original record survives.
 #[tokio::test]
-async fn test_update_rejected_when_signed_by_an_uncommitted_key() {
+async fn test_rotation_rejected_when_signed_by_a_key_outside_the_tree() {
     let mut node1 = start_node(15782).await;
     let node2 = start_node(15783).await;
     let mut node3 = start_node(15784).await;
@@ -309,10 +299,10 @@ async fn test_update_rejected_when_signed_by_an_uncommitted_key() {
 
     let unrelated = MlDsa65KeyPair::generate().unwrap();
     let new_record = chain.forge(1, &chain.version(0), &unrelated);
-    let result = node3.update(&key, new_record, chain.earlier(1)).await;
+    let result = node3.set(&key, new_record).await;
     assert!(
         result.is_none(),
-        "an update signed by a key that was not committed must return None"
+        "a rotation signed by a key outside the tree must return None"
     );
 
     sleep(Duration::from_millis(200)).await;
@@ -432,7 +422,7 @@ async fn test_stop_cancels_in_flight_replication() {
 /// time out, for its backoff to elapse, and for the next probe to succeed.
 const RECOVERY_BUDGET: Duration = Duration::from_secs(30);
 
-/// Version 0 of a new DID, returning `(did, record)`.
+/// Position 0 of a new DID, returning `(did, record)`.
 fn new_record() -> (String, Vec<u8>) {
     new_did_record()
 }
@@ -572,9 +562,9 @@ async fn test_node_joins_when_its_seed_starts_late() {
 
 /// Kademlia §2.3 and §4.1: a dead peer is neither a replica nor worth another
 /// timeout, even though the other nodes have not tried it and keep reporting it.
-/// The empty replicas ask the network before storing, and their first lookup
-/// waits for the dead peer too: they refuse rather than guess, so the first
-/// publication is degraded until a retry, and the second is not.
+/// The empty replicas ask the network before storing, and their first check
+/// waits for the dead peer until its deadline: its silence proves nothing, so
+/// they store the verified record. The next publication does not wait for it.
 #[tokio::test]
 async fn test_set_ignores_a_dead_peer_that_others_keep_reporting() {
     let writer = start_node(15924).await;
@@ -599,22 +589,15 @@ async fn test_set_ignores_a_dead_peer_that_others_keep_reporting() {
     }
 
     let (key, record) = new_record();
-    let first = writer.set_detailed(&key, record.clone()).await;
-    assert!(matches!(first, SetOutcome::Degraded(_)), "{first:?}");
+    let first = writer.set_detailed(&key, record).await;
+    assert!(matches!(first, SetOutcome::Complete(_)), "{first:?}");
     assert_eq!(first.report().expected_replicas, 3);
-    assert_eq!(
-        first.report().stored_replicas,
-        1,
-        "only the writer's own copy"
-    );
+    assert_eq!(first.report().stored_replicas, 3);
     assert_eq!(
         first.report().unavailable_nodes,
-        3,
-        "the dead peer, and the two replicas that could not hear from it"
+        1,
+        "the dead peer, which is no replica"
     );
-    let retry = writer.set_detailed(&key, record).await;
-    assert!(matches!(retry, SetOutcome::Complete(_)), "{retry:?}");
-    assert_eq!(retry.report().unavailable_nodes, 1);
 
     let (key, record) = new_record();
     let started = std::time::Instant::now();

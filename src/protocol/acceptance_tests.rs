@@ -1,19 +1,18 @@
-//! How a replica takes a DID record from the network (ADR 0005, section 3):
-//! the order of its checks, the network checks of a replica that holds
-//! nothing, with mock neighbours, UPDATE, and the replacement of a record.
-//! The rules themselves are tested in `auth_handler/rules.rs`; here, that a
-//! replica gathers what they need, asks only when they say so, and writes
-//! only what they accept.
+//! How a replica takes a DID record: the order of its checks, the network
+//! check of a replica that holds nothing, with mock neighbours, and the
+//! replacement of a record. The rules themselves are tested in
+//! `auth_handler/rules.rs`; here, that a replica gathers what they need, asks
+//! only when they say so, and writes only what they accept.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::json;
 
-use crate::auth_handler::test_chain::{new_key, sign, Chain};
-use crate::protocol::messages::{
-    record_hash, rpc_message_name, RpcMessage, StoreStatus, UpdateStatus,
-};
+use crate::auth_handler::test_tree::{body, sha256, sign, TreeOwner, PLACEHOLDER};
+use crate::node::Node;
+use crate::protocol::messages::{record_hash, rpc_message_name, RpcMessage, StoreStatus, WireNode};
 use crate::protocol::test_support::*;
 use crate::storage::{ForgetfulStorage, IStorage};
 use crate::utils::ID_LEN;
@@ -43,8 +42,8 @@ async fn replica_with(
 /// What a mock neighbour holds and answers.
 #[derive(Clone)]
 enum Neighbour {
-    /// Holds `record` as version `seq`: answers `FindHash` with its hash, and
-    /// `FindValue` with the record.
+    /// Holds `record` at position `seq`: answers `FindHash` with its hash,
+    /// and `FindValue` with the record.
     Holder(u64, Vec<u8>),
     /// Answers `FindHash` with `(seq, hash)`, and has no record to give.
     Claims(u64, [u8; ID_LEN]),
@@ -52,6 +51,10 @@ enum Neighbour {
     ClaimsServing(u64, [u8; ID_LEN], Vec<u8>),
     /// Answers `FindHash` with `(seq, hash)`, and never `FindValue`.
     ClaimsThenSilent(u64, [u8; ID_LEN]),
+    /// One node under many ids: the first `FindHash` gets `count` made-up
+    /// nodes closer to the key, all at this node's address, and every later
+    /// one a claim of position `seq` under a made-up hash.
+    Sybil { count: u8, seq: u64 },
     /// Holds nothing: answers with no closer nodes.
     Empty,
     /// Never answers.
@@ -70,11 +73,12 @@ async fn neighbours(
     let mut all = vec![];
     for (index, kind) in kinds.into_iter().enumerate() {
         let mut id = key;
-        id[ID_LEN - 1] ^= index as u8 + 1;
+        id[ID_LEN - 2] ^= index as u8 + 1;
         let (socket, contact) = raw_peer(id).await;
-        protocol.router.write().await.add_contact(contact);
+        protocol.router.write().await.add_contact(contact.clone());
         let seen: Seen = Arc::new(Mutex::new(vec![]));
         all.push(Arc::clone(&seen));
+        let introduced = AtomicBool::new(false);
         tokio::spawn(async move {
             while let Some((frame, from)) = try_read_frame(&socket, Duration::from_secs(5)).await {
                 if !frame.is_request {
@@ -107,6 +111,22 @@ async fn neighbours(
                         })
                     }
                     Neighbour::ClaimsThenSilent(..) => None,
+                    Neighbour::Sybil { count, .. }
+                        if find_hash && !introduced.swap(true, Ordering::Relaxed) =>
+                    {
+                        let made_up = (1..=*count)
+                            .map(|n| {
+                                let mut id = key;
+                                id[ID_LEN - 1] ^= n;
+                                WireNode::from(&Node::new(id, contact.ip.clone(), contact.port))
+                            })
+                            .collect();
+                        Some(RpcMessage::FindValueNodes { nodes: made_up })
+                    }
+                    Neighbour::Sybil { seq, .. } if find_hash => Some(RpcMessage::FindHashHit {
+                        seq: *seq,
+                        hash: rand::random(),
+                    }),
                     _ if find_hash || find_value => {
                         Some(RpcMessage::FindValueNodes { nodes: vec![] })
                     }
@@ -137,50 +157,16 @@ async fn store(
         .await
 }
 
-async fn update(
-    protocol: &Arc<KademliaProtocol>,
-    key: [u8; ID_LEN],
-    record: &[u8],
-) -> UpdateStatus {
-    protocol
-        .rpc_update(SENDER, sender_addr(), key, record.to_vec())
-        .await
-        .expect("an UPDATE answered")
-}
-
 async fn knows(protocol: &Arc<KademliaProtocol>, id: [u8; ID_LEN]) -> bool {
     protocol.router.read().await.get_contact(&id).is_some()
 }
 
-/// Version `seq` of `chain` with a longer document, signed by the key the
-/// version before commits to.
-fn larger_version(chain: &Chain, seq: usize) -> Vec<u8> {
-    let mut doc = chain.doc(
-        seq as u64,
-        Some(chain.version(seq - 1)),
-        chain.keys[seq].public_key(),
-        chain.keys[seq + 1].public_key(),
-    );
-    doc["service"][0]["serviceEndpoint"] = json!(format!("http://example.com/{}", "x".repeat(200)));
-    sign(&doc, &chain.keys[seq])
-}
-
-/// Another version `seq` of `chain` at the same place, signed by `signer`.
-fn fork(
-    chain: &Chain,
-    seq: usize,
-    prev: &[u8],
-    signer: &crate::crypto::mldsa::MlDsa65KeyPair,
-) -> Vec<u8> {
-    sign(
-        &chain.doc(
-            seq as u64,
-            Some(prev),
-            signer.public_key(),
-            new_key().public_key(),
-        ),
-        signer,
-    )
+/// Position `seq` of `owner` with another service endpoint: a second valid
+/// document at that position.
+fn other_document(owner: &TreeOwner, seq: usize, prev: &[u8]) -> Vec<u8> {
+    let mut doc = owner.doc(seq, Some(prev));
+    doc["service"][0]["serviceEndpoint"] = json!("http://example.com/other");
+    sign(&doc, &owner.keys[seq])
 }
 
 // ---- The order of checks ------------------------------------------------------
@@ -191,28 +177,21 @@ fn fork(
 #[tokio::test]
 async fn a_record_that_fails_the_form_is_invalid_before_anything_else() {
     let (protocol, handler) = replica().await;
-    let (chain, other) = (Chain::new(), Chain::new());
+    let (owner, other) = (TreeOwner::new(1), TreeOwner::new(2));
     let seen = neighbours(&protocol, other.key, vec![Neighbour::Empty]).await;
     assert_eq!(
-        store(&protocol, chain.key, chain.version(0)).await,
+        store(&protocol, owner.key, &owner.record(0, None)).await,
         Some(StoreStatus::Stored)
     );
     let verified = handler.verified();
     let requests = asked(&seen).len();
 
     let stranger = [3; ID_LEN];
-    let record = chain.version(0).to_vec();
     assert_eq!(
         protocol
-            .rpc_store(stranger, sender_addr(), other.key, record.clone())
+            .rpc_store(stranger, sender_addr(), other.key, owner.record(0, None))
             .await,
         Some(StoreStatus::InvalidRecord)
-    );
-    assert_eq!(
-        protocol
-            .rpc_update(stranger, sender_addr(), other.key, record)
-            .await,
-        Some(UpdateStatus::InvalidRecord)
     );
     assert_eq!(handler.verified(), verified, "no signature verified");
     assert_eq!(asked(&seen).len(), requests, "nobody asked");
@@ -220,792 +199,397 @@ async fn a_record_that_fails_the_form_is_invalid_before_anything_else() {
     assert_eq!(protocol.storage.get(&other.key), None);
 }
 
-/// Version 0 follows no version: an UPDATE of it is `InvalidRecord`, even
-/// with the bytes the replica holds.
+/// A record signed by a key that is not its position's is invalid however
+/// many nodes claim to hold it: no lookup runs at all.
 #[tokio::test]
-async fn an_update_of_version_0_is_invalid() {
-    let (protocol, _) = replica().await;
-    let chain = Chain::new();
-    assert_eq!(
-        update(&protocol, chain.key, chain.version(0)).await,
-        UpdateStatus::InvalidRecord
+async fn a_forged_record_is_invalid_whatever_the_network_says() {
+    let (protocol, handler) = replica().await;
+    let owner = TreeOwner::new(1);
+    let forger = TreeOwner::new(9);
+    let forged = owner.record_from(
+        &body(PLACEHOLDER, forger.keys[5].public_key(), 5, Some(b"4")),
+        5,
     );
-    protocol
-        .storage
-        .set(chain.key.to_vec(), chain.version(0).to_vec());
+    let claims = vec![Neighbour::Claims(5, sha256(&forged)); 5];
+    let seen = neighbours(&protocol, owner.key, claims).await;
     assert_eq!(
-        update(&protocol, chain.key, chain.version(0)).await,
-        UpdateStatus::InvalidRecord
+        store(&protocol, owner.key, &forged).await,
+        Some(StoreStatus::InvalidRecord)
     );
+    assert!(asked(&seen).is_empty());
+    assert_eq!(handler.verified(), 0);
+    assert_eq!(protocol.storage.get(&owner.key), None);
 }
 
-/// The same bytes: a STORE refreshes the expiry of the stored record, so that
-/// republication keeps it alive, and adds the sender to the routing table;
-/// an UPDATE does neither. Nothing is verified.
+/// The same bytes refresh the expiry, verify nothing and ask nobody.
 #[tokio::test]
-async fn the_same_bytes_refresh_by_store_and_not_by_update() {
+async fn the_same_bytes_refresh_the_stored_record() {
     let (protocol, handler) = replica().await;
-    let chain = Chain::with_versions(1);
+    let owner = TreeOwner::new(1);
+    let v5 = owner.record(5, Some(b"4"));
     protocol
         .storage
-        .insert_if_absent(chain.key.to_vec(), chain.version(1).to_vec());
+        .insert_if_absent(owner.key.to_vec(), v5.clone());
+    let seen = neighbours(&protocol, owner.key, vec![Neighbour::Empty]).await;
     tokio::time::sleep(Duration::from_millis(1100)).await;
-
-    let updater = [4; ID_LEN];
-    assert_eq!(
-        protocol
-            .rpc_update(updater, sender_addr(), chain.key, chain.version(1).to_vec())
-            .await,
-        Some(UpdateStatus::AlreadyStored)
-    );
-    assert_eq!(
-        protocol.storage.iter_older_than(1).len(),
-        1,
-        "an UPDATE does not refresh"
-    );
-    assert!(!knows(&protocol, updater).await);
+    assert_eq!(protocol.storage.iter_older_than(1).len(), 1);
 
     assert_eq!(
-        store(&protocol, chain.key, chain.version(1)).await,
+        store(&protocol, owner.key, &v5).await,
         Some(StoreStatus::AlreadyStored)
     );
-    assert!(
-        protocol.storage.iter_older_than(1).is_empty(),
-        "a STORE refreshes"
-    );
+    assert!(protocol.storage.iter_older_than(1).is_empty());
     assert!(knows(&protocol, SENDER).await);
     assert_eq!(handler.verified(), 0);
-}
-
-/// A successor that does not fit in the budget is `CapacityExceeded`, and the
-/// stored version stays.
-#[tokio::test]
-async fn a_successor_beyond_the_budget_leaves_the_stored_version() {
-    let chain = Chain::with_versions(1);
-    let storage = Arc::new(ForgetfulStorage::with_max_storage_bytes(
-        -1,
-        ID_LEN + chain.version(1).len() + 10,
-    ));
-    let (protocol, _) = replica_with(storage).await;
-    protocol
-        .storage
-        .insert_if_absent(chain.key.to_vec(), chain.version(1).to_vec());
-    let mut chain = chain;
-    chain.keys.push(new_key());
-    let v2 = larger_version(&chain, 2);
-    assert_eq!(
-        update(&protocol, chain.key, &v2).await,
-        UpdateStatus::CapacityExceeded
-    );
-    assert_eq!(
-        store(&protocol, chain.key, &v2).await,
-        Some(StoreStatus::CapacityExceeded)
-    );
-    assert_eq!(
-        protocol.storage.get(&chain.key),
-        Some(chain.version(1).to_vec())
-    );
-}
-
-// ---- Version 0 at a replica that holds nothing ---------------------------------------
-
-/// With `n` = 2 nodes asked, the quorum is 2: both claiming a later version
-/// refuse version 0, one alone does not.
-#[tokio::test]
-async fn version_0_is_refused_when_the_quorum_claims_a_later_version() {
-    let chain = Chain::with_versions(2);
-    let (protocol, handler) = replica().await;
-    neighbours(
-        &protocol,
-        chain.key,
-        vec![
-            Neighbour::Holder(1, chain.version(1).to_vec()),
-            Neighbour::Holder(2, chain.version(2).to_vec()),
-        ],
-    )
-    .await;
-    assert_eq!(
-        store(&protocol, chain.key, chain.version(0)).await,
-        Some(StoreStatus::NewerClaimed)
-    );
-    assert_eq!(protocol.storage.get(&chain.key), None);
-    assert_eq!(handler.verified(), 0);
-
-    let (protocol, _) = replica().await;
-    neighbours(
-        &protocol,
-        chain.key,
-        vec![
-            Neighbour::Holder(2, chain.version(2).to_vec()),
-            Neighbour::Empty,
-        ],
-    )
-    .await;
-    assert_eq!(
-        store(&protocol, chain.key, chain.version(0)).await,
-        Some(StoreStatus::Stored)
-    );
-    assert_eq!(
-        protocol.storage.get(&chain.key),
-        Some(chain.version(0).to_vec())
-    );
-}
-
-/// One node holding another version 0, the same document signed again (or
-/// signed by whoever stole the first key), refuses it once it shows it: the
-/// replica fetches it and verifies its signature, and never verifies the
-/// record it refuses (open point 27).
-#[tokio::test]
-async fn version_0_is_refused_when_a_node_holds_another_version_0() {
-    let chain = Chain::new();
-    let again = sign(
-        &chain.doc(
-            0,
-            None,
-            chain.keys[0].public_key(),
-            chain.keys[1].public_key(),
-        ),
-        &chain.keys[0],
-    );
-    let (protocol, handler) = replica().await;
-    let seen = neighbours(
-        &protocol,
-        chain.key,
-        vec![Neighbour::Holder(0, again), Neighbour::Empty],
-    )
-    .await;
-    assert_eq!(
-        store(&protocol, chain.key, chain.version(0)).await,
-        Some(StoreStatus::Conflict)
-    );
-    assert_eq!(protocol.storage.get(&chain.key), None);
-    assert!(asked(&seen[..1]).contains(&"FindValue"));
-    assert_eq!(handler.verified(), 1);
-}
-
-/// A claimed version 0 counts only once shown (open point 27): the replica
-/// fetches the record of the node that claims it, and a claim with no record
-/// behind it, with a record that is not another version 0 of the DID, or
-/// followed by silence is dropped, so one node cannot stop a DID from being
-/// created.
-#[tokio::test]
-async fn a_claimed_version_0_counts_only_once_shown() {
-    let chain = Chain::new();
-    let garbage = b"not a version 0".to_vec();
-    let forged = fork(&chain, 1, chain.version(0), &new_key());
-    for claim in [
-        Neighbour::Claims(0, [7; ID_LEN]),
-        Neighbour::ClaimsServing(0, record_hash(&garbage), garbage.clone()),
-        Neighbour::ClaimsServing(0, record_hash(&forged), forged.clone()),
-        Neighbour::ClaimsThenSilent(0, [7; ID_LEN]),
-    ] {
-        let (protocol, _) = replica().await;
-        let seen = neighbours(&protocol, chain.key, vec![claim, Neighbour::Empty]).await;
-        assert_eq!(
-            store(&protocol, chain.key, chain.version(0)).await,
-            Some(StoreStatus::Stored)
-        );
-        assert_eq!(
-            protocol.storage.get(&chain.key),
-            Some(chain.version(0).to_vec())
-        );
-        assert!(asked(&seen).contains(&"FindValue"), "{:?}", asked(&seen));
-        #[cfg(feature = "counters")]
-        {
-            let checks = protocol.counters().checks;
-            assert_eq!((checks.unshown_claims, checks.accepted), (1, 1));
-        }
-    }
-}
-
-/// Never accept on silence: a node that does not answer, or nobody to ask,
-/// gives no answer to the sender.
-#[tokio::test]
-async fn version_0_gets_no_answer_on_silence_or_with_nobody_to_ask() {
-    let chain = Chain::new();
-    let (protocol, _) = replica().await;
-    assert_eq!(store(&protocol, chain.key, chain.version(0)).await, None);
-    neighbours(
-        &protocol,
-        chain.key,
-        vec![Neighbour::Empty, Neighbour::Silent],
-    )
-    .await;
-    assert_eq!(store(&protocol, chain.key, chain.version(0)).await, None);
-    assert_eq!(protocol.storage.get(&chain.key), None);
-}
-
-// ---- A replica that holds a version ------------------------------------------------------
-
-/// A replica holding the same version 0 signed differently keeps its copy and
-/// asks nobody.
-#[tokio::test]
-async fn version_0_signed_again_is_a_conflict_at_its_holder() {
-    let chain = Chain::new();
-    let again = sign(
-        &chain.doc(
-            0,
-            None,
-            chain.keys[0].public_key(),
-            chain.keys[1].public_key(),
-        ),
-        &chain.keys[0],
-    );
-    let (protocol, _) = replica().await;
-    let seen = neighbours(&protocol, chain.key, vec![Neighbour::Empty]).await;
-    protocol
-        .storage
-        .insert_if_absent(chain.key.to_vec(), chain.version(0).to_vec());
-    assert_eq!(
-        store(&protocol, chain.key, &again).await,
-        Some(StoreStatus::Conflict)
-    );
-    assert_eq!(
-        protocol.storage.get(&chain.key),
-        Some(chain.version(0).to_vec())
-    );
     assert!(asked(&seen).is_empty());
 }
 
-/// A replica holding version N−1 decides alone: a fork is a conflict, without
-/// asking; the genuine successor replaces its copy, by UPDATE or by STORE,
-/// with one signature verified each and no authorization but the chain.
+// ---- A replica that holds a record -----------------------------------------------
+
+/// A holder decides alone: a higher position replaces its record, without
+/// the positions in between, and a lower one is stale. Nobody is asked, not
+/// even a node that would claim a higher position.
 #[tokio::test]
-async fn a_holder_of_the_version_before_decides_alone() {
-    let chain = Chain::with_versions(3);
-    let (protocol, handler) = replica().await;
-    let seen = neighbours(&protocol, chain.key, vec![Neighbour::Empty]).await;
+async fn a_holder_decides_alone_by_position() {
+    let (protocol, _) = replica().await;
+    let owner = TreeOwner::new(1);
+    let (v3, v5) = (owner.record(3, Some(b"2")), owner.record(5, Some(b"2")));
     protocol
         .storage
-        .insert_if_absent(chain.key.to_vec(), chain.version(1).to_vec());
-
-    let wrong_prev = fork(&chain, 2, b"another record", &chain.keys[2]);
+        .insert_if_absent(owner.key.to_vec(), v3.clone());
+    let seen = neighbours(
+        &protocol,
+        owner.key,
+        vec![Neighbour::Claims(9, [9; ID_LEN])],
+    )
+    .await;
     assert_eq!(
-        store(&protocol, chain.key, &wrong_prev).await,
-        Some(StoreStatus::Conflict)
-    );
-    assert_eq!(
-        update(&protocol, chain.key, &wrong_prev).await,
-        UpdateStatus::Conflict
-    );
-    assert_eq!(
-        handler.verified(),
-        0,
-        "a fork is refused without verifying it"
-    );
-
-    assert_eq!(
-        update(&protocol, chain.key, chain.version(2)).await,
-        UpdateStatus::Updated
-    );
-    assert_eq!(
-        protocol.storage.get(&chain.key),
-        Some(chain.version(2).to_vec())
-    );
-    assert_eq!(
-        store(&protocol, chain.key, chain.version(3)).await,
+        store(&protocol, owner.key, &v5).await,
         Some(StoreStatus::Stored)
     );
     assert_eq!(
-        protocol.storage.get(&chain.key),
-        Some(chain.version(3).to_vec())
-    );
-    assert_eq!(handler.verified(), 2);
-    assert!(asked(&seen).is_empty(), "a holder asks nobody");
-}
-
-/// At the place of the stored version: proven duplicity costs one signature
-/// verification, another key none, and the stored version stays; an older
-/// version is stale.
-#[tokio::test]
-async fn another_record_at_the_stored_place_leaves_the_stored_version() {
-    let chain = Chain::with_versions(2);
-    let (protocol, handler) = replica().await;
-    protocol
-        .storage
-        .insert_if_absent(chain.key.to_vec(), chain.version(2).to_vec());
-
-    let mut doc = chain.doc(
-        2,
-        Some(chain.version(1)),
-        chain.keys[2].public_key(),
-        new_key().public_key(),
-    );
-    doc["service"][0]["serviceEndpoint"] = json!("http://attacker.example");
-    let duplicity = sign(&doc, &chain.keys[2]);
-    assert_eq!(
-        store(&protocol, chain.key, &duplicity).await,
-        Some(StoreStatus::Conflict)
-    );
-    assert_eq!(handler.verified(), 1);
-
-    let attacker = new_key();
-    let other_key = fork(&chain, 2, chain.version(1), &attacker);
-    assert_eq!(
-        store(&protocol, chain.key, &other_key).await,
-        Some(StoreStatus::Conflict)
-    );
-    assert_eq!(handler.verified(), 1);
-
-    assert_eq!(
-        store(&protocol, chain.key, chain.version(1)).await,
+        store(&protocol, owner.key, &v3).await,
         Some(StoreStatus::Stale)
     );
-    assert_eq!(
-        update(&protocol, chain.key, chain.version(1)).await,
-        UpdateStatus::Stale
-    );
-    assert_eq!(handler.verified(), 1);
-    assert_eq!(
-        protocol.storage.get(&chain.key),
-        Some(chain.version(2).to_vec())
-    );
+    assert_eq!(protocol.storage.get(&owner.key), Some(v5));
+    assert!(asked(&seen).is_empty());
 }
 
-/// The UPDATE table, row by row. An UPDATE never asks the network.
+/// A holder of 5A keeps it against a valid 5B, whichever arrives first,
+/// answers `Conflict`, and takes the same valid 6 in both runs. The same
+/// document signed again is a conflict too, and the original bytes are
+/// already stored.
 #[tokio::test]
-async fn an_update_answers_why_it_is_refused() {
-    let chain = Chain::with_versions(4);
-    let (protocol, _) = replica().await;
-    let seen = neighbours(&protocol, chain.key, vec![Neighbour::Empty]).await;
-    let key = chain.key;
-    let set = |seq: usize| {
+async fn another_record_at_the_stored_position_leaves_the_stored_one() {
+    let owner = TreeOwner::new(1);
+    let five_a = owner.record(5, Some(b"4"));
+    let five_b = other_document(&owner, 5, b"4");
+    let six = owner.record(6, Some(&five_a));
+    for (first, second) in [(&five_a, &five_b), (&five_b, &five_a)] {
+        let (protocol, _) = replica().await;
         protocol
             .storage
-            .set(key.to_vec(), chain.version(seq).to_vec())
-    };
-
-    assert_eq!(
-        update(&protocol, key, chain.version(3)).await,
-        UpdateStatus::MissingPrevious { seq: None }
-    );
-    set(1);
-    assert_eq!(
-        update(&protocol, key, chain.version(3)).await,
-        UpdateStatus::MissingPrevious { seq: Some(1) }
-    );
-    set(4);
-    assert_eq!(
-        update(&protocol, key, chain.version(3)).await,
-        UpdateStatus::Stale
-    );
-    set(3);
-    assert_eq!(
-        update(
-            &protocol,
-            key,
-            &fork(&chain, 3, chain.version(2), &new_key())
-        )
-        .await,
-        UpdateStatus::Conflict
-    );
-    assert_eq!(
-        update(&protocol, key, chain.version(3)).await,
-        UpdateStatus::AlreadyStored
-    );
-    set(2);
-    assert_eq!(
-        update(&protocol, key, &fork(&chain, 3, b"x", &chain.keys[3])).await,
-        UpdateStatus::Conflict
-    );
-    assert_eq!(
-        update(&protocol, key, Chain::new().version(0)).await,
-        UpdateStatus::InvalidRecord
-    );
-    let mut bad_signature = chain.version(3).to_vec();
-    bad_signature[20] ^= 1;
-    assert_eq!(
-        update(&protocol, key, &bad_signature).await,
-        UpdateStatus::InvalidRecord
-    );
-    assert_eq!(protocol.storage.get(&key), Some(chain.version(2).to_vec()));
-    assert_eq!(
-        update(&protocol, key, chain.version(3)).await,
-        UpdateStatus::Updated
-    );
-    assert_eq!(protocol.storage.get(&key), Some(chain.version(3).to_vec()));
-    assert!(asked(&seen).is_empty(), "an UPDATE asks nobody");
+            .insert_if_absent(owner.key.to_vec(), first.clone());
+        assert_eq!(
+            store(&protocol, owner.key, second).await,
+            Some(StoreStatus::Conflict)
+        );
+        assert_eq!(protocol.storage.get(&owner.key).as_ref(), Some(first));
+        assert_eq!(
+            store(&protocol, owner.key, &owner.record(5, Some(b"4"))).await,
+            Some(StoreStatus::Conflict)
+        );
+        assert_eq!(
+            store(&protocol, owner.key, first).await,
+            Some(StoreStatus::AlreadyStored)
+        );
+        assert_eq!(
+            store(&protocol, owner.key, &six).await,
+            Some(StoreStatus::Stored)
+        );
+        assert_eq!(protocol.storage.get(&owner.key).as_ref(), Some(&six));
+    }
 }
 
-/// A holder answers `FindHash` with the version it holds and its hash.
+/// A second signature that does not verify is no conflict: `InvalidRecord`.
 #[tokio::test]
-async fn find_hash_answers_with_the_version_held() {
-    let chain = Chain::with_versions(2);
+async fn an_invalid_second_record_at_the_stored_position_is_invalid() {
     let (protocol, _) = replica().await;
+    let owner = TreeOwner::new(1);
+    let v5 = owner.record(5, Some(b"4"));
     protocol
         .storage
-        .insert_if_absent(chain.key.to_vec(), chain.version(2).to_vec());
+        .insert_if_absent(owner.key.to_vec(), v5.clone());
+    let mut again = owner.record(5, Some(b"4"));
+    again[20] ^= 1;
+    assert_eq!(
+        store(&protocol, owner.key, &again).await,
+        Some(StoreStatus::InvalidRecord)
+    );
+    assert_eq!(protocol.storage.get(&owner.key), Some(v5));
+}
+
+#[tokio::test]
+async fn find_hash_answers_with_the_position_held() {
+    let (protocol, _) = replica().await;
+    let owner = TreeOwner::new(1);
+    let v5 = owner.record(5, Some(b"4"));
+    protocol
+        .storage
+        .insert_if_absent(owner.key.to_vec(), v5.clone());
     let answer = protocol
         .dispatch_request(
             RpcMessage::FindHash {
                 sender_id: SENDER,
-                key: chain.key,
+                key: owner.key,
             },
             "127.0.0.1:9051".parse().unwrap(),
         )
         .await;
-    assert!(
-        matches!(answer, Some(RpcMessage::FindHashHit { seq: 2, hash }) if hash == record_hash(chain.version(2))),
-        "{answer:?}"
-    );
+    assert!(matches!(
+        answer,
+        Some(RpcMessage::FindHashHit { seq: 5, hash }) if hash == record_hash(&v5)
+    ));
 }
 
-// ---- Replacing atomically -----------------------------------------------------------------
-
-/// Two valid versions 3, both signed by the key version 2 commits to, sent at
-/// once to a replica holding version 2: one is stored, the other is a
-/// conflict (proven duplicity).
+/// Two valid documents at position 6, sent at once to a holder of 5: one is
+/// stored, the other is a conflict.
 #[tokio::test]
-async fn two_successors_at_once_leave_exactly_one() {
-    let chain = Chain::with_versions(2);
+async fn two_records_at_once_at_one_position_leave_exactly_one() {
+    let owner = TreeOwner::new(1);
     let (protocol, _) = replica().await;
+    let v5 = owner.record(5, Some(b"4"));
     protocol
         .storage
-        .insert_if_absent(chain.key.to_vec(), chain.version(2).to_vec());
-    let successors: Vec<Vec<u8>> = ["a", "b"]
-        .iter()
-        .map(|tag| {
-            let mut doc = chain.doc(
-                3,
-                Some(chain.version(2)),
-                chain.keys[3].public_key(),
-                new_key().public_key(),
-            );
-            doc["service"][0]["serviceEndpoint"] = json!(format!("http://example.com/{tag}"));
-            sign(&doc, &chain.keys[3])
-        })
-        .collect();
+        .insert_if_absent(owner.key.to_vec(), v5.clone());
+    let sixes = [owner.record(6, Some(&v5)), other_document(&owner, 6, &v5)];
     let (first, second) = tokio::join!(
-        update(&protocol, chain.key, &successors[0]),
-        update(&protocol, chain.key, &successors[1]),
+        store(&protocol, owner.key, &sixes[0]),
+        store(&protocol, owner.key, &sixes[1]),
     );
     let mut statuses = [first, second];
     statuses.sort_by_key(|status| format!("{status:?}"));
-    assert_eq!(statuses, [UpdateStatus::Conflict, UpdateStatus::Updated]);
-    let winner = if first == UpdateStatus::Updated {
-        &successors[0]
+    assert_eq!(
+        statuses,
+        [Some(StoreStatus::Conflict), Some(StoreStatus::Stored)]
+    );
+    let winner = if first == Some(StoreStatus::Stored) {
+        &sixes[0]
     } else {
-        &successors[1]
+        &sixes[1]
     };
-    assert_eq!(protocol.storage.get(&chain.key).as_ref(), Some(winner));
+    assert_eq!(protocol.storage.get(&owner.key).as_ref(), Some(winner));
 }
 
-/// A version 1 checked against the network while version 0 is stored
-/// meanwhile is checked again, as a successor of version 0, and stored.
+/// A record checked against the network while a lower position is stored
+/// meanwhile is decided again against it, and replaces it.
 #[tokio::test]
-async fn a_version_checked_while_its_predecessor_arrives_is_checked_again() {
-    let chain = Chain::with_versions(1);
+async fn a_record_checked_while_another_arrives_is_decided_again() {
+    let owner = TreeOwner::new(1);
     let (protocol, _) = replica().await;
     let (peer, contact) = raw_peer({
-        let mut id = chain.key;
+        let mut id = owner.key;
         id[ID_LEN - 1] ^= 1;
         id
     })
     .await;
     protocol.router.write().await.add_contact(contact);
+    let (v3, v5) = (owner.record(3, Some(b"2")), owner.record(5, Some(b"4")));
     let replica = Arc::clone(&protocol);
-    let v1 = chain.version(1).to_vec();
-    let key = chain.key;
-    let stored = tokio::spawn(async move { store(&replica, key, &v1).await });
+    let (key, sent) = (owner.key, v5.clone());
+    let stored = tokio::spawn(async move { store(&replica, key, &sent).await });
 
     let (question, from) = read_frame_of_kind(&peer, true).await;
     assert!(matches!(question.message, RpcMessage::FindHash { .. }));
     protocol
         .storage
-        .insert_if_absent(chain.key.to_vec(), chain.version(0).to_vec());
+        .insert_if_absent(owner.key.to_vec(), v3.clone());
     send_raw(
         &peer,
         from,
         question.msg_id,
         false,
         RpcMessage::FindHashHit {
-            seq: 0,
-            hash: record_hash(chain.version(0)),
+            seq: 3,
+            hash: record_hash(&v3),
         },
     )
     .await;
-    if let Some((fetch, from)) = try_read_frame(&peer, Duration::from_secs(1)).await {
-        send_raw(
-            &peer,
-            from,
-            fetch.msg_id,
-            false,
-            RpcMessage::FindValueHit {
-                value: chain.version(0).to_vec(),
-            },
-        )
-        .await;
-    }
     assert_eq!(stored.await.unwrap(), Some(StoreStatus::Stored));
-    assert_eq!(
-        protocol.storage.get(&chain.key),
-        Some(chain.version(1).to_vec())
-    );
+    assert_eq!(protocol.storage.get(&owner.key), Some(v5));
 }
 
-// ---- A version N ≥ 1 at a replica that holds nothing -----------------------------------------
+// ---- A replica that holds nothing ---------------------------------------------------------
 
-/// Every refusing answer refuses, also when another node is silent: a node
-/// claims a newer version, holds another version N, holds a version N−1 the
-/// record does not follow, or holds an older one.
+/// One peer that shows a valid 6 refuses the incoming 5 as stale, however
+/// many hold 3, and the replica keeps 6.
 #[tokio::test]
-async fn a_refusing_answer_refuses_a_version_n() {
-    let chain = Chain::with_versions(3);
-    let v2 = chain.version(2);
-    let attacker = new_key();
-    for (neighbour, expected) in [
-        (Neighbour::Claims(3, [9; ID_LEN]), StoreStatus::NewerClaimed),
-        (
-            Neighbour::Holder(2, fork(&chain, 2, chain.version(1), &attacker)),
-            StoreStatus::Conflict,
-        ),
-        (Neighbour::Claims(1, [9; ID_LEN]), StoreStatus::Conflict),
-        (
-            Neighbour::Holder(0, chain.version(0).to_vec()),
-            StoreStatus::Conflict,
-        ),
-    ] {
-        let (protocol, handler) = replica().await;
-        neighbours(
-            &protocol,
-            chain.key,
-            vec![neighbour, Neighbour::Holder(2, v2.to_vec())],
-        )
-        .await;
-        assert_eq!(store(&protocol, chain.key, v2).await, Some(expected));
-        assert_eq!(protocol.storage.get(&chain.key), None);
-        assert_eq!(handler.verified(), 0);
-    }
-    let (protocol, _) = replica().await;
-    neighbours(
-        &protocol,
-        chain.key,
-        vec![Neighbour::Claims(3, [9; ID_LEN]), Neighbour::Silent],
-    )
-    .await;
-    assert_eq!(
-        store(&protocol, chain.key, v2).await,
-        Some(StoreStatus::NewerClaimed)
-    );
-}
-
-/// Version 1: one node holding version 0, fetched and checked, is enough.
-#[tokio::test]
-async fn version_1_needs_one_holder_of_version_0() {
-    let chain = Chain::with_versions(1);
+async fn one_shown_higher_position_refuses_and_is_stored() {
     let (protocol, handler) = replica().await;
+    let owner = TreeOwner::new(1);
+    let v3 = owner.record(3, Some(b"2"));
+    let v5 = owner.record(5, Some(&v3));
+    let v6 = owner.record(6, Some(&v5));
+    let mut kinds = vec![Neighbour::Holder(3, v3.clone()); 4];
+    kinds.push(Neighbour::Holder(6, v6.clone()));
+    neighbours(&protocol, owner.key, kinds).await;
+    assert_eq!(
+        store(&protocol, owner.key, &v5).await,
+        Some(StoreStatus::Stale)
+    );
+    assert_eq!(protocol.storage.get(&owner.key), Some(v6));
+    assert_eq!(handler.verified(), 1, "only the shown 6 is verified");
+}
+
+/// A claim of 6 proves nothing: not shown, not shown in time, shown with
+/// invalid bytes, or with a valid 6 of another DID. The verified 5 is
+/// stored.
+#[tokio::test]
+async fn a_claim_that_is_not_shown_refuses_nothing() {
+    let (protocol, _) = replica().await;
+    let (owner, other) = (TreeOwner::new(1), TreeOwner::new(2));
+    let v5 = owner.record(5, Some(b"4"));
+    let theirs = other.record(6, Some(b"5"));
+    let mut invalid = owner.record(6, Some(&v5));
+    invalid[20] ^= 1;
     let seen = neighbours(
         &protocol,
-        chain.key,
+        owner.key,
         vec![
-            Neighbour::Holder(0, chain.version(0).to_vec()),
+            Neighbour::Claims(6, [1; ID_LEN]),
+            Neighbour::ClaimsThenSilent(6, [2; ID_LEN]),
+            Neighbour::ClaimsServing(6, sha256(&invalid), invalid),
+            Neighbour::ClaimsServing(6, sha256(&theirs), theirs),
+            Neighbour::Holder(3, owner.record(3, Some(b"2"))),
+        ],
+    )
+    .await;
+    assert_eq!(
+        store(&protocol, owner.key, &v5).await,
+        Some(StoreStatus::Stored)
+    );
+    assert_eq!(protocol.storage.get(&owner.key), Some(v5));
+    // Each claimant is asked for its record (a silent one again, by the
+    // resends); the holder of 3 is not.
+    let fetched: Vec<bool> = seen
+        .iter()
+        .map(|s| s.lock().unwrap().contains(&"FindValue"))
+        .collect();
+    assert_eq!(fetched, [true, true, true, true, false]);
+    #[cfg(feature = "counters")]
+    assert_eq!(protocol.counters().checks.unshown_claims, 4);
+}
+
+/// Every peer holding a lower position, or nothing, lets the record in.
+#[tokio::test]
+async fn peers_holding_lower_positions_let_the_record_in() {
+    let (protocol, _) = replica().await;
+    let owner = TreeOwner::new(1);
+    let v3 = owner.record(3, Some(b"2"));
+    let v5 = owner.record(5, Some(&v3));
+    let seen = neighbours(
+        &protocol,
+        owner.key,
+        vec![
+            Neighbour::Holder(3, v3.clone()),
+            Neighbour::Holder(3, v3),
             Neighbour::Empty,
         ],
     )
     .await;
     assert_eq!(
-        store(&protocol, chain.key, chain.version(1)).await,
+        store(&protocol, owner.key, &v5).await,
         Some(StoreStatus::Stored)
     );
-    assert_eq!(
-        protocol.storage.get(&chain.key),
-        Some(chain.version(1).to_vec())
-    );
-    assert_eq!(
-        handler.verified(),
-        2,
-        "version 0's signature and version 1's"
-    );
-    assert!(asked(&seen).contains(&"FindValue"));
+    assert!(!asked(&seen).contains(&"FindValue"));
 }
 
-/// Version N ≥ 2: votes for it and for version N−1 together reach the
-/// quorum; one short gives no answer.
+/// No peer answers by the deadline: the verified record is stored all the
+/// same, and one with a bad signature is not.
 #[tokio::test]
-async fn version_n_needs_the_quorum() {
-    let chain = Chain::with_versions(2);
+async fn a_verified_record_is_stored_when_no_peer_answers() {
+    let owner = TreeOwner::new(1);
+    let v5 = owner.record(5, Some(b"4"));
     let (protocol, _) = replica().await;
-    neighbours(
-        &protocol,
-        chain.key,
-        vec![
-            Neighbour::Holder(2, chain.version(2).to_vec()),
-            Neighbour::Holder(1, chain.version(1).to_vec()),
-            Neighbour::Holder(1, chain.version(1).to_vec()),
-        ],
-    )
-    .await;
+    neighbours(&protocol, owner.key, vec![Neighbour::Silent; 3]).await;
     assert_eq!(
-        store(&protocol, chain.key, chain.version(2)).await,
+        store(&protocol, owner.key, &v5).await,
         Some(StoreStatus::Stored)
     );
+    assert_eq!(protocol.storage.get(&owner.key), Some(v5.clone()));
 
     let (protocol, _) = replica().await;
-    neighbours(
-        &protocol,
-        chain.key,
-        vec![
-            Neighbour::Holder(2, chain.version(2).to_vec()),
-            Neighbour::Holder(1, chain.version(1).to_vec()),
-            Neighbour::Empty,
-        ],
-    )
-    .await;
-    assert_eq!(store(&protocol, chain.key, chain.version(2)).await, None);
-    assert_eq!(protocol.storage.get(&chain.key), None);
-}
-
-/// The fetch asks the next voter when one gives no record, or one that does
-/// not hash to `prev`; past the deadline it gives no answer.
-#[tokio::test]
-async fn the_fetch_asks_the_next_voter() {
-    let chain = Chain::with_versions(1);
-    let v0 = chain.version(0);
-    let again = sign(
-        &chain.doc(
-            0,
-            None,
-            chain.keys[0].public_key(),
-            chain.keys[1].public_key(),
-        ),
-        &chain.keys[0],
-    );
-    for first in [
-        Neighbour::Claims(0, record_hash(v0)),
-        Neighbour::ClaimsServing(0, record_hash(v0), again.clone()),
-    ] {
-        let (protocol, _) = replica().await;
-        neighbours(
-            &protocol,
-            chain.key,
-            vec![first, Neighbour::Holder(0, v0.to_vec())],
-        )
-        .await;
-        assert_eq!(
-            store(&protocol, chain.key, chain.version(1)).await,
-            Some(StoreStatus::Stored)
-        );
-    }
-    let (protocol, _) = replica().await;
-    neighbours(
-        &protocol,
-        chain.key,
-        vec![Neighbour::ClaimsThenSilent(0, record_hash(v0))],
-    )
-    .await;
-    let started = Instant::now();
-    assert_eq!(store(&protocol, chain.key, chain.version(1)).await, None);
-    assert!(
-        started.elapsed() < Duration::from_millis(2500),
-        "{:?}",
-        started.elapsed()
-    );
-}
-
-/// The key security case at a replica that holds nothing: right after
-/// version 0, a version 1 whose `prev` is the real version 0, signed by a key
-/// version 0 does not commit to (an attacker's, or version 0's own).
-#[tokio::test]
-async fn a_forged_version_1_is_refused_by_the_fetched_version_0() {
-    let chain = Chain::new();
-    for signer in [new_key(), chain.keys[0].clone()] {
-        let forged = fork(&chain, 1, chain.version(0), &signer);
-        let (protocol, _) = replica().await;
-        neighbours(
-            &protocol,
-            chain.key,
-            vec![Neighbour::Holder(0, chain.version(0).to_vec())],
-        )
-        .await;
-        assert_eq!(
-            store(&protocol, chain.key, &forged).await,
-            Some(StoreStatus::Conflict)
-        );
-        assert_eq!(protocol.storage.get(&chain.key), None);
-    }
-}
-
-/// A version N whose own signature does not verify is `InvalidRecord`.
-#[tokio::test]
-async fn a_version_n_with_a_bad_signature_is_invalid() {
-    let chain = Chain::with_versions(1);
-    let (protocol, _) = replica().await;
-    neighbours(
-        &protocol,
-        chain.key,
-        vec![Neighbour::Holder(0, chain.version(0).to_vec())],
-    )
-    .await;
-    assert_eq!(
-        store(&protocol, chain.key, chain.version(1)).await,
-        Some(StoreStatus::Stored)
-    );
-
-    let mut bad = chain.version(1).to_vec();
+    neighbours(&protocol, owner.key, vec![Neighbour::Silent; 3]).await;
+    let mut bad = v5;
     bad[20] ^= 1;
-    let (protocol, _) = replica().await;
-    neighbours(
-        &protocol,
-        chain.key,
-        vec![Neighbour::Holder(0, chain.version(0).to_vec())],
-    )
-    .await;
     assert_eq!(
-        store(&protocol, chain.key, &bad).await,
+        store(&protocol, owner.key, &bad).await,
         Some(StoreStatus::InvalidRecord)
     );
+    assert_eq!(protocol.storage.get(&owner.key), None);
 }
 
-/// One node serving a made-up version 0 that commits to its own key, after
-/// which its version 1 follows: the made-up version does not bind to the key.
+/// 13 of 19 peers report another valid record at position 5: the replica
+/// stores the 5 it was sent, without fetching theirs.
 #[tokio::test]
-async fn a_made_up_version_0_gets_nothing_accepted() {
-    let chain = Chain::new();
-    let (attacker, next) = (new_key(), new_key());
-    let mut doc = chain.doc(0, None, attacker.public_key(), next.public_key());
-    doc["service"][0]["serviceEndpoint"] = json!("http://attacker.example");
-    let made_up = sign(&doc, &attacker);
-    let forged = fork(&chain, 1, &made_up, &next);
+async fn reports_of_another_record_at_the_same_position_change_nothing() {
     let (protocol, _) = replica().await;
+    let owner = TreeOwner::new(1);
+    let five_a = owner.record(5, Some(b"4"));
+    let five_b = other_document(&owner, 5, b"4");
+    let mut kinds = vec![Neighbour::Holder(5, five_b); 13];
+    kinds.extend(vec![Neighbour::Empty; 6]);
+    let seen = neighbours(&protocol, owner.key, kinds).await;
+    assert_eq!(
+        store(&protocol, owner.key, &five_a).await,
+        Some(StoreStatus::Stored)
+    );
+    assert_eq!(protocol.storage.get(&owner.key), Some(five_a));
+    assert!(!asked(&seen).contains(&"FindValue"));
+}
+
+/// One node answering under 19 made-up ids at its address, each claiming a
+/// later position: the replica fetches at most `k - 1` claims, none is
+/// shown, and the verified record is stored. The made-up ids cast no vote.
+#[tokio::test]
+async fn made_up_ids_at_one_address_cannot_block_a_record() {
+    let (protocol, _) = replica().await;
+    let owner = TreeOwner::new(1);
+    let v0 = owner.record(0, None);
     neighbours(
         &protocol,
-        chain.key,
-        vec![Neighbour::ClaimsServing(0, record_hash(&made_up), made_up)],
+        owner.key,
+        vec![Neighbour::Sybil { count: 19, seq: 62 }],
     )
     .await;
     assert_eq!(
-        store(&protocol, chain.key, &forged).await,
-        Some(StoreStatus::Conflict)
+        store(&protocol, owner.key, &v0).await,
+        Some(StoreStatus::Stored)
     );
-    assert_eq!(protocol.storage.get(&chain.key), None);
+    assert_eq!(protocol.storage.get(&owner.key), Some(v0));
 }
 
-/// Version N ≥ 2: one node serving a made-up version N−1 that commits to the
-/// attacker's key is one vote, below the quorum.
+/// The same attack with the claims pointing at a forged record: the forged
+/// record is invalid before any lookup, so the made-up ids are never asked.
 #[tokio::test]
-async fn a_made_up_version_n_minus_1_is_one_vote() {
-    let chain = Chain::with_versions(1);
-    let (attacker, next) = (new_key(), new_key());
-    let made_up = sign(
-        &chain.doc(
-            1,
-            Some(chain.version(0)),
-            attacker.public_key(),
-            next.public_key(),
-        ),
-        &attacker,
-    );
-    let forged = fork(&chain, 2, &made_up, &next);
+async fn made_up_ids_cannot_get_a_forged_record_stored() {
     let (protocol, _) = replica().await;
-    neighbours(
+    let owner = TreeOwner::new(1);
+    let forger = TreeOwner::new(9);
+    let forged = owner.record_from(
+        &body(PLACEHOLDER, forger.keys[1].public_key(), 1, Some(b"0")),
+        1,
+    );
+    let seen = neighbours(
         &protocol,
-        chain.key,
-        vec![
-            Neighbour::ClaimsServing(1, record_hash(&made_up), made_up),
-            Neighbour::Empty,
-        ],
+        owner.key,
+        vec![Neighbour::Sybil { count: 19, seq: 1 }],
     )
     .await;
-    assert_eq!(store(&protocol, chain.key, &forged).await, None);
-    assert_eq!(protocol.storage.get(&chain.key), None);
+    assert_eq!(
+        store(&protocol, owner.key, &forged).await,
+        Some(StoreStatus::InvalidRecord)
+    );
+    assert!(asked(&seen).is_empty());
+    assert_eq!(protocol.storage.get(&owner.key), None);
 }

@@ -1,423 +1,136 @@
-//! Whether a replica takes a DID record: the rules R1 to R5 and the UPDATE
-//! table of ADR 0005, section 3, as pure functions.
+//! Whether a replica takes a DID record, as pure functions.
 //!
-//! They read records and answers, and decide; they verify no signature and
-//! ask nobody. The node gathers what they need: the record it holds, the
-//! answers `(seq, hash)` of the nodes it asked, a record it fetched. Where a
-//! rule needs a signature, the decision says so, and the node verifies it.
+//! They read the stored record, the incoming one and the answers of other
+//! nodes, and decide. They verify no signature and ask nobody: where a
+//! decision rests on a signature it says so, and the node verifies it.
 //!
-//! - `decide_locally`: steps 1 to 3, by what the replica holds.
-//! - `decide_version_zero`: R2, a version 0 at a replica that holds nothing.
-//! - `check_claimed`: the record R2 fetches from a node that claims another
-//!   version 0.
-//! - `decide_successor`: R5, a version N ≥ 1 at a replica that holds nothing.
-//!   Its rows that trust answers are all there (open point 5).
-//! - `check_fetched`: the version N−1 R5 fetches from a node that voted for it.
-//! - `shown_against`: what a record proves against the version 0 one holds,
-//!   for R2 and for the owner's `set` (open point 27).
+//! Every record proves its own key from the DID, so authenticity never rests
+//! on what other nodes say. Their answers matter only as evidence that a
+//! record has been superseded, and only once the record that proves it is
+//! shown and verified.
 
-use crate::utils::{digest_bytes, ID_LEN};
+use std::cmp::Ordering;
 
-use super::did::{document_of, record_form, FormError, RecordForm};
+use crate::utils::digest_bytes;
 
-/// A request that carries a record.
+use super::did::{document_of, FormError};
+use super::tree::{tree_form, Hash, TreeForm};
+
+/// Two valid records of one DID at the same position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Request {
-    Store,
-    Update,
+pub enum Conflict {
+    /// The same document signed again: same content, another signature.
+    RepeatedSigning,
+    /// Different documents signed by the key of that position.
+    Duplicity,
 }
 
-/// Why a version N is refused at a replica holding another record, without
-/// asking anyone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LocalConflict {
-    /// R4: the same document as the stored version N, signed again.
-    SignedTwice,
-    /// R4: another public key at the place of the stored version N.
-    OtherKey,
-    /// R4: the stored key signed another document at the same place: proven
-    /// duplicity, once its signature verifies.
-    ProvenDuplicity,
-    /// R3: a version N whose `prev` is not the stored version N−1.
-    WrongPrev,
-    /// R3: a version N whose key is not the one the stored version N−1
-    /// commits to.
-    UncommittedKey,
-}
-
-/// What a replica does with a record by what it holds (steps 1 to 3).
+/// What a replica does with a record, by what it holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Local {
-    /// Step 1 failed: `InvalidRecord`.
+    /// The record fails its form: `InvalidRecord`.
     Invalid(FormError),
-    /// R1: the same bytes as stored.
+    /// The same bytes as stored.
     AlreadyStored,
-    /// A STORE at a replica that holds nothing: R2 for version 0, R5 for a
-    /// later one. Carries the form of the record sent.
-    AskNetwork(RecordForm),
-    /// R3: the record follows the stored version. Verify its signature, then
+    /// Nothing stored: check the network before storing.
+    AskNetwork(TreeForm),
+    /// A higher position than the stored one: verify the signature, then
     /// replace the stored record.
     VerifyAndReplace,
-    /// R4: the stored key, another document at the same place. Verify its
-    /// signature: valid is proven duplicity (`Conflict`), invalid is
-    /// `InvalidRecord`.
-    VerifyDuplicity,
-    /// R4: the replica holds a later version.
+    /// The replica holds a higher position.
     Stale { stored: u64 },
-    /// R3 or R4: refused, logged by kind.
-    Conflict(LocalConflict),
-    /// An UPDATE at a replica that holds nothing (`None`), or any request at
-    /// one that holds a version below N−1 (its `seq`).
-    MissingPrevious(Option<u64>),
+    /// Another record at the stored position: verify its signature. Valid,
+    /// it is a conflict of this kind and the stored record stays; invalid,
+    /// the record is `InvalidRecord`.
+    VerifyConflict(Conflict),
 }
 
-/// A node's answer to `FindHash`: the version it holds.
+/// A node's answer to `FindHash`: the position and hash of its record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Answer {
     pub seq: u64,
-    pub hash: [u8; ID_LEN],
+    pub hash: Hash,
 }
 
-/// Why the network refuses a record at a replica that holds nothing.
+/// What a replica's record proves against a record being published.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Refusal {
-    /// A node claims a newer version (R5), or the quorum does (R2).
-    NewerClaimed { seq: u64 },
-    /// A node holds another record at the same place: `(N, h)` in R5,
-    /// `(0, h)` in R2.
-    OtherVersion { seq: u64, hash: [u8; ID_LEN] },
-    /// A node holds a version N−1 that the record does not follow.
-    NotFollowing { hash: [u8; ID_LEN] },
-    /// A node holds a version below N−1 (open point 26).
-    HolderBehind { seq: u64 },
-    /// The fetched version N−1 hashes to `prev` but fails its checks.
-    FetchedDoesNotHold,
-}
-
-/// How far R5 got with the fetch of version N−1.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Fetch {
-    /// Not tried yet.
-    NotYet,
-    /// A record that hashes to `prev` passed its checks. `dropped` are the
-    /// voters (indices into the answers) that gave no record, or one that does
-    /// not hash to `prev`, before it: they are no votes.
-    Confirmed { dropped: Vec<usize> },
-    /// Every voter was tried and none gave such a record: all dropped.
-    NoneConfirmed,
-}
-
-/// What R2 or R5 decides from the answers.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Verdict {
-    Refuse(Refusal),
-    /// R5: fetch version N−1 from these voters, in this order (the closest to
-    /// the key first, as the answers are given), then decide again.
-    Fetch(Vec<usize>),
-    /// R2: fetch the record of these nodes, which claim another version 0
-    /// (indices into the answers, the closest to the key first), then decide
-    /// again with what they showed (open point 27).
-    Show(Vec<usize>),
-    /// Verify the record's signature, then store it.
-    Accept,
-    /// No answer to the sender: never accept on silence.
-    NoAnswer,
-}
-
-/// How far R2 got with the records of the nodes that claim another version 0
-/// (open point 27).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClaimsShown {
-    /// Not fetched yet.
-    NotYet,
-    /// The node of this answer (an index into the answers) gave another
-    /// version 0 of the DID, and its signature verified.
-    OtherVersionZero(usize),
-    /// None of them did: their claims are dropped.
+pub enum Proof {
     Nothing,
+    /// A higher position: the published record is superseded.
+    Superseded,
+    /// Another record at the same position.
+    Conflict(Conflict),
 }
 
-/// What a record proves against the version 0 of its DID that one holds
-/// (open point 27). A claim proves nothing; a record proves only what the
-/// steps of a replica holding that version 0 find in it, and only once its
-/// signature verifies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Shown {
-    /// The same bytes as that version 0.
-    Same,
-    /// The same document signed again (R4): once its signature verifies,
-    /// that version 0 was signed twice.
-    OtherVersionZero,
-    /// A version 1 whose `prev` is that version 0 and whose key it commits to
-    /// (R3): once its signature verifies, the DID has moved on.
-    Successor,
-    /// A version 2 or later: version 0 alone cannot tell it from a forgery.
-    Unprovable,
-    /// Nothing: not a record of the DID, or one that does not follow that
-    /// version 0, as a version 1 signed by another key.
-    Nothing,
-}
-
-/// What a fetched version N−1 proves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FetchCheck {
-    /// It does not hash to `prev`: that voter is no vote, try the next.
-    NotPrev,
-    /// It hashes to `prev` and fails its form or does not commit to the key
-    /// of the record sent: `Conflict`.
-    DoesNotHold,
-    /// It holds. For N = 1 it is version 0, whose self-signature must verify
-    /// too (`verify_version_zero`), or the outcome is `Conflict`.
-    Confirmed { verify_version_zero: bool },
-}
-
-/// The nodes that may hold a record among those a replica asked: it is one of
-/// the `k` replicas itself (open point 5).
-pub fn replicas_asked(k: usize, asked: usize) -> usize {
-    asked.min(k.saturating_sub(1))
-}
-
-/// Matching answers R5 needs out of `n` (open point 5):
-/// `f = max(1, ⌊(n − 1)/3⌋)`, `max(2, min(n, ⌈(n + f + 1)/2⌉))`. With `n < 2`
-/// it is more than `n`, so the quorum is never reached.
-pub fn store_quorum(n: usize) -> usize {
-    let f = (n.saturating_sub(1) / 3).max(1);
-    (n + f + 1).div_ceil(2).min(n).max(2)
-}
-
-/// Steps 1 to 3 of section 3 for `incoming`, sent under `key` by `request`,
-/// at a replica holding `stored`.
-pub fn decide_locally(
-    request: Request,
-    key: &[u8; ID_LEN],
-    stored: Option<&[u8]>,
-    incoming: &[u8],
-) -> Local {
-    // Step 1: the form, before anything else.
-    let form = match record_form(key, incoming) {
+/// What a replica holding `stored` does with `incoming`, sent under `key`.
+pub fn decide_locally(key: &Hash, stored: Option<&[u8]>, incoming: &[u8]) -> Local {
+    let form = match tree_form(key, incoming) {
         Ok(form) => form,
         Err(error) => return Local::Invalid(error),
     };
-    // Version 0 follows no version: an UPDATE of it has nothing to replace.
-    if request == Request::Update && form.seq == 0 {
-        return Local::Invalid(FormError::Field("seq"));
-    }
     let Some(stored) = stored else {
-        return match request {
-            Request::Store => Local::AskNetwork(form),
-            Request::Update => Local::MissingPrevious(None),
-        };
+        return Local::AskNetwork(form);
     };
-    // R1: the bytes of a record verified when it was stored.
     if stored == incoming {
         return Local::AlreadyStored;
     }
-    // Step 3, by what the replica holds. A stored record without the form of
-    // a DID record (stored before this rule, or by a test) is kept, and
-    // anything else is refused.
-    let Ok(held) = record_form(key, stored) else {
-        return Local::Conflict(LocalConflict::OtherKey);
-    };
-    if held.seq.checked_add(1) == Some(form.seq) {
-        // R3: the successor of the stored version, decided locally.
-        if form.prev != Some(digest_bytes(stored)) {
-            return Local::Conflict(LocalConflict::WrongPrev);
-        }
-        if form.key_hash != held.next_key_hash {
-            return Local::Conflict(LocalConflict::UncommittedKey);
-        }
+    // Only verified records are stored, so one without this form predates
+    // it: any valid record replaces it.
+    let Ok(held) = tree_form(key, stored) else {
         return Local::VerifyAndReplace;
-    }
-    if held.seq > form.seq {
-        return Local::Stale { stored: held.seq };
-    }
-    if held.seq == form.seq {
-        // R4 at the place of the stored version.
-        if document_of(stored).ok() == document_of(incoming).ok() {
-            return Local::Conflict(LocalConflict::SignedTwice);
+    };
+    match form.seq.cmp(&held.seq) {
+        Ordering::Greater => Local::VerifyAndReplace,
+        Ordering::Less => Local::Stale { stored: held.seq },
+        Ordering::Equal if document_of(stored).ok() == document_of(incoming).ok() => {
+            Local::VerifyConflict(Conflict::RepeatedSigning)
         }
-        if held.key_hash == form.key_hash {
-            return Local::VerifyDuplicity;
-        }
-        return Local::Conflict(LocalConflict::OtherKey);
-    }
-    // A version below N−1: the record stays, and nobody is asked.
-    Local::MissingPrevious(Some(held.seq))
-}
-
-/// R2: a version 0 (`incoming` its `record_hash`) at a replica that holds
-/// nothing. `asked` nodes were asked, `answers` are those that hold a record,
-/// the closest to the key first, `everyone_answered` whether every node asked
-/// answered. Called first with `ClaimsShown::NotYet`, and again with what the
-/// claimants showed when it answers `Verdict::Show`.
-pub fn decide_version_zero(
-    k: usize,
-    asked: usize,
-    incoming: &[u8; ID_LEN],
-    answers: &[Answer],
-    everyone_answered: bool,
-    shown: ClaimsShown,
-) -> Verdict {
-    if asked == 0 {
-        return Verdict::NoAnswer;
-    }
-    // Refusals first. The DID has moved on only by the quorum's word: a
-    // single holder of a later version must not stop the owner's replay.
-    let newer: Vec<u64> = answers
-        .iter()
-        .map(|a| a.seq)
-        .filter(|seq| *seq >= 1)
-        .collect();
-    if newer.len() >= store_quorum(replicas_asked(k, asked)) {
-        let seq = newer.iter().copied().max().unwrap_or(1);
-        return Verdict::Refuse(Refusal::NewerClaimed { seq });
-    }
-    // Another version 0 refuses only once shown (open point 27): it can only
-    // be the same document signed again, which the replica checks against
-    // the version 0 it was sent. The closest claimants are enough: only the
-    // k replicas can hold the DID.
-    let claimants: Vec<usize> = (0..answers.len())
-        .filter(|index| answers[*index].seq == 0 && answers[*index].hash != *incoming)
-        .take(replicas_asked(k, asked))
-        .collect();
-    match shown {
-        ClaimsShown::NotYet if !claimants.is_empty() => return Verdict::Show(claimants),
-        ClaimsShown::OtherVersionZero(index) => {
-            if let Some(other) = answers.get(index) {
-                return Verdict::Refuse(Refusal::OtherVersion {
-                    seq: 0,
-                    hash: other.hash,
-                });
-            }
-        }
-        ClaimsShown::NotYet | ClaimsShown::Nothing => {}
-    }
-    if everyone_answered {
-        Verdict::Accept
-    } else {
-        Verdict::NoAnswer
+        Ordering::Equal => Local::VerifyConflict(Conflict::Duplicity),
     }
 }
 
-/// The record fetched from a node that claimed `(0, claimed)` for the
-/// version 0 `incoming` sent under `key`: it shows another version 0 when it
-/// hashes to `claimed` and is the same document signed again. The caller then
+/// The answers an empty replica follows up before storing a record at
+/// `seq`: one per distinct claimed record above `seq`, from the closest node
+/// that claimed it (answers come closest first), at most `limit`. A claim at
+/// or below `seq` cannot supersede the record, so it is not fetched; nor does
+/// a claim alone refuse anything.
+pub fn claims_to_fetch(seq: u64, answers: &[Answer], limit: usize) -> Vec<usize> {
+    let mut picked: Vec<usize> = Vec::new();
+    for (index, answer) in answers.iter().enumerate() {
+        if picked.len() == limit {
+            break;
+        }
+        let repeated = picked.iter().any(|&seen| answers[seen] == *answer);
+        if answer.seq > seq && !repeated {
+            picked.push(index);
+        }
+    }
+    picked
+}
+
+/// The form of `fetched`, the record a node gave for its claim `claimed`,
+/// when it proves that a record at `seq` is superseded: it hashes to the
+/// claim, binds to `key` and holds a higher position. The caller then
 /// verifies its signature.
-pub fn check_claimed(
-    key: &[u8; ID_LEN],
-    incoming: &[u8],
-    claimed: &[u8; ID_LEN],
-    fetched: &[u8],
-) -> bool {
-    digest_bytes(fetched) == *claimed
-        && shown_against(key, incoming, fetched) == Shown::OtherVersionZero
+pub fn shows_higher(key: &Hash, seq: u64, claimed: &Hash, fetched: &[u8]) -> Option<TreeForm> {
+    if digest_bytes(fetched) != *claimed {
+        return None;
+    }
+    tree_form(key, fetched).ok().filter(|form| form.seq > seq)
 }
 
-/// What `record`, under `key`, proves against `version_zero`, the version 0
-/// of the DID that the caller holds: what the steps of a replica holding
-/// `version_zero` find in it (`decide_locally`). Verifies no signature: for
-/// `OtherVersionZero` and `Successor` the caller verifies the record's.
-pub fn shown_against(key: &[u8; ID_LEN], version_zero: &[u8], record: &[u8]) -> Shown {
-    if record_form(key, version_zero).ok().map(|form| form.seq) != Some(0) {
-        return Shown::Nothing;
-    }
-    match decide_locally(Request::Store, key, Some(version_zero), record) {
-        Local::AlreadyStored => Shown::Same,
-        Local::Conflict(LocalConflict::SignedTwice) => Shown::OtherVersionZero,
-        Local::VerifyAndReplace => Shown::Successor,
-        Local::MissingPrevious(Some(_)) => Shown::Unprovable,
+/// What `held`, a replica's record of the DID `key`, proves against
+/// `published`: what that replica decides for `published` by what it holds.
+/// For `Superseded` and `Conflict` the caller verifies the signature of
+/// `held`.
+pub fn shown_against(key: &Hash, published: &[u8], held: &[u8]) -> Proof {
+    match decide_locally(key, Some(held), published) {
+        Local::Stale { .. } => Proof::Superseded,
+        Local::VerifyConflict(kind) => Proof::Conflict(kind),
         Local::Invalid(_)
+        | Local::AlreadyStored
         | Local::AskNetwork(_)
-        | Local::VerifyDuplicity
-        | Local::Stale { .. }
-        | Local::Conflict(_)
-        | Local::MissingPrevious(None) => Shown::Nothing,
-    }
-}
-
-/// R5: a version N ≥ 1 (`form` its form, `incoming` its `record_hash`) at a
-/// replica that holds nothing. Called first with `Fetch::NotYet`, and again
-/// with the outcome of the fetch when it answers `Verdict::Fetch`.
-///
-/// Every row that trusts the answers is here, so that a later condition on
-/// them (answers from disjoint paths) has one place to go (open point 5).
-pub fn decide_successor(
-    k: usize,
-    asked: usize,
-    form: &RecordForm,
-    incoming: &[u8; ID_LEN],
-    answers: &[Answer],
-    everyone_answered: bool,
-    fetch: &Fetch,
-) -> Verdict {
-    let seq = form.seq;
-    // Refusals first: one is enough, even with a node still silent.
-    if let Some(newer) = answers.iter().map(|a| a.seq).filter(|s| *s > seq).max() {
-        return Verdict::Refuse(Refusal::NewerClaimed { seq: newer });
-    }
-    if let Some(other) = answers.iter().find(|a| a.seq == seq && a.hash != *incoming) {
-        return Verdict::Refuse(Refusal::OtherVersion {
-            seq,
-            hash: other.hash,
-        });
-    }
-    if let Some(other) = answers
-        .iter()
-        .find(|a| a.seq + 1 == seq && Some(a.hash) != form.prev)
-    {
-        return Verdict::Refuse(Refusal::NotFollowing { hash: other.hash });
-    }
-    // Open point 26: a holder behind, or a record that skips versions.
-    if let Some(behind) = answers.iter().find(|a| a.seq + 1 < seq) {
-        return Verdict::Refuse(Refusal::HolderBehind { seq: behind.seq });
-    }
-    // Without a refusal, a row accepts only once every node asked answered.
-    if asked == 0 || !everyone_answered {
-        return Verdict::NoAnswer;
-    }
-    let voters: Vec<usize> = (0..answers.len())
-        .filter(|index| answers[*index].seq + 1 == seq)
-        .collect();
-    let confirmed = match fetch {
-        Fetch::NotYet if !voters.is_empty() => return Verdict::Fetch(voters),
-        Fetch::NotYet | Fetch::NoneConfirmed => 0,
-        Fetch::Confirmed { dropped } => {
-            // Version 0 proves its own binding: one fetched version 0 that
-            // commits to the record's key is enough (open point 19).
-            if seq == 1 {
-                return Verdict::Accept;
-            }
-            voters
-                .iter()
-                .filter(|index| !dropped.contains(index))
-                .count()
-        }
-    };
-    let holders = answers
-        .iter()
-        .filter(|a| a.seq == seq && a.hash == *incoming)
-        .count();
-    let votes = holders + if seq >= 2 { confirmed } else { 0 };
-    if votes >= store_quorum(replicas_asked(k, asked)) {
-        Verdict::Accept
-    } else {
-        Verdict::NoAnswer
-    }
-}
-
-/// The version N−1 fetched for a record of form `form` sent under `key`.
-pub fn check_fetched(key: &[u8; ID_LEN], form: &RecordForm, fetched: &[u8]) -> FetchCheck {
-    if form.prev != Some(digest_bytes(fetched)) {
-        return FetchCheck::NotPrev;
-    }
-    let Ok(previous) = record_form(key, fetched) else {
-        return FetchCheck::DoesNotHold;
-    };
-    if previous.seq + 1 != form.seq || previous.next_key_hash != form.key_hash {
-        return FetchCheck::DoesNotHold;
-    }
-    FetchCheck::Confirmed {
-        verify_version_zero: previous.seq == 0,
+        | Local::VerifyAndReplace => Proof::Nothing,
     }
 }
 
@@ -425,890 +138,178 @@ pub fn check_fetched(key: &[u8; ID_LEN], form: &RecordForm, fetched: &[u8]) -> F
 mod tests {
     use serde_json::json;
 
-    use super::super::test_chain::{new_key, sha256, sign, Chain};
+    use super::super::test_tree::{body, sha256, sign, TreeOwner, PLACEHOLDER};
+    use super::super::tree::PROOF;
     use super::*;
-
-    fn hash(record: &[u8]) -> [u8; ID_LEN] {
-        sha256(record)
-    }
 
     fn answer(seq: u64, record: &[u8]) -> Answer {
         Answer {
             seq,
-            hash: hash(record),
+            hash: sha256(record),
         }
     }
 
-    // ---- store_quorum ------------------------------------------------------
-
     #[test]
-    fn store_quorum_follows_open_point_5() {
-        for (n, quorum) in [
-            (2, 2),
-            (3, 3),
-            (4, 3),
-            (5, 4),
-            (6, 4),
-            (7, 5),
-            (9, 6),
-            (19, 13),
-        ] {
-            assert_eq!(store_quorum(n), quorum, "n = {n}");
-        }
-        // One node can never reach the quorum.
-        assert!(store_quorum(1) > 1);
-        // k = 3, 5, 10, 20 asking every other replica.
-        assert_eq!(store_quorum(replicas_asked(3, 2)), 2);
-        assert_eq!(store_quorum(replicas_asked(5, 4)), 3);
-        assert_eq!(store_quorum(replicas_asked(10, 9)), 6);
-        assert_eq!(store_quorum(replicas_asked(20, 30)), 13);
-        assert_eq!(replicas_asked(20, 4), 4);
-    }
-
-    // ---- Steps 1 to 3 --------------------------------------------------------
-
-    /// Step 1 comes first: a record that fails it is `InvalidRecord`, whatever
-    /// the replica holds, and an UPDATE of a version 0 too, even with the bytes
-    /// the replica holds.
-    #[test]
-    fn a_record_that_fails_the_form_is_invalid_first() {
-        let chain = Chain::with_versions(1);
-        let other = Chain::new();
-        for request in [Request::Store, Request::Update] {
-            for stored in [None, Some(chain.version(0)), Some(chain.version(1))] {
-                assert!(
-                    matches!(
-                        decide_locally(request, &chain.key, stored, other.version(0)),
-                        Local::Invalid(_)
-                    ),
-                    "{request:?} of another DID's record, stored {:?}",
-                    stored.map(|s| record_form(&chain.key, s).map(|f| f.seq))
-                );
-            }
-        }
-        for stored in [None, Some(chain.version(0))] {
+    fn a_record_that_fails_its_form_is_invalid_before_anything_else() {
+        let owner = TreeOwner::new(1);
+        let v5 = owner.record(5, Some(b"4"));
+        let mut doc = owner.doc(6, Some(&v5));
+        doc[PROOF]["code"] = json!("not a code");
+        let bad = sign(&doc, &owner.keys[6]);
+        for stored in [None, Some(v5.as_slice())] {
             assert!(matches!(
-                decide_locally(Request::Update, &chain.key, stored, chain.version(0)),
-                Local::Invalid(_)
+                decide_locally(&owner.key, stored, &bad),
+                Local::Invalid(FormError::Field("code"))
             ));
         }
     }
 
-    /// R1: the same bytes are `AlreadyStored`, by STORE or UPDATE.
     #[test]
     fn the_same_bytes_are_already_stored() {
-        let chain = Chain::with_versions(2);
-        for seq in 0..=2 {
-            assert_eq!(
-                decide_locally(
-                    Request::Store,
-                    &chain.key,
-                    Some(chain.version(seq)),
-                    chain.version(seq)
-                ),
-                Local::AlreadyStored
-            );
-        }
+        let owner = TreeOwner::new(1);
+        let v5 = owner.record(5, Some(b"4"));
         assert_eq!(
-            decide_locally(
-                Request::Update,
-                &chain.key,
-                Some(chain.version(2)),
-                chain.version(2)
-            ),
+            decide_locally(&owner.key, Some(&v5), &v5),
             Local::AlreadyStored
         );
     }
 
     #[test]
-    fn a_store_at_a_replica_that_holds_nothing_asks_the_network() {
-        let chain = Chain::with_versions(2);
-        for seq in 0..=2 {
-            let Local::AskNetwork(form) =
-                decide_locally(Request::Store, &chain.key, None, chain.version(seq))
-            else {
-                panic!("version {seq} should ask the network");
-            };
-            assert_eq!(form, record_form(&chain.key, chain.version(seq)).unwrap());
-        }
-    }
-
-    /// The replica holding version N−1 checks version N alone (R3), by STORE
-    /// or UPDATE.
-    #[test]
-    fn a_successor_of_the_stored_version_is_verified_and_replaces_it() {
-        let chain = Chain::with_versions(3);
-        for request in [Request::Store, Request::Update] {
-            for seq in 1..=3 {
-                assert_eq!(
-                    decide_locally(
-                        request,
-                        &chain.key,
-                        Some(chain.version(seq - 1)),
-                        chain.version(seq)
-                    ),
-                    Local::VerifyAndReplace,
-                    "{request:?} of version {seq}"
-                );
-            }
-        }
-    }
-
-    /// A version N whose `prev` is not the stored version N−1, or whose key is
-    /// not the committed one (an attacker's, or the stored key kept), is a
-    /// fork, decided without asking anyone.
-    #[test]
-    fn a_fork_of_the_stored_version_is_a_conflict() {
-        let chain = Chain::with_versions(1);
-        let v1 = chain.version(1);
-        let attacker = new_key();
-        let wrong_prev = sign(
-            &chain.doc(
-                2,
-                Some(b"another record"),
-                chain.keys[2].public_key(),
-                new_key().public_key(),
-            ),
-            &chain.keys[2],
-        );
-        let wrong_key = sign(
-            &chain.doc(2, Some(v1), attacker.public_key(), new_key().public_key()),
-            &attacker,
-        );
-        let kept_key = sign(
-            &chain.doc(
-                2,
-                Some(v1),
-                chain.keys[1].public_key(),
-                new_key().public_key(),
-            ),
-            &chain.keys[1],
-        );
-        for request in [Request::Store, Request::Update] {
-            assert_eq!(
-                decide_locally(request, &chain.key, Some(v1), &wrong_prev),
-                Local::Conflict(LocalConflict::WrongPrev)
-            );
-            for forged in [&wrong_key, &kept_key] {
-                assert_eq!(
-                    decide_locally(request, &chain.key, Some(v1), forged),
-                    Local::Conflict(LocalConflict::UncommittedKey)
-                );
-            }
-        }
-    }
-
-    /// The key security case: right after version 0, a version 1 whose `prev`
-    /// is the real hash of version 0, signed with a key version 0 does not
-    /// commit to, even by the holder of version 0's own key.
-    #[test]
-    fn a_forged_version_1_after_version_0_is_refused_by_a_holder() {
-        let chain = Chain::new();
-        for signer in [new_key(), chain.keys[0].clone()] {
-            let forged = sign(
-                &chain.doc(
-                    1,
-                    Some(chain.version(0)),
-                    signer.public_key(),
-                    new_key().public_key(),
-                ),
-                &signer,
-            );
-            assert_eq!(
-                decide_locally(Request::Store, &chain.key, Some(chain.version(0)), &forged),
-                Local::Conflict(LocalConflict::UncommittedKey)
-            );
-        }
-    }
-
-    /// R4: a replica holding a later version answers `Stale` without
-    /// verifying anything, a late version 0 included.
-    #[test]
-    fn an_older_version_is_stale() {
-        let chain = Chain::with_versions(3);
-        for seq in 0..3 {
-            for request in [Request::Store, Request::Update] {
-                if request == Request::Update && seq == 0 {
-                    continue; // step 1 refuses it first
-                }
-                assert_eq!(
-                    decide_locally(
-                        request,
-                        &chain.key,
-                        Some(chain.version(3)),
-                        chain.version(seq)
-                    ),
-                    Local::Stale { stored: 3 },
-                    "{request:?} of version {seq}"
-                );
-            }
-        }
-    }
-
-    /// R4 at the same place: signed twice, proven duplicity once its signature
-    /// verifies, or a plain conflict with another key.
-    #[test]
-    fn another_record_at_the_same_place_is_a_conflict_by_kind() {
-        let chain = Chain::with_versions(2);
-        let doc = chain.doc(
-            2,
-            Some(chain.version(1)),
-            chain.keys[2].public_key(),
-            chain.keys[3].public_key(),
-        );
-        let signed_again = sign(&doc, &chain.keys[2]);
-        assert_ne!(
-            signed_again,
-            chain.version(2),
-            "ML-DSA signing is randomized"
-        );
-        let mut other_doc = doc.clone();
-        other_doc["service"][0]["serviceEndpoint"] = json!("http://attacker.example");
-        let duplicity = sign(&other_doc, &chain.keys[2]);
-        let attacker = new_key();
-        let other_key = sign(
-            &chain.doc(
-                2,
-                Some(chain.version(1)),
-                attacker.public_key(),
-                new_key().public_key(),
-            ),
-            &attacker,
-        );
-        for request in [Request::Store, Request::Update] {
-            assert_eq!(
-                decide_locally(request, &chain.key, Some(chain.version(2)), &signed_again),
-                Local::Conflict(LocalConflict::SignedTwice)
-            );
-            assert_eq!(
-                decide_locally(request, &chain.key, Some(chain.version(2)), &duplicity),
-                Local::VerifyDuplicity
-            );
-            assert_eq!(
-                decide_locally(request, &chain.key, Some(chain.version(2)), &other_key),
-                Local::Conflict(LocalConflict::OtherKey)
-            );
-        }
-        // Version 0 signed again: the same document, so the same DID.
-        let chain = Chain::new();
-        let again = sign(
-            &chain.doc(
-                0,
-                None,
-                chain.keys[0].public_key(),
-                chain.keys[1].public_key(),
-            ),
-            &chain.keys[0],
-        );
-        assert_eq!(
-            decide_locally(Request::Store, &chain.key, Some(chain.version(0)), &again),
-            Local::Conflict(LocalConflict::SignedTwice)
-        );
-    }
-
-    /// A replica two or more versions behind is not touched: it answers
-    /// `MissingPrevious` with its `seq`, by STORE or UPDATE; an UPDATE at a
-    /// replica that holds nothing answers `MissingPrevious` without one.
-    #[test]
-    fn a_replica_behind_or_empty_misses_the_previous_version() {
-        let chain = Chain::with_versions(5);
-        for request in [Request::Store, Request::Update] {
-            for stored in 0..4 {
-                assert_eq!(
-                    decide_locally(
-                        request,
-                        &chain.key,
-                        Some(chain.version(stored)),
-                        chain.version(5)
-                    ),
-                    Local::MissingPrevious(Some(stored as u64)),
-                    "{request:?}, stored {stored}"
-                );
-            }
-        }
-        assert_eq!(
-            decide_locally(Request::Update, &chain.key, None, chain.version(5)),
-            Local::MissingPrevious(None)
-        );
-        // A forged version 7 at a replica holding the genuine version 5.
-        let attacker = new_key();
-        let forged = sign(
-            &chain.doc(
-                7,
-                Some(b"made up"),
-                attacker.public_key(),
-                new_key().public_key(),
-            ),
-            &attacker,
-        );
-        assert_eq!(
-            decide_locally(Request::Store, &chain.key, Some(chain.version(5)), &forged),
-            Local::MissingPrevious(Some(5))
-        );
-    }
-
-    /// The owner keeps the next key as a seed and rebuilds the key pair only
-    /// to sign the next version: the rebuilt key is the one version 0 commits
-    /// to, and the next version follows it.
-    #[test]
-    fn the_key_rebuilt_from_the_committed_seed_signs_the_next_version() {
-        use super::super::test_chain::{derive, document, key_of, PLACEHOLDER};
-        use super::super::{DIDSignatureVerifierHandler, SignatureVerifierHandler};
-        use crate::crypto::mldsa::MlDsa65KeyPair;
-
-        let seed = [42u8; MlDsa65KeyPair::SEED_LEN];
-        let current = new_key();
-        let committed = MlDsa65KeyPair::from_seed(&seed)
-            .unwrap()
-            .public_key()
-            .to_vec();
-        let (did, doc) = derive(&document(
-            PLACEHOLDER,
-            current.public_key(),
-            0,
-            None,
-            &committed,
-        ));
-        let v0 = sign(&doc, &current);
-        let key = key_of(&did);
-
-        // Later, at the rotation: the key pair is rebuilt from the seed.
-        let rebuilt = MlDsa65KeyPair::from_seed(&seed).unwrap();
-        let mut v1_doc = document(
-            &did,
-            rebuilt.public_key(),
-            1,
-            Some(&v0),
-            new_key().public_key(),
-        );
-        v1_doc["id"] = json!(did);
-        let v1 = sign(&v1_doc, &rebuilt);
-        assert_eq!(
-            decide_locally(Request::Update, &key, Some(&v0), &v1),
-            Local::VerifyAndReplace
-        );
-        assert!(DIDSignatureVerifierHandler::new("unused")
-            .handle_signature_verification(&v1)
-            .unwrap());
-    }
-
-    // ---- R2 ------------------------------------------------------------------
-
-    #[test]
-    fn r2_refuses_a_version_0_when_the_quorum_claims_a_later_one() {
-        let chain = Chain::with_versions(2);
-        let v0 = hash(chain.version(0));
-        // k = 20: 19 asked, quorum 13.
-        let newer: Vec<Answer> = (0..13)
-            .map(|i| answer(1 + (i % 2), chain.version(1 + (i as usize % 2))))
-            .collect();
-        assert_eq!(
-            decide_version_zero(20, 19, &v0, &newer, true, ClaimsShown::NotYet),
-            Verdict::Refuse(Refusal::NewerClaimed { seq: 2 })
-        );
-        assert_eq!(
-            decide_version_zero(20, 19, &v0, &newer[..12], true, ClaimsShown::NotYet),
-            Verdict::Accept
-        );
-        // k = 3: the other two replicas.
-        let two = [answer(1, chain.version(1)), answer(2, chain.version(2))];
+    fn a_replica_that_holds_nothing_asks_the_network() {
+        let owner = TreeOwner::new(1);
+        let v5 = owner.record(5, Some(b"4"));
         assert!(matches!(
-            decide_version_zero(3, 2, &v0, &two, true, ClaimsShown::NotYet),
-            Verdict::Refuse(Refusal::NewerClaimed { .. })
-        ));
-        assert_eq!(
-            decide_version_zero(3, 2, &v0, &two[..1], true, ClaimsShown::NotYet),
-            Verdict::Accept
-        );
-    }
-
-    fn signed_again(chain: &Chain) -> Vec<u8> {
-        sign(
-            &chain.doc(
-                0,
-                None,
-                chain.keys[0].public_key(),
-                chain.keys[1].public_key(),
-            ),
-            &chain.keys[0],
-        )
-    }
-
-    /// Another version 0 refuses only once shown (open point 27): R2 first
-    /// asks to see it, then refuses if it was shown and accepts if not.
-    #[test]
-    fn r2_refuses_another_version_0_only_once_shown() {
-        let chain = Chain::new();
-        let mine = hash(&signed_again(&chain));
-        let answers = [answer(0, chain.version(0))];
-        assert_eq!(
-            decide_version_zero(20, 5, &mine, &answers, true, ClaimsShown::NotYet),
-            Verdict::Show(vec![0])
-        );
-        assert_eq!(
-            decide_version_zero(
-                20,
-                5,
-                &mine,
-                &answers,
-                true,
-                ClaimsShown::OtherVersionZero(0)
-            ),
-            Verdict::Refuse(Refusal::OtherVersion {
-                seq: 0,
-                hash: hash(chain.version(0))
-            })
-        );
-        assert_eq!(
-            decide_version_zero(20, 5, &mine, &answers, true, ClaimsShown::Nothing),
-            Verdict::Accept
-        );
-        // The same version 0 is no claim.
-        assert_eq!(
-            decide_version_zero(
-                20,
-                5,
-                &hash(chain.version(0)),
-                &answers,
-                true,
-                ClaimsShown::NotYet
-            ),
-            Verdict::Accept
-        );
-    }
-
-    /// The quorum that claims a later version refuses before anything is
-    /// fetched, and only the claimants that can be replicas are fetched from.
-    #[test]
-    fn r2_fetches_only_from_the_closest_claimants_and_after_the_quorum() {
-        let chain = Chain::with_versions(1);
-        let v0 = hash(chain.version(0));
-        let claims: Vec<Answer> = (1..=3)
-            .map(|byte| Answer {
-                seq: 0,
-                hash: [byte; ID_LEN],
-            })
-            .collect();
-        // k = 3 and 5 asked: the 2 other replicas at most.
-        assert_eq!(
-            decide_version_zero(3, 5, &v0, &claims, true, ClaimsShown::NotYet),
-            Verdict::Show(vec![0, 1])
-        );
-        let newer = [answer(1, chain.version(1)), answer(1, chain.version(1))];
-        let mixed: Vec<Answer> = newer.iter().chain(&claims).copied().collect();
-        assert!(matches!(
-            decide_version_zero(3, 2, &v0, &mixed, true, ClaimsShown::NotYet),
-            Verdict::Refuse(Refusal::NewerClaimed { .. })
+            decide_locally(&owner.key, None, &v5),
+            Local::AskNetwork(TreeForm { seq: 5, .. })
         ));
     }
 
+    /// Any higher position replaces the stored one, without the positions in
+    /// between and whatever record its `prev` names.
     #[test]
-    fn r2_gives_no_answer_on_silence_or_with_nobody_to_ask() {
-        let chain = Chain::new();
-        let v0 = hash(chain.version(0));
-        assert_eq!(
-            decide_version_zero(20, 5, &v0, &[], false, ClaimsShown::NotYet),
-            Verdict::NoAnswer
-        );
-        assert_eq!(
-            decide_version_zero(20, 0, &v0, &[], true, ClaimsShown::NotYet),
-            Verdict::NoAnswer
-        );
-        assert_eq!(
-            decide_version_zero(20, 5, &v0, &[], true, ClaimsShown::NotYet),
-            Verdict::Accept
-        );
-        // A version 0 shown still wins over a silent node, and a claim not
-        // shown leaves the silence.
-        let other = [Answer {
-            seq: 0,
-            hash: [9; ID_LEN],
-        }];
-        assert!(matches!(
-            decide_version_zero(20, 5, &v0, &other, false, ClaimsShown::OtherVersionZero(0)),
-            Verdict::Refuse(_)
-        ));
-        assert_eq!(
-            decide_version_zero(20, 5, &v0, &other, false, ClaimsShown::Nothing),
-            Verdict::NoAnswer
-        );
-    }
-
-    #[test]
-    fn a_claimed_version_0_must_hash_to_the_claim_and_be_signed_again() {
-        let chain = Chain::new();
-        let again = signed_again(&chain);
-        let forged = sign(
-            &chain.doc(
-                1,
-                Some(chain.version(0)),
-                new_key().public_key(),
-                new_key().public_key(),
-            ),
-            &new_key(),
-        );
-        let sent = chain.version(0);
-        assert!(check_claimed(&chain.key, sent, &hash(&again), &again));
-        assert!(!check_claimed(&chain.key, sent, &[7; ID_LEN], &again));
-        assert!(!check_claimed(&chain.key, sent, &hash(sent), sent));
-        assert!(!check_claimed(&chain.key, sent, &hash(&forged), &forged));
-        assert!(!check_claimed(
-            &chain.key,
-            sent,
-            &hash(b"garbage"),
-            b"garbage"
-        ));
-    }
-
-    // ---- What a record shows against version 0 ---------------------------------------
-
-    /// Against the version 0 one holds, a record proves another version 0 or
-    /// a successor only as a holder of that version 0 would find it; a
-    /// version 2 or later cannot be told from a forgery (open point 27).
-    #[test]
-    fn a_record_shows_against_version_0_what_a_holder_finds() {
-        let chain = Chain::with_versions(2);
-        let v0 = chain.version(0);
-        let attacker = new_key();
-        let forged = sign(
-            &chain.doc(1, Some(v0), attacker.public_key(), new_key().public_key()),
-            &attacker,
-        );
-        assert_eq!(shown_against(&chain.key, v0, v0), Shown::Same);
-        assert_eq!(
-            shown_against(&chain.key, v0, &signed_again(&chain)),
-            Shown::OtherVersionZero
-        );
-        assert_eq!(
-            shown_against(&chain.key, v0, chain.version(1)),
-            Shown::Successor
-        );
-        assert_eq!(
-            shown_against(&chain.key, v0, chain.version(2)),
-            Shown::Unprovable
-        );
-        assert_eq!(shown_against(&chain.key, v0, &forged), Shown::Nothing);
-        assert_eq!(shown_against(&chain.key, v0, b"garbage"), Shown::Nothing);
-        assert_eq!(
-            shown_against(&chain.key, v0, Chain::new().version(0)),
-            Shown::Nothing
-        );
-        // Only against a version 0.
-        assert_eq!(
-            shown_against(&chain.key, chain.version(1), chain.version(2)),
-            Shown::Nothing
-        );
-    }
-
-    // ---- R5 ------------------------------------------------------------------
-
-    fn successor(chain: &Chain, seq: usize) -> (RecordForm, [u8; ID_LEN]) {
-        (
-            record_form(&chain.key, chain.version(seq)).unwrap(),
-            hash(chain.version(seq)),
-        )
-    }
-
-    #[test]
-    fn r5_refuses_on_any_refusing_answer_even_with_a_silent_node() {
-        let chain = Chain::with_versions(4);
-        let (form, mine) = successor(&chain, 3);
-        let attacker = new_key();
-        let fork = sign(
-            &chain.doc(
-                3,
-                Some(chain.version(2)),
-                attacker.public_key(),
-                new_key().public_key(),
-            ),
-            &attacker,
-        );
-        let other_two = sign(
-            &chain.doc(2, Some(b"x"), attacker.public_key(), new_key().public_key()),
-            &attacker,
-        );
-        for (refusing, refusal) in [
-            (
-                answer(4, chain.version(4)),
-                Refusal::NewerClaimed { seq: 4 },
-            ),
-            (
-                answer(3, &fork),
-                Refusal::OtherVersion {
-                    seq: 3,
-                    hash: hash(&fork),
-                },
-            ),
-            (
-                answer(2, &other_two),
-                Refusal::NotFollowing {
-                    hash: hash(&other_two),
-                },
-            ),
-            (
-                answer(1, chain.version(1)),
-                Refusal::HolderBehind { seq: 1 },
-            ),
-            (
-                answer(0, chain.version(0)),
-                Refusal::HolderBehind { seq: 0 },
-            ),
-        ] {
-            // Before and after accepting answers, with or without silence.
-            let accepting = [answer(3, chain.version(3)), answer(3, chain.version(3))];
-            for answers in [
-                vec![refusing, accepting[0], accepting[1]],
-                vec![accepting[0], accepting[1], refusing],
-            ] {
-                for everyone_answered in [true, false] {
-                    assert_eq!(
-                        decide_successor(
-                            3,
-                            3,
-                            &form,
-                            &mine,
-                            &answers,
-                            everyone_answered,
-                            &Fetch::NotYet
-                        ),
-                        Verdict::Refuse(refusal),
-                        "{refusal:?}, everyone answered: {everyone_answered}"
-                    );
-                }
-            }
+    fn a_higher_position_replaces_the_stored_one() {
+        let owner = TreeOwner::new(1);
+        let v3 = owner.record(3, Some(b"2"));
+        for prev in [&v3[..], b"another record"] {
+            let v5 = owner.record(5, Some(prev));
+            assert_eq!(
+                decide_locally(&owner.key, Some(&v3), &v5),
+                Local::VerifyAndReplace
+            );
         }
     }
 
-    /// With N = 1 one answer `(0, prev)` is enough, once version 0 is fetched
-    /// and checked; with N ≥ 2 such answers are votes.
     #[test]
-    fn r5_fetches_version_n_minus_1_from_its_voters_closest_first() {
-        let chain = Chain::with_versions(2);
-        let (form, mine) = successor(&chain, 1);
-        let answers = [answer(0, chain.version(0))];
+    fn a_lower_position_is_stale() {
+        let owner = TreeOwner::new(1);
+        let v3 = owner.record(3, Some(b"2"));
+        let v5 = owner.record(5, Some(&v3));
         assert_eq!(
-            decide_successor(20, 19, &form, &mine, &answers, true, &Fetch::NotYet),
-            Verdict::Fetch(vec![0])
+            decide_locally(&owner.key, Some(&v5), &v3),
+            Local::Stale { stored: 5 }
         );
-        let confirmed = Fetch::Confirmed { dropped: vec![] };
-        assert_eq!(
-            decide_successor(20, 19, &form, &mine, &answers, true, &confirmed),
-            Verdict::Accept
-        );
-        assert_eq!(
-            decide_successor(20, 19, &form, &mine, &answers, true, &Fetch::NoneConfirmed),
-            Verdict::NoAnswer
-        );
+    }
 
-        let (form, mine) = successor(&chain, 2);
+    /// The key of 5 signing at 6 is outside the tree, even at a holder of 5.
+    #[test]
+    fn another_positions_key_is_invalid_at_a_holder() {
+        let owner = TreeOwner::new(1);
+        let v5 = owner.record(5, Some(b"4"));
+        let forged = owner.record_from(
+            &body(PLACEHOLDER, owner.keys[5].public_key(), 6, Some(&v5)),
+            6,
+        );
+        assert!(matches!(
+            decide_locally(&owner.key, Some(&v5), &forged),
+            Local::Invalid(FormError::NotInTree)
+        ));
+    }
+
+    #[test]
+    fn another_record_at_the_stored_position_is_a_conflict_by_kind() {
+        let owner = TreeOwner::new(1);
+        let v5 = owner.record(5, Some(b"4"));
+        let signed_again = owner.record(5, Some(b"4"));
+        assert_ne!(signed_again, v5, "ML-DSA signs with fresh randomness");
+        assert_eq!(
+            decide_locally(&owner.key, Some(&v5), &signed_again),
+            Local::VerifyConflict(Conflict::RepeatedSigning)
+        );
+        let mut other = owner.doc(5, Some(b"4"));
+        other["service"][0]["serviceEndpoint"] = json!("http://example.com/other");
+        let other = sign(&other, &owner.keys[5]);
+        assert_eq!(
+            decide_locally(&owner.key, Some(&v5), &other),
+            Local::VerifyConflict(Conflict::Duplicity)
+        );
+    }
+
+    #[test]
+    fn only_distinct_higher_claims_are_fetched_closest_first_up_to_the_limit() {
+        let owner = TreeOwner::new(1);
+        let (v3, v6, v7) = (
+            owner.record(3, Some(b"2")),
+            owner.record(6, Some(b"5")),
+            owner.record(7, Some(b"6")),
+        );
         let answers = [
-            answer(2, chain.version(2)),
-            answer(1, chain.version(1)),
-            answer(1, chain.version(1)),
+            answer(3, &v3),
+            answer(6, &v6),
+            answer(5, b"another record at 5"),
+            answer(6, &v6),
+            answer(7, &v7),
+            answer(9, b"a claim nobody can show"),
         ];
-        assert_eq!(
-            decide_successor(3, 2, &form, &mine, &answers[1..], true, &Fetch::NotYet),
-            Verdict::Fetch(vec![0, 1])
-        );
-        assert_eq!(
-            decide_successor(20, 3, &form, &mine, &answers, true, &Fetch::NotYet),
-            Verdict::Fetch(vec![1, 2])
-        );
-        // n = 3, quorum 3: one vote (N, h) and two confirmed (N−1, prev).
-        assert_eq!(
-            decide_successor(
-                20,
-                3,
-                &form,
-                &mine,
-                &answers,
-                true,
-                &Fetch::Confirmed { dropped: vec![] }
-            ),
-            Verdict::Accept
-        );
-        // A dropped voter is no vote: one short of the quorum.
-        assert_eq!(
-            decide_successor(
-                20,
-                3,
-                &form,
-                &mine,
-                &answers,
-                true,
-                &Fetch::Confirmed { dropped: vec![1] }
-            ),
-            Verdict::NoAnswer
-        );
-        assert_eq!(
-            decide_successor(20, 3, &form, &mine, &answers, true, &Fetch::NoneConfirmed),
-            Verdict::NoAnswer
-        );
+        assert_eq!(claims_to_fetch(5, &answers, 19), vec![1, 4, 5]);
+        assert_eq!(claims_to_fetch(5, &answers, 2), vec![1, 4]);
+        assert_eq!(claims_to_fetch(9, &answers, 19), Vec::<usize>::new());
+    }
+
+    /// One node answering under made-up ids costs at most `limit` fetches,
+    /// however many distinct records it claims.
+    #[test]
+    fn made_up_claims_cost_at_most_the_limit() {
+        let answers: Vec<Answer> = (0..100u8)
+            .map(|i| Answer {
+                seq: 62,
+                hash: [i; 32],
+            })
+            .collect();
+        assert_eq!(claims_to_fetch(5, &answers, 19).len(), 19);
     }
 
     #[test]
-    fn r5_accepts_on_the_quorum_and_not_one_short() {
-        let chain = Chain::with_versions(3);
-        let (form, mine) = successor(&chain, 3);
-        let votes: Vec<Answer> = (0..13).map(|_| answer(3, chain.version(3))).collect();
+    fn a_fetched_record_shows_a_higher_position_only_if_it_holds_its_claim() {
+        let (owner, other) = (TreeOwner::new(1), TreeOwner::new(2));
+        let v6 = owner.record(6, Some(b"5"));
         assert_eq!(
-            decide_successor(20, 19, &form, &mine, &votes, true, &Fetch::NotYet),
-            Verdict::Accept
+            shows_higher(&owner.key, 5, &sha256(&v6), &v6).map(|form| form.seq),
+            Some(6)
         );
-        assert_eq!(
-            decide_successor(20, 19, &form, &mine, &votes[..12], true, &Fetch::NotYet),
-            Verdict::NoAnswer
-        );
-        // Every node asked must have answered.
-        assert_eq!(
-            decide_successor(20, 19, &form, &mine, &votes, false, &Fetch::NotYet),
-            Verdict::NoAnswer
-        );
-        // Nobody to ask, or one node: the quorum row never accepts.
-        assert_eq!(
-            decide_successor(20, 0, &form, &mine, &[], true, &Fetch::NotYet),
-            Verdict::NoAnswer
-        );
-        assert_eq!(
-            decide_successor(20, 1, &form, &mine, &votes[..1], true, &Fetch::NotYet),
-            Verdict::NoAnswer
-        );
-        // No node holds anything: no votes, no answer (not an accept).
-        assert_eq!(
-            decide_successor(20, 19, &form, &mine, &[], true, &Fetch::NotYet),
-            Verdict::NoAnswer
-        );
+        // Another claim, a position not above 5, another DID.
+        assert!(shows_higher(&owner.key, 5, &sha256(b"other"), &v6).is_none());
+        assert!(shows_higher(&owner.key, 6, &sha256(&v6), &v6).is_none());
+        let theirs = other.record(6, Some(b"5"));
+        assert!(shows_higher(&owner.key, 5, &sha256(&theirs), &theirs).is_none());
     }
 
-    /// Open point 26: one honest holder of the current version among 19
-    /// stops a forged version with a far `seq` that the other 18 vote for.
     #[test]
-    fn r5_one_honest_holder_stops_a_far_forgery() {
-        let chain = Chain::with_versions(3);
-        let attacker = new_key();
-        let forged = sign(
-            &chain.doc(
-                9,
-                Some(b"made up"),
-                attacker.public_key(),
-                new_key().public_key(),
-            ),
-            &attacker,
-        );
-        let form = record_form(&chain.key, &forged).unwrap();
-        let mut answers: Vec<Answer> = (0..18).map(|_| answer(9, &forged)).collect();
-        answers.push(answer(3, chain.version(3)));
+    fn a_replicas_record_proves_what_that_replica_decides() {
+        let owner = TreeOwner::new(1);
+        let v5 = owner.record(5, Some(b"4"));
+        let v6 = owner.record(6, Some(&v5));
+        let v3 = owner.record(3, Some(b"2"));
+        assert_eq!(shown_against(&owner.key, &v5, &v6), Proof::Superseded);
         assert_eq!(
-            decide_successor(
-                20,
-                19,
-                &form,
-                &hash(&forged),
-                &answers,
-                true,
-                &Fetch::NotYet
-            ),
-            Verdict::Refuse(Refusal::HolderBehind { seq: 3 })
+            shown_against(&owner.key, &v5, &owner.record(5, Some(b"4"))),
+            Proof::Conflict(Conflict::RepeatedSigning)
         );
-    }
-
-    // ---- The fetch -------------------------------------------------------------
-
-    #[test]
-    fn a_fetched_record_must_hash_to_prev_bind_and_commit() {
-        let chain = Chain::with_versions(2);
-        let v1 = record_form(&chain.key, chain.version(1)).unwrap();
-        assert_eq!(
-            check_fetched(&chain.key, &v1, chain.version(0)),
-            FetchCheck::Confirmed {
-                verify_version_zero: true
-            }
-        );
-        let v2 = record_form(&chain.key, chain.version(2)).unwrap();
-        assert_eq!(
-            check_fetched(&chain.key, &v2, chain.version(1)),
-            FetchCheck::Confirmed {
-                verify_version_zero: false
-            }
-        );
-        // A record that is not version N−1: it does not hash to prev.
-        assert_eq!(
-            check_fetched(&chain.key, &v2, chain.version(0)),
-            FetchCheck::NotPrev
-        );
-        assert_eq!(
-            check_fetched(&chain.key, &v2, b"not a record"),
-            FetchCheck::NotPrev
-        );
-    }
-
-    /// One node serves a made-up version 0′ committing to its own key, after
-    /// which its version 1′ follows: version 0′ does not bind to the key.
-    #[test]
-    fn a_made_up_version_0_does_not_hold() {
-        let chain = Chain::new();
-        let (attacker, next) = (new_key(), new_key());
-        let mut doc = chain.doc(0, None, attacker.public_key(), next.public_key());
-        doc["service"][0]["serviceEndpoint"] = json!("http://attacker.example");
-        let made_up = sign(&doc, &attacker);
-        let forged = sign(
-            &chain.doc(1, Some(&made_up), next.public_key(), new_key().public_key()),
-            &next,
-        );
-        let form = record_form(&chain.key, &forged).unwrap();
-        assert_eq!(
-            check_fetched(&chain.key, &form, &made_up),
-            FetchCheck::DoesNotHold
-        );
-    }
-
-    /// With N ≥ 2 a made-up version N−1 that binds by its suffix and commits
-    /// to the attacker's key passes the fetch: it is one vote, and the quorum
-    /// decides.
-    #[test]
-    fn a_made_up_version_n_minus_1_is_one_vote() {
-        let chain = Chain::with_versions(1);
-        let (attacker, next) = (new_key(), new_key());
-        let made_up = sign(
-            &chain.doc(
-                1,
-                Some(chain.version(0)),
-                attacker.public_key(),
-                next.public_key(),
-            ),
-            &attacker,
-        );
-        let forged = sign(
-            &chain.doc(2, Some(&made_up), next.public_key(), new_key().public_key()),
-            &next,
-        );
-        let form = record_form(&chain.key, &forged).unwrap();
-        assert_eq!(
-            check_fetched(&chain.key, &form, &made_up),
-            FetchCheck::Confirmed {
-                verify_version_zero: false
-            }
-        );
-        let answers = [answer(1, &made_up)];
-        let confirmed = Fetch::Confirmed { dropped: vec![] };
-        assert_eq!(
-            decide_successor(20, 4, &form, &hash(&forged), &answers, true, &confirmed),
-            Verdict::NoAnswer
-        );
-        // A version N whose key the fetched version N−1 does not commit to.
-        let uncommitted = sign(
-            &chain.doc(
-                2,
-                Some(&made_up),
-                new_key().public_key(),
-                new_key().public_key(),
-            ),
-            &next,
-        );
-        let form = record_form(&chain.key, &uncommitted).unwrap();
-        assert_eq!(
-            check_fetched(&chain.key, &form, &made_up),
-            FetchCheck::DoesNotHold
-        );
+        for held in [
+            &v3[..],
+            &v5[..],
+            &TreeOwner::new(2).record(6, Some(b"5"))[..],
+        ] {
+            assert_eq!(shown_against(&owner.key, &v5, held), Proof::Nothing);
+        }
     }
 }

@@ -27,17 +27,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use auth_kademlia_rs::auth_handler::did::{
-    canonical_bytes, derive_did, key_of_did, DID_PREFIX, PLACEHOLDER,
-};
+use auth_kademlia_rs::auth_handler::did::{key_of_did, DID_PREFIX, PLACEHOLDER};
+use auth_kademlia_rs::auth_handler::owner::OwnerTree;
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::Server;
 use auth_kademlia_rs::node::Node;
 use auth_kademlia_rs::storage::IStorage;
-use auth_kademlia_rs::utils::{digest_bytes, ID_LEN};
+use auth_kademlia_rs::utils::ID_LEN;
 use primitive_types::U256;
 
-use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
 use tokio::time::timeout;
@@ -116,22 +114,9 @@ fn short(did: &str) -> &str {
         .unwrap_or(did)
 }
 
-fn build_signed_record(doc: &Value, sk: &MlDsa65KeyPair) -> Vec<u8> {
-    let doc_bytes = canonical_bytes(doc).expect("a DID Document in canonical form");
-    let mut alg = [0u8; 12];
-    alg[..9].copy_from_slice(b"ML-DSA-65");
-    let sig = sk.sign(&doc_bytes).expect("ML-DSA-65 signing");
-    let sig_bytes = sig.as_slice();
-    let mut record = Vec::with_capacity(12 + sig_bytes.len() + doc_bytes.len());
-    record.extend_from_slice(&alg);
-    record.extend_from_slice(sig_bytes);
-    record.extend_from_slice(&doc_bytes);
-    record
-}
-
-/// The draft of version 0 of a new DID (ADR 0005): its own DID written as
-/// the placeholder, no `id`, and the hash of the next public key.
-fn build_version_zero_draft(signing_pk: &[u8], next_pk: &[u8]) -> Value {
+/// The draft of position 0 of a new DID: its own DID written as the
+/// placeholder, no `id`.
+fn build_position_zero_draft(signing_pk: &[u8]) -> Value {
     let did = PLACEHOLDER;
     json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
@@ -147,19 +132,17 @@ fn build_version_zero_draft(signing_pk: &[u8], next_pk: &[u8]) -> Value {
         "service": [{ "id": format!("{}#device", did), "type": "DeviceAgent",
                       "serviceEndpoint": "http://example.com/device" }],
         "seq": 0,
-        "nextKeyHash": base64url(&digest_bytes(next_pk)),
     })
 }
 
-/// Returns (did_uri, key, record_bytes) for version 0 of a new DID; the key
+/// Returns (did_uri, key, record_bytes) for position 0 of a new DID; the key
 /// that `set` and `get` take is the DID itself.
 fn new_record() -> (String, String, Vec<u8>) {
-    let dsk = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
-    let dpk = dsk.public_key().to_vec();
-    let next = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
-    let draft = build_version_zero_draft(&dpk, next.public_key());
-    let (did, doc) = derive_did(&draft).expect("version 0 gives its DID");
-    let record = build_signed_record(&doc, &dsk);
+    let owner = OwnerTree::generate().expect("a rotation-key tree");
+    let draft = build_position_zero_draft(owner.public_key(0).expect("position 0"));
+    let genesis = owner.genesis(&draft).expect("a draft body");
+    let record = owner.record(&genesis, &draft, 0).expect("position 0");
+    let did = genesis.did();
     (did.clone(), did, record)
 }
 

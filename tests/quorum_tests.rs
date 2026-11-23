@@ -15,11 +15,11 @@ use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
 use auth_kademlia_rs::fragmentation::MAX_REASSEMBLY_ENTRIES_PER_PEER;
 use auth_kademlia_rs::network::Server;
 use auth_kademlia_rs::node::Node;
-use auth_kademlia_rs::protocol::{StoreStatus, UpdateStatus};
+use auth_kademlia_rs::protocol::StoreStatus;
 use auth_kademlia_rs::storage::IStorage;
 use auth_kademlia_rs::utils::{digest, ID_LEN, STATUS_LIST_KEY};
 
-use common::{build_signed_record, Chain};
+use common::Chain;
 
 fn runtime() -> tokio::runtime::Runtime {
     let parallelism = std::thread::available_parallelism()
@@ -72,18 +72,6 @@ fn id_at_distance(key: [u8; ID_LEN], distance: u8) -> [u8; ID_LEN] {
     let mut id = key;
     id[0] ^= distance;
     id
-}
-
-/// Version 0 of `chain` signed again: the same document, other bytes (ML-DSA
-/// signing is randomized), so another record at the same place.
-fn signed_again(chain: &Chain) -> Vec<u8> {
-    let doc = chain.doc(
-        0,
-        None,
-        chain.keys[0].public_key(),
-        chain.keys[1].public_key(),
-    );
-    build_signed_record(&doc, &chain.keys[0], "ML-DSA-65")
 }
 
 fn issuer_record(payload: &[u8], secret_key: &MlDsa65KeyPair) -> Vec<u8> {
@@ -325,116 +313,16 @@ fn issuer_publishes_and_updates_the_status_list_under_its_python_key() {
 
         assert_eq!(issuer.set(ISSUER_KEY, first.clone()).await, Some(true));
         assert_eq!(proxy.get(ISSUER_KEY).await, Some(first));
-        assert_eq!(
-            issuer.update(ISSUER_KEY, second.clone(), vec![]).await,
-            Some(true)
-        );
+        assert_eq!(issuer.update_status_list(second.clone()).await, Some(true));
         assert_eq!(proxy.get(ISSUER_KEY).await, Some(second));
     });
 }
 
-/// The other replicas hold version 0 signed again, so version 1 does not
-/// follow theirs and they refuse it: no quorum, and the owner does not commit
-/// version 1 locally.
+/// A reply lost after a publication was applied: the owner publishes the same
+/// bytes again. It must succeed and complete the replicas that missed it,
+/// whichever copies already moved to the new position.
 #[test]
-fn update_without_quorum_preserves_the_local_record() {
-    runtime().block_on(async {
-        let issuer = Path::new("issuer_pub_key.bin");
-        let chain = Chain::with_versions(1);
-        let dkey = chain.key;
-        let requester = start_node(15878, issuer, dkey).await;
-        let peer_a = start_node(15879, issuer, node_id(41)).await;
-        let peer_b = start_node(15880, issuer, node_id(42)).await;
-        bootstrap_to(&requester, &[15879, 15880]).await;
-
-        let other_record = signed_again(&chain);
-        requester.storage.set(dkey.to_vec(), chain.version(0));
-        peer_a.storage.set(dkey.to_vec(), other_record.clone());
-        peer_b.storage.set(dkey.to_vec(), other_record.clone());
-
-        assert_eq!(
-            requester
-                .update(&chain.did, chain.version(1), chain.earlier(1))
-                .await,
-            Some(false),
-            "a prospective local vote alone must not satisfy a 2-of-3 update"
-        );
-        assert_eq!(
-            requester.storage.get(&dkey),
-            Some(chain.version(0)),
-            "failed quorum must not commit the new local value"
-        );
-        for peer in [&peer_a, &peer_b] {
-            assert_eq!(
-                peer.storage.get(&dkey).as_ref(),
-                Some(&other_record),
-                "a replica holding another record must not be changed"
-            );
-        }
-    });
-}
-
-#[test]
-fn update_commits_locally_after_quorum() {
-    runtime().block_on(async {
-        let issuer = Path::new("issuer_pub_key.bin");
-        let chain = Chain::with_versions(1);
-        let dkey = chain.key;
-        let requester = start_node(15881, issuer, dkey).await;
-        let peer_a = start_node(15882, issuer, node_id(51)).await;
-        let peer_b = start_node(15883, issuer, node_id(52)).await;
-        bootstrap_to(&requester, &[15882, 15883]).await;
-
-        for server in [&requester, &peer_a, &peer_b] {
-            server.storage.set(dkey.to_vec(), chain.version(0));
-        }
-
-        assert_eq!(
-            requester
-                .update(&chain.did, chain.version(1), chain.earlier(1))
-                .await,
-            Some(true),
-            "the local replica and acknowledged remote replicas must reach quorum"
-        );
-        assert_eq!(
-            requester.storage.get(&dkey),
-            Some(chain.version(1)),
-            "the local value must be committed after quorum"
-        );
-    });
-}
-
-#[test]
-fn a_remote_majority_confirms_an_update_that_exceeds_local_capacity() {
-    runtime().block_on(async {
-        let chain = common::Chain::with_versions(1);
-        let old = chain.version(0);
-        let budget = chain.key.len() + old.len();
-        assert!(chain.version(1).len() > old.len());
-        let owner = common::start_node_with_max_storage_bytes(16026, budget).await;
-        let a = common::start_node(16027).await;
-        let b = common::start_node(16028).await;
-        bootstrap_to(&owner, &[16027, 16028]).await;
-        for node in [&owner, &a, &b] {
-            node.storage.set(chain.key.to_vec(), old.clone());
-        }
-        let new = chain.version(1);
-        assert_eq!(
-            owner.update(&chain.did, new.clone(), vec![]).await,
-            Some(true)
-        );
-        assert_eq!(owner.storage.get(&chain.key), Some(old));
-        for remote in [&a, &b] {
-            assert_eq!(remote.storage.get(&chain.key).as_ref(), Some(&new));
-        }
-    });
-}
-
-/// A reply lost after the update was applied: the owner repeats the same
-/// update. It must succeed and complete the replicas that missed it, whichever
-/// copies already moved to the new version.
-#[test]
-fn retrying_an_applied_update_succeeds_and_completes_the_replicas() {
+fn retrying_a_publication_succeeds_and_completes_the_replicas() {
     runtime().block_on(async {
         let issuer = Path::new("issuer_pub_key.bin");
         let chain = Chain::with_versions(1);
@@ -444,7 +332,7 @@ fn retrying_an_applied_update_succeeds_and_completes_the_replicas() {
         let peer_b = start_node(15930, issuer, node_id(62)).await;
         bootstrap_to(&requester, &[15929, 15930]).await;
 
-        // (requester, peer_a, peer_b) before the retry; true = version 1.
+        // (requester, peer_a, peer_b) before the retry; true = position 1.
         for state in [(true, true, false), (false, true, true), (true, true, true)] {
             let pick = |is_new: bool| chain.version(usize::from(is_new));
             requester.storage.set(dkey.to_vec(), pick(state.0));
@@ -452,11 +340,9 @@ fn retrying_an_applied_update_succeeds_and_completes_the_replicas() {
             peer_b.storage.set(dkey.to_vec(), pick(state.2));
 
             assert_eq!(
-                requester
-                    .update(&chain.did, chain.version(1), chain.earlier(1))
-                    .await,
+                requester.set(&chain.did, chain.version(1)).await,
                 Some(true),
-                "retrying an applied update must succeed, state {state:?}"
+                "publishing the same bytes again must succeed, state {state:?}"
             );
             for (name, server) in [
                 ("requester", &requester),
@@ -466,18 +352,18 @@ fn retrying_an_applied_update_succeeds_and_completes_the_replicas() {
                 assert_eq!(
                     server.storage.get(&dkey),
                     Some(chain.version(1)),
-                    "{name} must hold the new version after the retry, state {state:?}"
+                    "{name} must hold the new position after the retry, state {state:?}"
                 );
             }
         }
     });
 }
 
-/// A replica that already holds the version acknowledges the update without
-/// verifying or writing: the answer means "I hold this record". An older
-/// version sent to a replica holding a newer one is refused as stale.
+/// A replica that already holds the record acknowledges it without
+/// verifying anything. A lower position sent to a replica holding a higher
+/// one is refused as stale and changes nothing.
 #[test]
-fn replica_acknowledges_an_update_it_already_holds() {
+fn replica_acknowledges_a_record_it_already_holds() {
     runtime().block_on(async {
         let issuer = Path::new("issuer_pub_key.bin");
         let chain = Chain::with_versions(3);
@@ -491,36 +377,34 @@ fn replica_acknowledges_an_update_it_already_holds() {
         replica.storage.set(dkey.to_vec(), chain.version(2));
         assert_eq!(
             protocol
-                .call_update_rpc_answer(&target, dkey, chain.version(2))
+                .call_store_rpc(&target, dkey, chain.version(2))
                 .await,
-            Some(UpdateStatus::AlreadyStored),
-            "a repeated update must be acknowledged"
+            Some(StoreStatus::AlreadyStored),
+            "a repeated record must be acknowledged"
         );
         assert_eq!(replica.storage.get(&dkey), Some(chain.version(2)));
 
         replica.storage.set(dkey.to_vec(), chain.version(3));
         assert_eq!(
             protocol
-                .call_update_rpc_answer(&target, dkey, chain.version(2))
+                .call_store_rpc(&target, dkey, chain.version(2))
                 .await,
-            Some(UpdateStatus::Stale),
-            "an older version must be refused"
+            Some(StoreStatus::Stale),
+            "a lower position must be refused"
         );
         assert_eq!(
             replica.storage.get(&dkey),
             Some(chain.version(3)),
-            "a refused update must not change the replica"
+            "a refused record must not change the replica"
         );
     });
 }
 
-/// The gap of the authorization that travelled only with the UPDATE, closed
-/// by the chain: the empty replicas refuse the UPDATE for lack of version 0,
-/// take version 1 by STORE once their network check finds the owner's
-/// version 0 that commits to its key, and the update succeeds while the old
-/// version is in the network.
+/// The owner holds position 0 and the other replicas nothing: publishing
+/// position 1 fills the empty replicas, whose check finds only a lower
+/// position, and replaces the owner's copy.
 #[test]
-fn update_fills_empty_replicas_while_the_old_version_is_in_the_network() {
+fn a_rotation_fills_empty_replicas_while_the_old_position_is_in_the_network() {
     runtime().block_on(async {
         let issuer = Path::new("issuer_pub_key.bin");
         let chain = Chain::with_versions(1);
@@ -534,11 +418,9 @@ fn update_fills_empty_replicas_while_the_old_version_is_in_the_network() {
         requester.storage.set(dkey.to_vec(), chain.version(0));
 
         assert_eq!(
-            requester
-                .update(&chain.did, chain.version(1), chain.earlier(1))
-                .await,
+            requester.set(&chain.did, chain.version(1)).await,
             Some(true),
-            "empty replicas must take the version that follows the one in the network"
+            "empty replicas must take a position above the one in the network"
         );
         for (name, server) in [
             ("requester", &requester),
@@ -550,53 +432,12 @@ fn update_fills_empty_replicas_while_the_old_version_is_in_the_network() {
     });
 }
 
-/// An UPDATE needs the version before it: a replica without the record
-/// answers that it misses it and stays empty. The same version sent as STORE
-/// is stored, once the replica's network check finds version 0 at the
-/// sender.
+/// A forged record is refused before any lookup, whatever the network
+/// holds. Another valid document at the position the holders hold is stored
+/// all the same: a report of another record at the same position decides
+/// nothing, and the first verified record stays.
 #[test]
-fn replica_without_the_record_refuses_an_update_but_takes_a_store() {
-    runtime().block_on(async {
-        let issuer = Path::new("issuer_pub_key.bin");
-        let chain = Chain::with_versions(1);
-        let dkey = chain.key;
-        let replica_id = node_id(67);
-        let replica = start_node(15936, issuer, replica_id).await;
-        let sender = start_node(15937, issuer, node_id(68)).await;
-        // The replica must know someone to ask about the record.
-        add_known_peer(&replica, node_id(68), 15937).await;
-        sender.storage.set(dkey.to_vec(), chain.version(0));
-        let protocol = sender.protocol.as_ref().expect("sender must be listening");
-        let target = Node::new(replica_id, Some("127.0.0.1".to_string()), Some(15936));
-
-        assert_eq!(
-            protocol
-                .call_update_rpc_answer(&target, dkey, chain.version(1))
-                .await,
-            Some(UpdateStatus::MissingPrevious { seq: None }),
-            "a replica without the version before must refuse the update"
-        );
-        assert_eq!(
-            replica.storage.get(&dkey),
-            None,
-            "a refused update must store nothing"
-        );
-        assert_eq!(
-            protocol
-                .call_store_rpc(&target, dkey, chain.version(1))
-                .await,
-            Some(StoreStatus::Stored),
-            "the same version sent as STORE must be stored"
-        );
-        assert_eq!(replica.storage.get(&dkey), Some(chain.version(1)));
-    });
-}
-
-/// An empty replica asks the nodes closest to the key before storing. Another
-/// version 1 than the one they hold is refused and not stored, as a forged
-/// version would be; the version they hold is stored.
-#[test]
-fn empty_replica_refuses_a_record_other_than_the_one_in_the_network() {
+fn empty_replica_refuses_a_forgery_and_keeps_the_first_valid_record() {
     runtime().block_on(async {
         let issuer = Path::new("issuer_pub_key.bin");
         let chain = Chain::with_versions(1);
@@ -617,27 +458,30 @@ fn empty_replica_refuses_a_record_other_than_the_one_in_the_network() {
         let target = Node::new(replica_id, Some("127.0.0.1".to_string()), Some(15938));
         assert_eq!(
             protocol.call_store_rpc(&target, dkey, forged).await,
-            Some(StoreStatus::Conflict),
-            "a record other than the one in the network must be refused"
+            Some(StoreStatus::InvalidRecord),
+            "a forged record must be refused"
         );
+        assert_eq!(replica.storage.get(&dkey), None);
+
+        let other = chain.other_document(1, Some(&chain.version(0)));
         assert_eq!(
-            replica.storage.get(&dkey),
-            None,
-            "a refused record must not be stored"
+            protocol.call_store_rpc(&target, dkey, other.clone()).await,
+            Some(StoreStatus::Stored),
+            "another valid record at the holders' position must be stored"
         );
         assert_eq!(
             protocol
                 .call_store_rpc(&target, dkey, chain.version(1))
                 .await,
-            Some(StoreStatus::Stored),
-            "the record the network holds must be stored"
+            Some(StoreStatus::Conflict),
+            "the first verified record stays"
         );
-        assert_eq!(replica.storage.get(&dkey), Some(chain.version(1)));
+        assert_eq!(replica.storage.get(&dkey), Some(other));
     });
 }
 
 /// A first publication: no node holds the DID, so the empty replica stores
-/// its version 0.
+/// its position 0.
 #[test]
 fn empty_replica_takes_a_record_no_node_holds() {
     runtime().block_on(async {
@@ -663,15 +507,15 @@ fn empty_replica_takes_a_record_no_node_holds() {
     });
 }
 
-/// The nodes answer the check with the version and SHA-256 of the record they
-/// hold, and a hash cannot be verified: another version 0 refuses the STORE
-/// only once its holder shows it (open point 27). A node holding one whose
-/// signature does not verify shows nothing, and the replica stores version 0.
+/// The nodes answer the check with the position and SHA-256 of their record,
+/// and a hash cannot be verified: a higher position refuses the STORE only
+/// once its holder shows it. A node holding one whose signature does not
+/// verify shows nothing, and the replica stores position 0.
 #[test]
 fn a_node_holding_an_invalid_copy_does_not_block_the_store() {
     runtime().block_on(async {
         let issuer = Path::new("issuer_pub_key.bin");
-        let chain = Chain::new();
+        let chain = Chain::with_versions(1);
         let dkey = chain.key;
         let replica_id = node_id(76);
         let replica = start_node(15945, issuer, replica_id).await;
@@ -679,7 +523,7 @@ fn a_node_holding_an_invalid_copy_does_not_block_the_store() {
         let sender = start_node(15947, issuer, node_id(78)).await;
         bootstrap_to(&replica, &[15946]).await;
 
-        let mut tampered = signed_again(&chain);
+        let mut tampered = chain.version(1);
         tampered[12] ^= 0xFF;
         liar.storage.set(dkey.to_vec(), tampered);
 
@@ -690,7 +534,7 @@ fn a_node_holding_an_invalid_copy_does_not_block_the_store() {
                 .call_store_rpc(&target, dkey, chain.version(0))
                 .await,
             Some(StoreStatus::Stored),
-            "a version 0 not shown must not block the STORE"
+            "a higher position not shown valid must not block the STORE"
         );
         assert_eq!(replica.storage.get(&dkey), Some(chain.version(0)));
     });
@@ -699,8 +543,8 @@ fn a_node_holding_an_invalid_copy_does_not_block_the_store() {
 /// A STORE to an empty replica waits for a lookup, whose answers reach the
 /// replica through the same workers that read its requests. Several such
 /// STOREs at once must not hold those workers: every lookup must still
-/// receive its answer and find the record in the network. Answers are spread
-/// over the workers in turn, so a single held worker is enough to delay some.
+/// receive its answers and the record it fetches. Answers are spread over
+/// the workers in turn, so a single held worker is enough to delay some.
 /// One sender and one holder: each can have at most
 /// `MAX_REASSEMBLY_ENTRIES_PER_PEER` fragmented messages in flight to the
 /// replica, and the rest would be dropped.
@@ -715,42 +559,40 @@ fn many_stores_to_an_empty_replica_all_get_their_lookup_answers() {
         bootstrap_to(&replica, &[15949]).await;
 
         let count = MAX_REASSEMBLY_ENTRIES_PER_PEER;
-        let mut forged_records = Vec::with_capacity(count);
+        let mut chains = Vec::with_capacity(count);
         for _ in 0..count {
-            let chain = Chain::new();
-            holder.storage.set(chain.key.to_vec(), chain.version(0));
-            forged_records.push((chain.key, signed_again(&chain)));
+            let chain = Chain::with_versions(1);
+            holder.storage.set(chain.key.to_vec(), chain.version(1));
+            chains.push(chain);
         }
 
         let protocol = sender.protocol.as_ref().expect("sender must be listening");
         let target = Node::new(replica_id, Some("127.0.0.1".to_string()), Some(15948));
         let answers = futures::future::join_all(
-            forged_records
+            chains
                 .iter()
-                .map(|(dkey, forged)| protocol.call_store_rpc(&target, *dkey, forged.clone())),
+                .map(|chain| protocol.call_store_rpc(&target, chain.key, chain.version(0))),
         )
         .await;
 
         for (index, answer) in answers.into_iter().enumerate() {
             assert_eq!(
                 answer,
-                Some(StoreStatus::Conflict),
-                "STORE {index} of {count} must find the record in the network"
+                Some(StoreStatus::Stale),
+                "STORE {index} of {count} must find the higher position in the network"
             );
         }
-        for (dkey, _) in &forged_records {
-            assert_eq!(replica.storage.get(dkey), None);
+        for chain in &chains {
+            assert_eq!(replica.storage.get(&chain.key), Some(chain.version(1)));
         }
     });
 }
 
-/// When a node the replica asks does not answer, the replica cannot tell
-/// whether it holds another record, so it refuses the STORE (fail-safe
-/// default). It does not answer, and the sender counts it as unavailable.
-/// The silent node is then marked as not responding and left out, so the
-/// next STORE is checked with the sender alone.
+/// A node the replica asks does not answer. The record proves its own key,
+/// and silence proves nothing about a higher position, so the replica stores
+/// it once the check's deadline passes.
 #[test]
-fn empty_replica_refuses_a_store_when_a_node_does_not_answer() {
+fn empty_replica_stores_a_verified_record_when_a_node_does_not_answer() {
     runtime().block_on(async {
         let issuer = Path::new("issuer_pub_key.bin");
         let chain = Chain::new();
@@ -767,18 +609,8 @@ fn empty_replica_refuses_a_store_when_a_node_does_not_answer() {
         let target = Node::new(replica_id, Some("127.0.0.1".to_string()), Some(15951));
         assert_eq!(
             protocol.call_store_rpc(&target, dkey, record.clone()).await,
-            None,
-            "a replica that did not hear from every node must not answer"
-        );
-        assert_eq!(
-            replica.storage.get(&dkey),
-            None,
-            "a refused record must not be stored"
-        );
-        assert_eq!(
-            protocol.call_store_rpc(&target, dkey, record.clone()).await,
             Some(StoreStatus::Stored),
-            "the silent node must be left out of the next check"
+            "silence must not keep a verified record out"
         );
         assert_eq!(replica.storage.get(&dkey), Some(record));
     });

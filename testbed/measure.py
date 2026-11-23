@@ -106,17 +106,18 @@ def print_counters(rounds, per="publication"):
             else:
                 checks[key] = checks.get(key, 0) + value
     if checks:
-        # The outcomes of ADR 0005, then those of main (ADR 0004), so that the
-        # same mode measures both images.
+        # The outcomes of this image, then those of older ones, so that the
+        # same mode measures both.
         ended = ", ".join(f"{key} {checks[key]}" for key in
-                          ("accepted", "newer_claimed", "other_version", "not_following",
-                           "holder_behind", "fetch_refused", "too_few_votes", "no_answer",
+                          ("accepted", "accepted_with_silence", "superseded", "unshown_claims",
                            "nobody_to_ask", "invalid",
+                           "newer_claimed", "other_version", "not_following", "holder_behind",
+                           "fetch_refused", "too_few_votes", "no_answer",
                            "none_or_same", "other", "unbound") if key in checks)
         print(f"  checks in all rounds: {ended}")
         if checks.get("fetches"):
             fetch_labels = [f"<={b} ms" for b in CHECK_DURATION_BOUNDS_MS] + [f">{CHECK_DURATION_BOUNDS_MS[-1]} ms"]
-            print(f"  checks that fetched the version before: {checks['fetches']}, by whole check duration: " +
+            print(f"  checks that fetched claimed records: {checks['fetches']}, by whole check duration: " +
                   ", ".join(f"{label}: {n}" for label, n in zip(fetch_labels, checks.get("fetch_duration_ms", [])) if n))
         rounds_hist = checks.get("rounds", [])
         print("  check lookups by rounds: " + ", ".join(
@@ -236,7 +237,7 @@ def node_id(node):
 
 def dht_key(did):
     """The DHT key of a DID: the decoded suffix of a self-certifying DID
-    (ADR 0005, 43 characters), or the SHA-256 of the UUID (ADR 0004)."""
+    (43 characters), or the SHA-256 of the UUID of an older image."""
     suffix = did.removeprefix("did:iiot:")
     if len(suffix) == 43:
         return base64.urlsafe_b64decode(suffix + "=")
@@ -273,8 +274,9 @@ def store_quorum(k):
 
 
 def set_liars(liars, lying, lie="on"):
-    """Make `liars` lie in FindHash, or stop: `lie` is `on` (a version far
-    ahead) or `v0` (another version 0 they cannot show, open point 27)."""
+    """Make `liars` lie in FindHash, or stop: `lie` is `on` (a position far
+    ahead) or `v0` (position 0 under a made-up hash), neither of which they
+    can show."""
     for liar in liars:
         ctl(liar, "lie", lie if lying else "off", check=lying)
 
@@ -347,7 +349,7 @@ def cmd_update(args):
                 "publish": published["outcome"],
                 "publish_report": {field: published.get(field) for field in
                                    ("stored", "already_present", "unavailable", "conflicts", "stale",
-                                    "newer_claimed", "unproven_refusals", "invalid")},
+                                    "unproven_refusals", "invalid")},
                 "versions": versions,
                 "rotations": rotations,
                 "victims": victims,
@@ -368,9 +370,9 @@ def cmd_update(args):
     if args.liars:
         print(f"  liars: the {args.liars} replica(s) closest to the key, every round")
     publications = sorted({r["publish"] for r in rounds})
-    print("  publication of version 0: " + ", ".join(
+    print("  publication of position 0: " + ", ".join(
         f"{o} {sum(1 for r in rounds if r['publish'] == o)}" for o in publications))
-    for field in ("stored", "unavailable", "newer_claimed", "conflicts", "stale"):
+    for field in ("stored", "unavailable", "conflicts", "stale", "unproven_refusals"):
         values = [r["publish_report"].get(field) or 0 for r in rounds]
         print(f"    {field} replicas per publication: {summary_counts(values)}")
     last = [r["rotations"][-1] for r in rounds]
@@ -413,7 +415,7 @@ def cmd_churn(args):
     records (churn), with `--liars` of the replicas closest to the key lying in
     FindHash. The owner publishes a new DID, rotates `--rotations` times, then
     sends its current version again every `--republish-every` seconds, as the
-    application does at least once every 24 hours (ADR 0005). Every
+    application does at least once every 24 hours. Every
     `--churn-every` seconds a node other than the owner and the liars crashes
     and comes back empty. Every `--sample-every` seconds: what the k nodes
     closest to the key hold."""
@@ -441,13 +443,13 @@ def cmd_churn(args):
     try:
         published = ctl(args.owner, "publish")
         versions = [published["record"]["signing_key"]]
-        print(f"  publication of version 0: {published['outcome']}, stored {published['stored']}, "
-              f"newer claimed {published['newer_claimed']}, unavailable {published['unavailable']}")
+        print(f"  publication of position 0: {published['outcome']}, stored {published['stored']}, "
+              f"stale {published['stale']}, unavailable {published['unavailable']}")
         for _ in range(args.rotations):
             time.sleep(args.settle)
             update = ctl(args.owner, "update")
-            print(f"  rotation to version {update.get('seq')}: {update.get('outcome')}")
-            if update.get("outcome") == "confirmed":
+            print(f"  rotation to position {update.get('seq')}: {update.get('outcome')}")
+            if update.get("outcome") in ("complete", "degraded"):
                 versions.append(update["to_key"])
         time.sleep(args.settle)
         label = version_label(versions)
@@ -525,7 +527,7 @@ def cmd_outage(args):
     nodes closest to the key (`ctl <node> push`), as the hourly republication
     does, one after the other, and the script counts what the replicas hold.
     With `--owner-returns` the owner then comes back, sends its current version
-    again (`ctl <node> republish`, images built since ADR 0005), and the
+    again (`ctl <node> republish`), and the
     replicas are counted once more. With `--reads` every node but the owner
     reads the DID once while the owner is offline, after the holders'
     republication, and again after the owner's return: what a reader gets, the
@@ -704,10 +706,9 @@ def main():
     up.add_argument("--wait", type=float, default=0.5,
                     help="seconds after the last rotation before reading what the replicas hold")
     up.add_argument("--liars", type=int, default=0,
-                    help="replicas closest to the key that lie in FindHash during the round (image built "
-                         "from ADR 0005)")
+                    help="replicas closest to the key that lie in FindHash during the round")
     up.add_argument("--lie", choices=["on", "v0"], default="on",
-                    help="what the liars claim: a version far ahead (on) or another version 0 (v0)")
+                    help="what the liars claim: a position far ahead (on) or position 0 (v0)")
     up.set_defaults(func=cmd_update)
     ch = sub.add_parser("churn", help="copies of a record over time while nodes crash, with liars")
     ch.add_argument("--owner", default="node-1")
@@ -715,7 +716,7 @@ def main():
     ch.add_argument("--rotations", type=int, default=1, help="rotations after the publication, before the churn")
     ch.add_argument("--liars", type=int, default=0, help="replicas closest to the key that lie in FindHash")
     ch.add_argument("--lie", choices=["on", "v0"], default="on",
-                    help="what the liars claim: a version far ahead (on) or another version 0 (v0)")
+                    help="what the liars claim: a position far ahead (on) or position 0 (v0)")
     ch.add_argument("--churn-every", type=float, default=10, help="seconds between two crashes")
     ch.add_argument("--churn-among", choices=["replicas", "all"], default="replicas",
                     help="nodes that may crash: the k closest to the key, or every node (never the owner or a liar)")
@@ -732,7 +733,7 @@ def main():
     ou.add_argument("--rounds", type=int, default=5, help="rounds per value of --lost")
     ou.add_argument("--rotations", type=int, default=1, help="rotations after the publication")
     ou.add_argument("--owner-returns", action="store_true",
-                    help="the owner then comes back and republishes (images built since ADR 0005)")
+                    help="the owner then comes back and republishes")
     ou.add_argument("--reads", action="store_true",
                     help="every node but the owner reads the DID with the owner offline, and after its return")
     ou.add_argument("--joiners", type=int, default=0,

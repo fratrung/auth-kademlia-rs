@@ -19,14 +19,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use auth_kademlia_rs::auth_handler::did::{canonical_bytes, derive_did, key_of_did, PLACEHOLDER};
+use auth_kademlia_rs::auth_handler::did::{key_of_did, PLACEHOLDER};
+use auth_kademlia_rs::auth_handler::owner::OwnerTree;
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::Server;
 use auth_kademlia_rs::node::Node;
 use auth_kademlia_rs::protocol::{KademliaProtocol, StoreStatus};
-use auth_kademlia_rs::utils::digest_bytes;
 
-use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde_json::json;
@@ -95,14 +94,11 @@ fn b64url(data: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(data)
 }
 
-/// Builds version 0 of a new DID, self-signed with ML-DSA-65 (ADR 0005; wire
-/// format: alg ‖ sig ‖ doc), and returns the DID and the record.
+/// Position 0 of a new DID, self-signed with ML-DSA-65 under a fresh
+/// rotation-key tree (wire format: alg ‖ sig ‖ doc): the DID and the record.
 fn make_record() -> (String, Vec<u8>) {
-    let dsk = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
-    let dpk = dsk.public_key().to_vec();
-    let next = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
+    let owner = OwnerTree::generate().expect("a rotation-key tree");
     let did = PLACEHOLDER;
-
     let draft = json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
         "verificationMethod": [
@@ -110,7 +106,7 @@ fn make_record() -> (String, Vec<u8>) {
                 "id": format!("{}#k0", did), "type": "JsonWebKey2020",
                 "controller": did,
                 "publicKeyJwk": { "kty": "AKP", "alg": "ML-DSA-65",
-                                  "pub": b64url(&dpk) }
+                                  "pub": b64url(owner.public_key(0).expect("position 0")) }
             }
         ],
         "authentication": [format!("{}#k0", did)],
@@ -120,21 +116,10 @@ fn make_record() -> (String, Vec<u8>) {
             "serviceEndpoint": "http://example.com/device"
         }],
         "seq": 0,
-        "nextKeyHash": b64url(&digest_bytes(next.public_key())),
     });
-    let (did, doc) = derive_did(&draft).expect("version 0 gives its DID");
-
-    let doc_bytes = canonical_bytes(&doc).expect("a DID Document in canonical form");
-    let sig = dsk.sign(&doc_bytes).expect("ML-DSA-65 signing");
-
-    let mut alg = [0u8; 12];
-    alg[..9].copy_from_slice(b"ML-DSA-65");
-
-    let mut record = Vec::with_capacity(12 + sig.as_slice().len() + doc_bytes.len());
-    record.extend_from_slice(&alg);
-    record.extend_from_slice(sig.as_slice());
-    record.extend_from_slice(&doc_bytes);
-    (did, record)
+    let genesis = owner.genesis(&draft).expect("a draft body");
+    let record = owner.record(&genesis, &draft, 0).expect("position 0");
+    (genesis.did(), record)
 }
 
 /// Sends every (key, record) pair to `victim` via `call_store_rpc`, bounded by `concurrency`.

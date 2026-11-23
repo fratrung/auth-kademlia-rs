@@ -24,7 +24,7 @@ mod transport;
 mod welcome;
 
 pub use handlers::FindValueResult;
-pub use messages::{record_hash, RpcMessage, StoreStatus, UpdateStatus, WireNode, RECORD_HASH_LEN};
+pub use messages::{record_hash, RpcMessage, StoreStatus, WireNode, RECORD_HASH_LEN};
 use transport::{PendingMap, RequestKey};
 use welcome::WELCOME_CONCURRENCY;
 
@@ -99,12 +99,13 @@ pub struct KademliaProtocol {
 #[cfg(feature = "testbed")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lie {
-    /// The version and hash of the record it holds, as every node.
+    /// The position and hash of the record it holds, as every node.
     Honest = 0,
-    /// A version far ahead and a made-up hash, for any key.
+    /// A position far ahead and a made-up hash, for any key, with no record
+    /// to show for it.
     LaterVersion = 1,
-    /// Another version 0: a made-up hash, for any key, and no record to show
-    /// for it (open point 27).
+    /// Position 0 and a made-up hash, for any key, with no record to show
+    /// for it.
     OtherVersionZero = 2,
 }
 
@@ -201,9 +202,9 @@ impl KademliaProtocol {
     }
 
     /// Testbed only: from now on, answer every `FindHash`, for any key, with
-    /// `lie`: a version far ahead, or another version 0, under a made-up hash
-    /// this node never serves, to measure what nodes that lie in `FindHash`
-    /// block (ADR 0005, Validation). Records are stored and served as usual.
+    /// `lie`: a position far ahead, or position 0, under a made-up hash this
+    /// node never serves, to measure what nodes that lie in `FindHash` can
+    /// block. Records are stored and served as usual.
     #[cfg(feature = "testbed")]
     pub fn set_lying(&self, lie: Lie) {
         self.lie

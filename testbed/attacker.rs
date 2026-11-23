@@ -1,30 +1,28 @@
 //! Testbed attacker: watches the traffic between testbed nodes and sends
-//! forged records for the DIDs it sees, as STOREs. A forged record is a
-//! version of the owner's DID, with the `prev` of the version it saw (or, for
-//! a version 0, a version 1 after it), self-signed with the attacker's own
-//! key (ADR 0005). It passes a replica's signature check, but no version
-//! committed to its key: a replica holding the version before refuses it,
-//! and an empty replica takes it only if its check of the network does not
-//! find that version.
+//! forged records for the DIDs it sees, as STOREs. A forged record is the
+//! position after the one it saw, with that record's public proof, the
+//! attacker's own key in the document and its signature. Its signature
+//! verifies, but its key is not the tree's at that position, so every
+//! replica refuses it before any lookup.
 //!
 //! Modes (`ATTACK_MODE`):
-//! - `race` (default): for each UPDATE it sees, one forged STORE to the same
-//!   replica, racing the owner's STORE to a replica that refused the UPDATE.
-//! - `burst`: for each UPDATE, `ATTACK_BURST` forged STOREs at once from
+//! - `race` (default): for each rotation it sees (a STORE of a position
+//!   above 0), one forged STORE to the same replica, racing the owner's.
+//! - `burst`: for each rotation, `ATTACK_BURST` forged STOREs at once from
 //!   `ATTACK_PORTS` ports. Many lookups at the replica at once can make it
 //!   drop answers; the burst tests what the replica does then.
-//! - `successor`: for each STORE of a version 0 it sees, one forged version 1
-//!   after it to the same replica, at once: the key security case of ADR
-//!   0005, a forged version 1 right after the owner's version 0.
+//! - `successor`: for each STORE of a position 0 it sees, one forged
+//!   position 1 after it to the same replica, at once.
 //! - `spoof`: for each `FindHash` it sees, `ATTACK_BURST` answers claiming a
-//!   version far ahead, sent to the asking node from the address and port of
+//!   position far ahead, sent to the asking node from the address and port of
 //!   the node asked (a raw socket writes the IP header), under random message
-//!   ids instead of the one it read (ADR 0005, open point 25): a replica that
-//!   took one would refuse a STORE it should accept. With
+//!   ids instead of the one it read. A replica that took one would fetch a
+//!   record nobody can show, and store the record it was sent all the same.
+//!   With
 //!   `ATTACK_SPOOF_IDS=observed` they carry the id read on the wire, the
 //!   control showing that they reach the replica and that the id is what
 //!   stops them.
-//! - `persist`: it learns DIDs from the STOREs and UPDATEs it sees and, every
+//! - `persist`: it learns DIDs from the STOREs it sees and, every
 //!   `ATTACK_PERIOD_MS`, sends a forged STORE for each DID learned in the last
 //!   `ATTACK_DID_TTL_S` seconds to every node it has seen. It covers every
 //!   moment a node lacks the record: a restart, a node joining.
@@ -41,7 +39,7 @@
 //! ATTACK_MODE       race, burst, successor or persist (default race)
 //! ATTACK_DELAY_MS   extra delay before each forged STORE in race, burst and
 //!                   successor (default 0)
-//! ATTACK_BURST      forged STOREs per UPDATE in burst mode, spoofed answers
+//! ATTACK_BURST      forged STOREs per rotation in burst mode, spoofed answers
 //!                   per FindHash in spoof mode (default 64)
 //! ATTACK_SPOOF_IDS  guessed (random ids) or observed (the id read on the
 //!                   wire, the control) in spoof mode (default guessed)
@@ -86,7 +84,7 @@ fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
 enum Seen {
     /// A testbed node, the first time it appears in the traffic.
     Node(Ipv4Addr),
-    /// A STORE or UPDATE request.
+    /// A STORE request.
     Request(Observed),
     /// A `FindHash` request, the network check of an empty replica.
     HashAsked(Asked),
@@ -99,8 +97,9 @@ struct Asked {
     msg_id: u32,
 }
 
-/// A STORE or UPDATE request seen on the wire.
+/// A STORE request seen on the wire.
 struct Observed {
+    /// A rotation: a record above position 0.
     update: bool,
     from: Ipv4Addr,
     to: Ipv4Addr,
@@ -163,7 +162,7 @@ struct Partial {
 }
 
 /// Read frames forever, reassemble KADF messages between testbed nodes and
-/// report every STORE, UPDATE and `FindHash` request. Runs on its own thread:
+/// report every STORE and `FindHash` request. Runs on its own thread:
 /// `recv` blocks.
 fn sniff(prefix: [u8; 2], dht_port: u16, updates: mpsc::UnboundedSender<Seen>) {
     let fd = match packet_socket() {
@@ -224,11 +223,8 @@ fn sniff(prefix: [u8; 2], dht_port: u16, updates: mpsc::UnboundedSender<Seen>) {
                     .copied()
                     .collect();
                 let request = match bincode::deserialize::<(u32, bool, RpcMessage)>(&message) {
-                    Ok((_, true, RpcMessage::Update { key, value, .. })) => {
-                        Some((true, key, value))
-                    }
                     Ok((_, true, RpcMessage::Store { key, value, .. })) => {
-                        Some((false, key, value))
+                        Some((seq_of(&value).is_some_and(|seq| seq > 0), key, value))
                     }
                     Ok((msg_id, true, RpcMessage::FindHash { .. })) => {
                         let _ = updates.send(Seen::HashAsked(Asked {
@@ -335,7 +331,7 @@ fn send_raw(fd: i32, packet: &[u8], dst: Ipv4Addr) -> bool {
 }
 
 /// `spoof`: answer each `FindHash` seen with `copies` answers claiming a
-/// version far ahead, from the address of the node asked, under random ids
+/// position far ahead, from the address of the node asked, under random ids
 /// (or the id read on the wire when `observed_ids`).
 fn spoof(mut seen: mpsc::UnboundedReceiver<Seen>, copies: usize, observed_ids: bool) {
     let fd = match raw_ipv4_socket() {
@@ -442,9 +438,9 @@ async fn attacker_nodes(
 /// The requests `race`, `burst` and `successor` answer with forged STOREs.
 #[derive(Clone, Copy)]
 enum Trigger {
-    /// An UPDATE (`race`, `burst`).
+    /// A STORE of a position above 0, a rotation (`race`, `burst`).
     Update,
-    /// A STORE of a version 0 (`successor`).
+    /// A STORE of position 0 (`successor`).
     VersionZero,
 }
 
@@ -458,8 +454,8 @@ impl Trigger {
 
     fn name(self) -> &'static str {
         match self {
-            Trigger::Update => "UPDATE",
-            Trigger::VersionZero => "STORE of version 0",
+            Trigger::Update => "rotation",
+            Trigger::VersionZero => "STORE of position 0",
         }
     }
 }
@@ -497,8 +493,8 @@ async fn react_to_requests(
 
         let protocols = protocols.clone();
         tokio::spawn(async move {
-            // The forged record: the same DID and `prev`, the attacker's own
-            // key, which the version before did not commit to.
+            // The forged record: the next position, the attacker's own
+            // key, which is not the tree's at that position.
             let Some(forged) = forge(&update.value) else {
                 return;
             };
@@ -584,7 +580,7 @@ async fn persist(
                         log::info!(
                             "persist: learned {} from a {} {} -> {}, forged key {}",
                             did,
-                            if observed.update { "UPDATE" } else { "STORE" },
+                            if observed.update { "rotation" } else { "STORE" },
                             observed.from,
                             observed.to,
                             signing_key_of(&forged)
@@ -664,7 +660,7 @@ async fn run() {
     match mode.as_str() {
         "race" => {
             log::info!(
-                "attacker (race) on {gateway}:{attack_port}: one forged STORE per UPDATE to port \
+                "attacker (race) on {gateway}:{attack_port}: one forged STORE per rotation to port \
                  {dht_port} on {a}.{b}.0.0/16, extra delay {} ms",
                 delay.as_millis()
             );
@@ -672,15 +668,15 @@ async fn run() {
         }
         "successor" => {
             log::info!(
-                "attacker (successor) on {gateway}:{attack_port}: a forged version 1 for each \
-                 STORE of a version 0 to port {dht_port} on {a}.{b}.0.0/16, extra delay {} ms",
+                "attacker (successor) on {gateway}:{attack_port}: a forged position 1 for each \
+                 STORE of position 0 to port {dht_port} on {a}.{b}.0.0/16, extra delay {} ms",
                 delay.as_millis()
             );
             react_to_requests(seen, protocols, Trigger::VersionZero, 1, delay).await;
         }
         "burst" => {
             log::info!(
-                "attacker (burst) on {gateway}:{}-{attack_port}: {burst} forged STOREs per UPDATE \
+                "attacker (burst) on {gateway}:{}-{attack_port}: {burst} forged STOREs per rotation \
                  to port {dht_port} on {a}.{b}.0.0/16, extra delay {} ms",
                 attack_port - (port_count as u16 - 1),
                 delay.as_millis()
@@ -689,7 +685,7 @@ async fn run() {
         }
         "spoof" => {
             log::info!(
-                "attacker (spoof): {burst} answers claiming a version far ahead for each FindHash \
+                "attacker (spoof): {burst} answers claiming a position far ahead for each FindHash \
                  between nodes on {a}.{b}.0.0/16, from the node asked, under {} ids",
                 if observed_ids {
                     "the observed"

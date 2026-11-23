@@ -22,8 +22,8 @@
 //!     # Bootstrap from a known peer
 //!     peers = await node.bootstrap([("192.168.1.10", 5678)])
 //!
-//!     # Publish version 0 of a DID record (bytes), under its DID
-//!     # ("did:iiot:" + base64url of the SHA-256 of the first document)
+//!     # Publish a DID record (bytes), at any position, under its DID
+//!     # ("did:iiot:" + base64url of the SHA-256 of its genesis)
 //!     ok = await node.set(did, signed_record_bytes)
 //!
 //!     # Retrieve it from any node in the network
@@ -76,7 +76,6 @@ fn rejection_name(reason: SetRejection) -> &'static str {
         SetRejection::Unavailable => "unavailable",
         SetRejection::NoResponsibleNodes => "no_responsible_nodes",
         SetRejection::NewerVersion => "newer_version",
-        SetRejection::UseUpdate => "use_update",
     }
 }
 
@@ -91,7 +90,6 @@ fn set_report_to_py<'py>(py: Python<'py>, report: &SetReport) -> PyResult<Bound<
     result.set_item("conflict_rejections", report.conflict_rejections)?;
     result.set_item("invalid_rejections", report.invalid_rejections)?;
     result.set_item("stale_rejections", report.stale_rejections)?;
-    result.set_item("newer_claimed", report.newer_claimed)?;
     result.set_item("unproven_refusals", report.unproven_refusals)?;
     Ok(result)
 }
@@ -136,7 +134,7 @@ fn km_err(e: KeyManagerError) -> PyErr {
 /// Internally wraps [`Server`] behind an `Arc<RwLock<…>>`:
 /// - Methods that mutate the server state (`listen`, `stop`,
 ///   `save_state_regularly`) acquire an exclusive write lock.
-/// - All other methods (`get`, `set`, `update`, `bootstrap`, …)
+/// - All other methods (`get`, `set`, `update_status_list`, `bootstrap`, …)
 ///   acquire a shared read lock, so they can run concurrently.
 ///
 /// Every method returns a Python coroutine — use `await` in async Python code.
@@ -270,12 +268,13 @@ impl PyServer {
         })
     }
 
-    /// Publish version 0 of a DID record, ``value``, under its DID ``key``
-    /// (ADR 0005). Later versions go through ``update``.
+    /// Publish a DID record, ``value``, at any position, under its DID
+    /// ``key``. A first publication and every rotation use this call.
     ///
-    /// The record is rejected if the key already holds another record, if
-    /// the signature embedded in ``value`` does not verify against its own
-    /// DID Document, or if the Document is not version 0 of the DID ``key``.
+    /// The record is rejected if its key and code are not those of its
+    /// position in the tree the DID commits to, if its signature does not
+    /// verify, or once a replica shows a higher position or another record
+    /// at the same position.
     ///
     /// ``value`` must follow the AuthKademlia record format:
     ///
@@ -303,21 +302,19 @@ impl PyServer {
         })
     }
 
-    /// Publish version 0, as ``set``, and return exact replica-level
-    /// publication details.
+    /// Publish a record at any position, as ``set``, and return exact
+    /// replica-level publication details.
     ///
     /// Returns:
     ///     dict: ``status`` is ``complete``, ``degraded``, or ``rejected``;
     ///     ``reason`` is set for rejected publications (``existing_record``
-    ///     when a replica shows version 0 signed again, ``newer_version``
-    ///     when one shows version 1 or the quorum claims a later version,
+    ///     when a replica shows another valid record at the same position,
+    ///     ``newer_version`` when one shows a valid higher position,
     ///     ``replica_conflict`` when nothing was stored and replicas refused
-    ///     without showing why, ``use_update`` for a version after 0);
-    ///     ``report`` contains expected, acknowledged, unavailable,
-    ///     conflicting, invalid, stale and capacity-rejected replica counts,
-    ///     ``newer_claimed``, the replicas that refused because a node
-    ///     reported a later version, and ``unproven_refusals``, the replicas
-    ///     that refused without showing a record that proves it.
+    ///     without showing why); ``report`` contains expected, acknowledged,
+    ///     unavailable, conflicting, invalid, stale and capacity-rejected
+    ///     replica counts, and ``unproven_refusals``, the replicas that
+    ///     refused without showing a record that proves it.
     fn set_detailed<'py>(
         &self,
         py: Python<'py>,
@@ -332,32 +329,21 @@ impl PyServer {
         })
     }
 
-    /// Publish version N ≥ 1 of a DID record (ADR 0005).
-    ///
-    /// ``value`` is the new version, signed by the key the version before
-    /// committed to, and ``earlier`` the owner's saved versions 0 to N−1,
-    /// used only to replay the chain to replicas that miss versions. Resend
-    /// the same saved bytes on every retry, and call it again at least once
-    /// every 24 hours.
-    ///
-    /// For the special status-list key, ``value`` is the issuer-signed list
-    /// and ``earlier`` is empty.
+    /// Replace the Status List with ``value``, signed by the issuer.
     ///
     /// Returns:
-    ///     bool | None: ``True`` on success, ``None`` if rejected.
-    fn update<'py>(
+    ///     bool | None: ``True`` when a majority of the replicas took it,
+    ///     ``False`` otherwise, ``None`` if no list is published yet or the
+    ///     signature fails.
+    fn update_status_list<'py>(
         &self,
         py: Python<'py>,
-        key: String,
         value: Vec<u8>,
-        earlier: Vec<Vec<u8>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            // Read lock: same rationale as set — Server::update takes &self and
-            // the storage (a DashMap) synchronises its own writes.
             let s = inner.read().await;
-            Ok(s.update(&key, value, earlier).await)
+            Ok(s.update_status_list(value).await)
         })
     }
 
@@ -428,8 +414,7 @@ impl PyServer {
     }
 }
 
-/// ML-DSA-65 key manager exposed to Python: the signature of every record
-/// (ADR 0003).
+/// ML-DSA-65 key manager exposed to Python: the signature of every record.
 ///
 /// Args:
 ///     keys_dir (str): Directory where ``.public`` / ``.private`` files are stored.
@@ -460,10 +445,9 @@ impl PyMlDsaKeyManager {
     /// The ML-DSA-65 ``(public_key, private_key)`` pair of a 32-byte
     /// ``seed`` (FIPS 204): the same seed always gives the same pair.
     ///
-    /// The application generates the seed of the next key and keeps only
-    /// the seed, in a secure element where the device has one, until the
-    /// rotation that reveals it (ADR 0005). Its ``nextKeyHash`` is the
-    /// SHA-256 of the ``public_key`` returned here.
+    /// The application can keep only the seed of a position's key, in a
+    /// secure element where the device has one, until the rotation that
+    /// reveals it.
     ///
     /// Raises:
     ///     RuntimeError: ``seed`` is not 32 bytes long.
@@ -552,7 +536,7 @@ impl PyMlDsaKeyManager {
 }
 
 /// ML-KEM-768 with ephemeral keys, for the handshake between devices,
-/// outside the DHT (ADR 0003). One key pair per handshake, in memory only:
+/// outside the DHT. One key pair per handshake, in memory only:
 /// no private key is ever returned, stored or read.
 ///
 /// Args:

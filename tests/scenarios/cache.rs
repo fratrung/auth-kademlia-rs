@@ -26,7 +26,7 @@ use std::time::Instant;
 use auth_kademlia_rs::auth_handler::{DIDSignatureVerifierHandler, SignatureVerifierHandler};
 use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
 use auth_kademlia_rs::signature_cache::{SignatureCache, VerificationDomain};
-use common::{make_record, rt, version0};
+use common::{badly_signed_record, make_record, rt};
 
 /// A cache hit must be faster than a full ML-DSA-65 `spawn_blocking` call.
 ///
@@ -88,10 +88,9 @@ fn cache_stores_false_for_invalid_records() {
         )));
         let cache = SignatureCache::new(128);
 
-        // Build a record whose embedded public key does not match the signing key.
-        let pk = MlDsa65KeyPair::generate().unwrap().public_key().to_vec();
+        // A record whose embedded public key does not match the signing key.
         let wrong_sk = MlDsa65KeyPair::generate().unwrap();
-        let (_, invalid_record) = version0(&pk, &wrong_sk);
+        let (_, invalid_record) = badly_signed_record(&wrong_sk);
 
         let ck = SignatureCache::compute_key(VerificationDomain::SelfSigned, &invalid_record);
 

@@ -1,77 +1,45 @@
 use std::path::PathBuf;
-/// Example: publish and retrieve a signed DID Document via auth_kademlia.
+/// Example: publish, rotate and retrieve a signed DID Document via
+/// auth_kademlia.
 ///
-/// Rust equivalent of the Python AuthKademlia example:
-///
-///   1. Start a DHT node with signature verification
-///   2. Generate the current ML-DSA-65 key pair, and the next one from a
-///      32-byte seed, the only part of it the device keeps (ADR 0005)
-///   3. Build the draft of version 0: its own DID written as the placeholder
-///      `did:iiot:self`, `seq` 0 and the hash of the next public key
-///   4. Compute the DID, the hash of the draft, and put it in the document
-///   5. Sign it and pack it into the record format:
-///      | algorithm (12 bytes, null-padded) | signature | DID Document (JSON) |
-///   6. Publish the record under its DID, then retrieve and verify it
+///   1. Start two DHT nodes with signature verification
+///   2. Generate a tree of 64 ML-DSA-65 keys and activation codes, one per
+///      position
+///   3. Build the draft of position 0: its own DID written as the placeholder
+///      `did:iiot:self`, `seq` 0, and the key of position 0
+///   4. The DID is the hash of a genesis that commits the draft and the root
+///      of the tree; the owner completes and signs the document of position 0
+///   5. Publish it under its DID, then publish position 1, the first rotation
+///   6. Retrieve the current record from the other node
 ///
 /// To run:
-///   cargo run --example publish_did -- --bootstrap 127.0.0.1:5678
-///
-/// If this is the first node in the network, omit --bootstrap.
+///   cargo run --example publish_did
 use std::sync::Arc;
 use std::time::Duration;
 
-use auth_kademlia_rs::auth_handler::did::{canonical_bytes, derive_did, PLACEHOLDER};
+use auth_kademlia_rs::auth_handler::did::PLACEHOLDER;
+use auth_kademlia_rs::auth_handler::owner::OwnerTree;
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
+use auth_kademlia_rs::crypto::mldsa;
 use auth_kademlia_rs::network::Server;
 use auth_kademlia_rs::utils::digest_bytes;
-
-// ML-DSA-65 keys and signatures, from aws-lc-rs (ADR 0003).
-use auth_kademlia_rs::crypto::mldsa::{self as mldsa, MlDsa65KeyPair};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
 use tokio::time::sleep;
 
-/// Encode a raw public key as base64url (no padding).
-fn base64url_encode(pk: &[u8]) -> String {
-    URL_SAFE_NO_PAD.encode(pk)
+/// Encode raw bytes as base64url (no padding).
+fn base64url_encode(bytes: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(bytes)
 }
 
-/// Build the signed record:
-///
-/// ```text
-/// | algorithm (12 bytes, null-padded) | ML-DSA-65 signature | DID Document (JSON) |
-/// ```
-fn build_signed_record(doc: &Value, secret_key: &MlDsa65KeyPair, algorithm: &str) -> Vec<u8> {
-    // Canonical JSON: sorted keys, no spaces, ASCII only (ADR 0005).
-    let doc_bytes = canonical_bytes(doc).expect("a DID Document in canonical form");
-
-    // Pack algorithm into exactly 12 bytes (UTF-8, null-padded on the right).
-    let mut alg_field = [0u8; 12];
-    let alg_bytes = algorithm.as_bytes();
-    let copy_len = alg_bytes.len().min(12);
-    alg_field[..copy_len].copy_from_slice(&alg_bytes[..copy_len]);
-
-    // Sign using the detached API — returns only the signature bytes.
-    let detached_sig = secret_key.sign(&doc_bytes).expect("ML-DSA-65 signing");
-    let signature = detached_sig.as_slice();
-
-    // Concatenate: alg_field || signature || doc_bytes
-    let mut record = Vec::with_capacity(12 + signature.len() + doc_bytes.len());
-    record.extend_from_slice(&alg_field);
-    record.extend_from_slice(signature);
-    record.extend_from_slice(&doc_bytes);
-    record
-}
-
-/// Build the draft of version 0 of a `did:iiot` DID Document (ADR 0005):
-/// its ML-DSA-65 key (RFC 9964), no key agreement key (ADR 0003), its own
-/// DID written as the placeholder, no `id`, and the hash of the next key.
-fn build_version_zero_draft(signing_pk: &[u8], next_pk: &[u8]) -> Value {
-    let signing_x = base64url_encode(signing_pk);
+/// The draft of position `seq` of a `did:iiot` DID Document: its ML-DSA-65
+/// key (RFC 9964), no key agreement key, its own DID written as the
+/// placeholder, no `id`, and after position 0 the hash of the record it
+/// follows.
+fn draft(signing_pk: &[u8], seq: u64, prev: Option<&[u8]>) -> Value {
     let did = PLACEHOLDER;
-
-    json!({
+    let mut doc = json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
         "verificationMethod": [
             {
@@ -80,7 +48,7 @@ fn build_version_zero_draft(signing_pk: &[u8], next_pk: &[u8]) -> Value {
                 "controller": did,
                 "publicKeyJwk": {
                     "kty": "AKP", "alg": "ML-DSA-65",
-                    "pub": signing_x
+                    "pub": base64url_encode(signing_pk)
                 }
             }
         ],
@@ -92,9 +60,12 @@ fn build_version_zero_draft(signing_pk: &[u8], next_pk: &[u8]) -> Value {
                 "serviceEndpoint": "http://example.com/device"
             }
         ],
-        "seq": 0,
-        "nextKeyHash": base64url_encode(&digest_bytes(next_pk)),
-    })
+        "seq": seq,
+    });
+    if let Some(prev) = prev {
+        doc["prev"] = json!(base64url_encode(&digest_bytes(prev)));
+    }
+    doc
 }
 
 // Helper function to initialize and start a Kademlia node
@@ -156,25 +127,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     sleep(Duration::from_secs(1)).await;
 
-    // Generate the ML-DSA-65 signing key pair (ADR 0003)
-    let signing_sk = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
-    let signing_pk = signing_sk.public_key().to_vec();
-
-    // The next key, which alone may sign version 1. The device keeps only its
-    // seed, in a secure element where it has one, until that rotation.
-    let next_seed: [u8; MlDsa65KeyPair::SEED_LEN] = rand::random();
-    let next_key = MlDsa65KeyPair::from_seed(&next_seed).expect("ML-DSA-65 key from seed");
-
-    // The DID is the hash of the draft of version 0
-    let draft = build_version_zero_draft(&signing_pk, next_key.public_key());
-    let (did, did_doc) = derive_did(&draft).expect("version 0 gives its DID");
+    // The tree of rotation keys: the device keeps its secrets behind its
+    // custody backend; this example keeps them in memory.
+    let owner = OwnerTree::generate().expect("a rotation-key tree");
+    let initial = draft(owner.public_key(0).expect("position 0"), 0, None);
+    let genesis = owner.genesis(&initial).expect("a draft body");
+    let did = genesis.did();
     println!(">>> DID: {}", did);
 
     // Records are published and read under the DID
     let dht_key = did.clone();
-
-    // Sign the DID Document with ML-DSA-65
-    let signed_record = build_signed_record(&did_doc, &signing_sk, "ML-DSA-65");
+    let signed_record = owner.record(&genesis, &initial, 0).expect("position 0");
 
     // Retry loop to publish the record (waiting for network stabilization)
     let mut is_ready = false;
@@ -198,7 +161,25 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Node 1 attempts to retrieve the record published by Node 2
+    // The first rotation: position 1, signed by its own key. Replicas take
+    // it directly; no other authorization is needed.
+    let rotation = owner
+        .record(
+            &genesis,
+            &draft(
+                owner.public_key(1).expect("position 1"),
+                1,
+                Some(&signed_record),
+            ),
+            1,
+        )
+        .expect("position 1");
+    println!(
+        ">>> Node 2: rotation to position 1 published: {:?}",
+        node_2.set(&dht_key, rotation).await
+    );
+
+    // Node 1 retrieves the current record
     println!(">>> Node 1: Retrieving record '{}'...", dht_key);
     match node_1.get(&dht_key).await {
         Some(record) => {
@@ -214,6 +195,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 println!(">>> Analysis:");
                 println!("    - Algorithm: {}", alg);
                 println!("    - DID Document ID: {}", doc["id"]);
+                println!("    - Position: {}", doc["seq"]);
                 println!(
                     "    - Full JSON: {}",
                     serde_json::to_string_pretty(&doc).unwrap()

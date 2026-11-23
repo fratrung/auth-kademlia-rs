@@ -1,21 +1,20 @@
-//! SET: publish a record on the `k` nodes closest to its key, and report how
-//! many of them hold it (`SetReport`, `SetOutcome`).
+//! SET: publish a record of any position on the `k` nodes closest to its
+//! key, and report how many of them hold it (`SetReport`, `SetOutcome`).
 //!
 //! `set` reads no copy first: it finds the closest nodes and sends them the
-//! record (Kademlia, section 2.3), as `update` does (ADR 0005, open point 16).
-//! A replica that refuses it counts only once it shows a record that the
-//! owner's version 0 proves to be another version 0 or its successor (open
-//! point 27); a refusal it does not show is a replica that did not store.
+//! record (Kademlia, section 2.3). A replica that refuses counts only once it
+//! shows a record that proves why, a higher position or another record at
+//! the same position, with a valid signature. Any other refusal, and any
+//! number of them, is a replica that did not store.
 
 use std::sync::Arc;
 
-use crate::auth_handler::did::record_form;
-use crate::auth_handler::rules::{shown_against, store_quorum, Shown};
+use crate::auth_handler::rules::{decide_locally, shown_against, Local, Proof};
 use crate::crawling::{LookupNodes, NodeSpiderCrawl, RPCFindResponse, SpiderProtocol};
 use crate::node::Node;
 use crate::protocol::StoreStatus;
-use crate::storage::IStorage;
-use crate::utils::ID_LEN;
+use crate::storage::{IStorage, ReplaceStatus, StorageWriteStatus};
+use crate::utils::{digest, ID_LEN, STATUS_LIST_KEY};
 
 use super::{dht_key, Server};
 
@@ -30,20 +29,15 @@ pub struct SetReport {
     /// responding. Those are not replicas: they do not count in `expected_replicas`
     /// and do not prevent a `Complete` outcome.
     pub unavailable_nodes: usize,
-    /// Replicas that answered `Conflict`: they hold, or were shown, another
-    /// record at the place of version 0.
+    /// Replicas that answered `Conflict`: they hold another record at the
+    /// same position.
     pub conflict_rejections: usize,
     pub invalid_rejections: usize,
-    /// Replicas that answered `Stale`: they hold a later version of the DID.
-    /// Apart from `conflict_rejections`, where another record competes with
-    /// it.
+    /// Replicas that answered `Stale`: they hold, or verified, a higher
+    /// position.
     pub stale_rejections: usize,
-    /// Empty replicas that refused because nodes near the key claim a newer
-    /// version, which they do not prove (ADR 0005).
-    pub newer_claimed: usize,
-    /// Replicas that refused (`Conflict`, `Stale`, `NewerClaimed`) without
-    /// showing a record that version 0 proves to be another version 0 or its
-    /// successor (open point 27): they count as replicas that did not store.
+    /// Replicas that refused without showing a record that proves it: they
+    /// count as replicas that did not store.
     pub unproven_refusals: usize,
 }
 
@@ -60,56 +54,28 @@ impl SetReport {
             Some(StoreStatus::Conflict) => self.conflict_rejections += 1,
             Some(StoreStatus::InvalidRecord) => self.invalid_rejections += 1,
             Some(StoreStatus::Stale) => self.stale_rejections += 1,
-            Some(StoreStatus::NewerClaimed) => self.newer_claimed += 1,
-            // A replica answers it only to a version N ≥ 2, which `set` never
-            // sends.
-            Some(StoreStatus::MissingPrevious { .. }) => self.conflict_rejections += 1,
             None => self.unavailable_nodes += 1,
         }
     }
 }
 
-/// A refusal of version 0 by a replica, which counts only once shown.
+/// A refusal that counts only once the replica shows why.
 fn is_refusal(status: Option<StoreStatus>) -> bool {
-    matches!(
-        status,
-        Some(
-            StoreStatus::Conflict
-                | StoreStatus::Stale
-                | StoreStatus::NewerClaimed
-                | StoreStatus::MissingPrevious { .. }
-        )
-    )
-}
-
-/// What the replicas that refused version 0 showed (open point 27).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Proven {
-    /// Nothing: their refusals weigh only as replicas that did not store.
-    Nothing,
-    /// Another version 0 of the DID with a valid signature: it was signed
-    /// twice.
-    OtherVersionZero,
-    /// The successor of version 0, signed by the key version 0 commits to:
-    /// the DID has moved on.
-    Successor,
+    matches!(status, Some(StoreStatus::Conflict | StoreStatus::Stale))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetRejection {
+    /// A replica showed another valid record at the same position.
     ExistingRecord,
     InvalidRecord,
     ReplicaConflict,
     CapacityExceeded,
     Unavailable,
     NoResponsibleNodes,
-    /// A replica showed the version after version 0, or at least
-    /// `store_quorum` of the replicas claim a later version: publish it with
-    /// `update` (ADR 0005).
+    /// A replica showed a valid record at a higher position: the record is
+    /// superseded.
     NewerVersion,
-    /// The record is a version N ≥ 1: `set` creates a DID, `update` publishes
-    /// its later versions (ADR 0005).
-    UseUpdate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,24 +115,23 @@ pub(super) fn select_responsible_nodes(
 }
 
 /// The outcome of a publication from what the replicas answered and what
-/// those that refused showed. A refusal shown decides; the others weigh as
-/// replicas that did not store, and claims of a later version weigh only by
-/// the quorum's word, as in R2 (open point 27).
-fn classify_set_report(report: SetReport, proven: Proven) -> SetOutcome {
+/// those that refused showed. A refusal shown decides; the others weigh only
+/// as replicas that did not store.
+fn classify_set_report(report: SetReport, proven: Proof) -> SetOutcome {
     match proven {
-        Proven::OtherVersionZero => {
+        Proof::Conflict(_) => {
             return SetOutcome::Rejected {
                 reason: SetRejection::ExistingRecord,
                 report,
             };
         }
-        Proven::Successor => {
+        Proof::Superseded => {
             return SetOutcome::Rejected {
                 reason: SetRejection::NewerVersion,
                 report,
             };
         }
-        Proven::Nothing => {}
+        Proof::Nothing => {}
     }
     if report.expected_replicas == 0 {
         return SetOutcome::Rejected {
@@ -174,14 +139,6 @@ fn classify_set_report(report: SetReport, proven: Proven) -> SetOutcome {
             report,
         };
     }
-    let newer = report.stale_rejections + report.newer_claimed;
-    if newer > 0 && newer >= store_quorum(report.expected_replicas) {
-        return SetOutcome::Rejected {
-            reason: SetRejection::NewerVersion,
-            report,
-        };
-    }
-
     let acknowledged = report.acknowledged_replicas();
     if acknowledged == report.expected_replicas {
         SetOutcome::Complete(report)
@@ -203,15 +160,13 @@ fn classify_set_report(report: SetReport, proven: Proven) -> SetOutcome {
 
 impl Server {
     /// What `record`, a copy of the DID `key` held by a replica, proves
-    /// against `value`, the version 0 being published: only what that version
-    /// 0 shows it to be, with a valid signature (open point 27).
-    async fn prove(&self, key: &str, dkey: &[u8; ID_LEN], value: &[u8], record: &[u8]) -> Proven {
+    /// against `value`, the record being published: only what a replica
+    /// holding it would decide, and only with a valid signature.
+    async fn prove(&self, key: &str, dkey: &[u8; ID_LEN], value: &[u8], record: &[u8]) -> Proof {
         match shown_against(dkey, value, record) {
-            Shown::OtherVersionZero if self.verify_value(key, record).await => {
-                Proven::OtherVersionZero
-            }
-            Shown::Successor if self.verify_value(key, record).await => Proven::Successor,
-            _ => Proven::Nothing,
+            Proof::Nothing => Proof::Nothing,
+            proof if self.verify_value(key, record).await => proof,
+            _ => Proof::Nothing,
         }
     }
 
@@ -230,13 +185,13 @@ impl Server {
             .await
     }
 
-    /// Publish version 0 of the DID `key` and report the exact replica
-    /// outcome (ADR 0005: later versions go through `update`).
+    /// Publish a record of the DID `key`, at any position, and report the
+    /// exact replica outcome.
     ///
     /// Re-publishing byte-identical data is idempotent and can complete a
-    /// previously degraded publication. Another version 0, signed again, is
-    /// refused once a replica shows it; a later version once a replica shows
-    /// version 1 or the quorum claims one (open point 27).
+    /// previously degraded publication. A replica that holds a lower position
+    /// takes this one directly. The publication is rejected once a replica
+    /// shows a higher position, or another record at this position.
     pub async fn set_detailed(&self, key: &str, value: Vec<u8>) -> SetOutcome {
         let Some(dkey) = dht_key(key) else {
             log::error!("set({}): not a DID", key);
@@ -245,15 +200,6 @@ impl Server {
                 report: SetReport::default(),
             };
         };
-        // `set` creates a DID: a later version is published with `update`
-        // (ADR 0005, open point 16), and nothing is sent.
-        if record_form(&dkey, &value).is_ok_and(|form| form.seq >= 1) {
-            log::error!("set({}): a version after 0 is published with update", key);
-            return SetOutcome::Rejected {
-                reason: SetRejection::UseUpdate,
-                report: SetReport::default(),
-            };
-        }
         if !self.verify_value(key, &value).await {
             log::error!("set({}): invalid record or DID-key binding", key);
             return SetOutcome::Rejected {
@@ -269,32 +215,30 @@ impl Server {
             };
         }
 
-        // This node's own copy, if any, is a proof like any replica's.
+        // This node's own copy is evidence like any replica's.
         if let Some(held) = self.storage.get(&dkey).filter(|held| *held != value) {
             match self.prove(key, &dkey, &value, &held).await {
-                Proven::OtherVersionZero => {
-                    log::error!("set({}): version 0 was signed twice", key);
+                Proof::Conflict(_) => {
+                    log::error!(
+                        "set({}): this node holds another record at this position",
+                        key
+                    );
                     return SetOutcome::Rejected {
                         reason: SetRejection::ExistingRecord,
                         report: SetReport::default(),
                     };
                 }
-                Proven::Successor => {
-                    log::error!("set({}): this node holds version 1", key);
+                Proof::Superseded => {
+                    log::error!("set({}): this node holds a higher position", key);
                     return SetOutcome::Rejected {
                         reason: SetRejection::NewerVersion,
                         report: SetReport::default(),
                     };
                 }
-                Proven::Nothing => log::warn!(
-                    "set({}): this node holds a record version 0 does not prove",
-                    key
-                ),
+                Proof::Nothing => {}
             }
         }
 
-        // No copy is read from the network first: one served by any node
-        // would decide nothing (open point 27).
         let lookup = self.discover_publish_nodes(dkey).await;
         log::info!("set({}): publishing to responsible replicas", key);
         self.set_digest_detailed(key, dkey, value, lookup).await
@@ -313,13 +257,56 @@ impl Server {
                 SetRejection::ExistingRecord
                 | SetRejection::InvalidRecord
                 | SetRejection::ReplicaConflict
-                | SetRejection::NewerVersion
-                | SetRejection::UseUpdate => None,
+                | SetRejection::NewerVersion => None,
                 SetRejection::CapacityExceeded
                 | SetRejection::Unavailable
                 | SetRejection::NoResponsibleNodes => Some(false),
             },
         }
+    }
+
+    /// Write the owner's verified `value` to this node's storage by the rules
+    /// a replica follows, without the network check: the owner knows its own
+    /// record. The Status List keeps its own rule, first writer wins. `None`
+    /// when the stored record changed twice meanwhile.
+    fn store_locally(&self, dkey: &[u8; ID_LEN], value: &[u8]) -> Option<StoreStatus> {
+        if *dkey == digest(STATUS_LIST_KEY) {
+            let status = self.storage.insert_if_absent(dkey.to_vec(), value.to_vec());
+            return Some(StoreStatus::from(status));
+        }
+        for _ in 0..2 {
+            let stored = self.storage.get(dkey);
+            let status = match decide_locally(dkey, stored.as_deref(), value) {
+                Local::Invalid(_) => StoreStatus::InvalidRecord,
+                Local::AskNetwork(_) => {
+                    match self.storage.insert_if_absent(dkey.to_vec(), value.to_vec()) {
+                        StorageWriteStatus::Conflict => continue,
+                        status => StoreStatus::from(status),
+                    }
+                }
+                Local::AlreadyStored => {
+                    match self.storage.replace_if(dkey, value, value.to_vec()) {
+                        ReplaceStatus::Replaced => StoreStatus::AlreadyStored,
+                        ReplaceStatus::CapacityExceeded => StoreStatus::CapacityExceeded,
+                        ReplaceStatus::Changed => continue,
+                    }
+                }
+                Local::VerifyAndReplace => {
+                    let Some(expected) = stored else {
+                        continue;
+                    };
+                    match self.storage.replace_if(dkey, &expected, value.to_vec()) {
+                        ReplaceStatus::Replaced => StoreStatus::Stored,
+                        ReplaceStatus::CapacityExceeded => StoreStatus::CapacityExceeded,
+                        ReplaceStatus::Changed => continue,
+                    }
+                }
+                Local::Stale { .. } => StoreStatus::Stale,
+                Local::VerifyConflict(_) => StoreStatus::Conflict,
+            };
+            return Some(status);
+        }
+        None
     }
 
     async fn set_digest_detailed(
@@ -362,10 +349,9 @@ impl Server {
         // others' fetched by `FindValue`, all at once.
         let mut shown: Vec<Option<Vec<u8>>> = vec![];
         if store_local {
-            let status =
-                StoreStatus::from(self.storage.insert_if_absent(dkey.to_vec(), value.clone()));
-            report.record_status(Some(status));
-            if is_refusal(Some(status)) {
+            let status = self.store_locally(&dkey, &value);
+            report.record_status(status);
+            if is_refusal(status) {
                 shown.push(self.storage.get(&dkey));
             }
         }
@@ -391,18 +377,19 @@ impl Server {
         });
         shown.extend(futures::future::join_all(fetches).await);
 
-        let mut proven = Proven::Nothing;
+        let mut proven = Proof::Nothing;
         for record in shown {
             let shows = match record {
                 Some(record) => self.prove(key, &dkey, &value, &record).await,
-                None => Proven::Nothing,
+                None => Proof::Nothing,
             };
             match shows {
-                Proven::Nothing => report.unproven_refusals += 1,
-                // Another version 0 is the owner's own error: it decides.
-                Proven::OtherVersionZero => proven = shows,
-                Proven::Successor if proven == Proven::Nothing => proven = shows,
-                Proven::Successor => {}
+                Proof::Nothing => report.unproven_refusals += 1,
+                // Another record at this position is the owner's own doing:
+                // it decides over a higher position.
+                Proof::Conflict(_) => proven = shows,
+                Proof::Superseded if proven == Proof::Nothing => proven = shows,
+                Proof::Superseded => {}
             }
         }
         if report.unproven_refusals > 0 {
@@ -426,6 +413,8 @@ impl Server {
 
 #[cfg(test)]
 mod tests {
+    use crate::auth_handler::rules::Conflict;
+
     use super::*;
 
     fn node_with_last_byte(last: u8) -> Node {
@@ -482,7 +471,7 @@ mod tests {
             ..SetReport::default()
         };
         assert!(matches!(
-            classify_set_report(complete, Proven::Nothing),
+            classify_set_report(complete, Proof::Nothing),
             SetOutcome::Complete(_)
         ));
 
@@ -493,7 +482,7 @@ mod tests {
             ..SetReport::default()
         };
         assert!(matches!(
-            classify_set_report(degraded, Proven::Nothing),
+            classify_set_report(degraded, Proof::Nothing),
             SetOutcome::Degraded(_)
         ));
 
@@ -503,14 +492,13 @@ mod tests {
             ..SetReport::default()
         };
         assert_eq!(
-            reason(classify_set_report(rejected, Proven::Nothing)),
+            reason(classify_set_report(rejected, Proof::Nothing)),
             Some(SetRejection::CapacityExceeded)
         );
     }
 
-    /// A refusal decides only once shown (open point 27): unshown, a replica
-    /// that refused or called the record invalid is one that did not store,
-    /// and claims of a later version weigh by the quorum's word.
+    /// A refusal decides only once shown: unshown, a replica that refused or
+    /// called the record invalid is one that did not store, however many.
     #[test]
     fn a_refusal_decides_only_once_shown() {
         let refused = |field: fn(&mut SetReport)| {
@@ -526,44 +514,38 @@ mod tests {
         for field in [
             (|r: &mut SetReport| r.conflict_rejections = 1) as fn(&mut SetReport),
             |r| r.stale_rejections = 1,
-            |r| r.newer_claimed = 1,
             |r| {
                 r.unproven_refusals = 0;
                 r.invalid_rejections = 1;
             },
         ] {
             assert!(matches!(
-                classify_set_report(refused(field), Proven::Nothing),
+                classify_set_report(refused(field), Proof::Nothing),
                 SetOutcome::Degraded(_)
             ));
+            for kind in [Conflict::RepeatedSigning, Conflict::Duplicity] {
+                assert_eq!(
+                    reason(classify_set_report(refused(field), Proof::Conflict(kind))),
+                    Some(SetRejection::ExistingRecord)
+                );
+            }
             assert_eq!(
-                reason(classify_set_report(
-                    refused(field),
-                    Proven::OtherVersionZero
-                )),
-                Some(SetRejection::ExistingRecord)
-            );
-            assert_eq!(
-                reason(classify_set_report(refused(field), Proven::Successor)),
+                reason(classify_set_report(refused(field), Proof::Superseded)),
                 Some(SetRejection::NewerVersion)
             );
         }
 
-        // 4 replicas: 3 claims of a later version are the quorum, 2 are not.
-        let claims = |stale, newer_claimed| SetReport {
-            expected_replicas: 4,
-            stored_replicas: 4 - stale - newer_claimed,
-            stale_rejections: stale,
-            newer_claimed,
-            unproven_refusals: stale + newer_claimed,
+        // 13 of 19 replicas answer `Stale` and show nothing: the publication
+        // stands on the 6 that stored it.
+        let unshown = SetReport {
+            expected_replicas: 19,
+            stored_replicas: 6,
+            stale_rejections: 13,
+            unproven_refusals: 13,
             ..SetReport::default()
         };
-        assert_eq!(
-            reason(classify_set_report(claims(1, 2), Proven::Nothing)),
-            Some(SetRejection::NewerVersion)
-        );
         assert!(matches!(
-            classify_set_report(claims(1, 1), Proven::Nothing),
+            classify_set_report(unshown, Proof::Nothing),
             SetOutcome::Degraded(_)
         ));
 
@@ -578,7 +560,7 @@ mod tests {
             ..SetReport::default()
         };
         assert_eq!(
-            reason(classify_set_report(nothing_stored, Proven::Nothing)),
+            reason(classify_set_report(nothing_stored, Proof::Nothing)),
             Some(SetRejection::ReplicaConflict)
         );
         let invalid = SetReport {
@@ -587,7 +569,7 @@ mod tests {
             ..SetReport::default()
         };
         assert_eq!(
-            reason(classify_set_report(invalid, Proven::Nothing)),
+            reason(classify_set_report(invalid, Proof::Nothing)),
             Some(SetRejection::InvalidRecord)
         );
     }

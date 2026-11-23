@@ -31,9 +31,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use auth_kademlia_rs::auth_handler::did::{key_of_did, DID_PREFIX};
+use auth_kademlia_rs::auth_handler::owner::OwnerTree;
+use auth_kademlia_rs::auth_handler::tree::Genesis;
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::crawling::NodeSpiderCrawl;
-use auth_kademlia_rs::crypto::mldsa::MlDsa65KeyPair;
 use auth_kademlia_rs::network::{Server, SetOutcome};
 use auth_kademlia_rs::protocol::Lie;
 use auth_kademlia_rs::storage::IStorage;
@@ -44,7 +45,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, RwLock};
 
 mod did;
-use did::{describe, new_key, signing_key_of, version_after, version_zero};
+use did::{describe, new_did, position, signing_key_of};
 
 const STATS_EVERY: Duration = Duration::from_secs(30);
 const WATCH_PAUSE: Duration = Duration::from_millis(5);
@@ -56,25 +57,16 @@ fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
-/// A version signed and not confirmed yet. It is kept so that a retry sends
-/// exactly the same bytes: another version with the same `seq`, signed by the
-/// same key, is refused by the replicas that took the first (ADR 0005).
-struct Rotation {
-    record: Vec<u8>,
-    /// The key this version commits to: the one that will sign the version
-    /// after it.
-    next_after: MlDsa65KeyPair,
-}
-
 struct Identity {
     did: String,
-    /// Every version published, from version 0 to the current one: the owner
-    /// keeps its chain to replay it to replicas that miss versions.
+    owner: OwnerTree,
+    genesis: Genesis,
+    /// Every position published, from 0 to the current one.
     chain: Vec<Vec<u8>>,
-    /// The key the current version committed to, which alone may sign the
-    /// next version.
-    next: MlDsa65KeyPair,
-    pending: Option<Rotation>,
+    /// The next position, signed and not confirmed yet. It is kept so that a
+    /// retry sends exactly the same bytes: the same position signed again is
+    /// another record, which the replicas that took the first refuse.
+    pending: Option<Vec<u8>>,
 }
 
 impl Identity {
@@ -161,20 +153,20 @@ async fn info(node: &Node) -> Value {
         "did": identity.as_ref().map(|id| id.did.clone()),
         "seq": identity.as_ref().map(Identity::seq),
         "signing_key": identity.as_ref().map(|id| signing_key_of(id.current())),
-        "pending_rotation_to": identity.as_ref().and_then(|id| {
-            id.pending.as_ref().map(|rotation| signing_key_of(&rotation.record))
-        }),
+        "pending_rotation_to": identity
+            .as_ref()
+            .and_then(|id| id.pending.as_deref().map(signing_key_of)),
     })
 }
 
-/// A new DID: version 0, signed by a new key and committing to the next one.
+/// A new DID: a fresh tree of rotation keys, and position 0.
 fn fresh_identity() -> Identity {
-    let (signing, next) = (new_key(), new_key());
-    let (did, record) = version_zero(&signing, &next);
+    let (owner, genesis, did, record) = new_did();
     Identity {
         did,
+        owner,
+        genesis,
         chain: vec![record],
-        next,
         pending: None,
     }
 }
@@ -189,18 +181,18 @@ async fn new_identity(node: &Node) -> Value {
     json!({ "did": did })
 }
 
-/// Publish version 0 of this node's DID Document, creating the DID on first
+/// Publish position 0 of this node's DID Document, creating the DID on first
 /// use. Publishing again sends the same record, so it is a retry; later
-/// versions go through `update`.
+/// positions go through `update`.
 async fn publish(node: &Node) -> Value {
     let mut identity = node.identity.lock().await;
     let created = identity.is_none();
     let id = identity.get_or_insert_with(fresh_identity);
-    let version_zero = id.chain[0].clone();
+    let position_zero = id.chain[0].clone();
     let server = node.server.read().await;
     let started_unix_ms = unix_ms();
     let started = Instant::now();
-    let outcome = server.set_detailed(&id.did, version_zero.clone()).await;
+    let outcome = server.set_detailed(&id.did, position_zero.clone()).await;
     let ms = elapsed_ms(started);
     let (status, report) = match &outcome {
         SetOutcome::Complete(report) => ("complete".to_string(), report),
@@ -209,16 +201,15 @@ async fn publish(node: &Node) -> Value {
     };
     log::info!(
         "publish {} key {}: {} - stored {}, already present {}, unavailable {}, \
-         conflicts {}, stale {}, newer claimed {}, unproven {}, full {} ({} ms)",
+         conflicts {}, stale {}, unproven {}, full {} ({} ms)",
         id.did,
-        signing_key_of(&version_zero),
+        signing_key_of(&position_zero),
         status,
         report.stored_replicas,
         report.already_present,
         report.unavailable_nodes,
         report.conflict_rejections,
         report.stale_rejections,
-        report.newer_claimed,
         report.unproven_refusals,
         report.capacity_rejections,
         ms
@@ -233,23 +224,29 @@ async fn publish(node: &Node) -> Value {
         "unavailable": report.unavailable_nodes,
         "conflicts": report.conflict_rejections,
         "stale": report.stale_rejections,
-        "newer_claimed": report.newer_claimed,
         "unproven_refusals": report.unproven_refusals,
         "capacity_rejections": report.capacity_rejections,
         "invalid": report.invalid_rejections,
         "ms": ms,
         "started_unix_ms": started_unix_ms,
-        "record": describe(&version_zero),
+        "record": describe(&position_zero),
         "current_seq": id.seq(),
         "pending_rotation": id.pending.is_some(),
     })
 }
 
-/// Rotate the key (ADR 0005): the next version, signed by the key the current
-/// one committed to and committing to a new one, published with the versions
-/// before it, which `update` replays to replicas that miss some. A rotation
-/// that was not confirmed is retried as it is, until it is confirmed or
-/// discarded.
+/// The outcome of a publication, as the control socket reports it.
+fn outcome_name(outcome: &SetOutcome) -> String {
+    match outcome {
+        SetOutcome::Complete(_) => "complete".to_string(),
+        SetOutcome::Degraded(_) => "degraded".to_string(),
+        SetOutcome::Rejected { reason, .. } => format!("rejected: {reason:?}"),
+    }
+}
+
+/// Rotate the key: publish the next position, signed by its own key. A
+/// rotation that no replica took is retried as it is, until a replica takes
+/// it or it is discarded.
 async fn update(node: &Node) -> Value {
     let mut identity = node.identity.lock().await;
     let Some(id) = identity.as_mut() else {
@@ -257,33 +254,32 @@ async fn update(node: &Node) -> Value {
     };
     let retry = id.pending.is_some();
     let seq = id.chain.len() as u64;
-    let rotation = id.pending.get_or_insert_with(|| {
-        let next_after = new_key();
-        let current = id.chain.last().map_or(&[][..], Vec::as_slice);
-        let record = version_after(&id.did, seq, current, &id.next, &next_after);
-        Rotation { record, next_after }
-    });
-    let record = rotation.record.clone();
+    let record = id
+        .pending
+        .get_or_insert_with(|| {
+            position(
+                &id.owner,
+                &id.genesis,
+                seq,
+                id.chain.last().map_or(&[][..], Vec::as_slice),
+            )
+        })
+        .clone();
     let from = signing_key_of(id.current());
     let to = signing_key_of(&record);
 
     let server = node.server.read().await;
     let started = Instant::now();
-    let result = server.update(&id.did, record, id.chain.clone()).await;
+    let outcome = server.set_detailed(&id.did, record).await;
     let ms = elapsed_ms(started);
-    let outcome = match result {
-        Some(true) => "confirmed",
-        Some(false) => "not confirmed",
-        None => "refused",
-    };
-    if result == Some(true) {
-        if let Some(rotation) = id.pending.take() {
-            id.chain.push(rotation.record);
-            id.next = rotation.next_after;
+    if matches!(outcome, SetOutcome::Complete(_) | SetOutcome::Degraded(_)) {
+        if let Some(record) = id.pending.take() {
+            id.chain.push(record);
         }
     }
+    let outcome = outcome_name(&outcome);
     log::info!(
-        "update {} to version {} key {} -> {}{}: {} ({} ms)",
+        "update {} to position {} key {} -> {}{}: {} ({} ms)",
         id.did,
         seq,
         from,
@@ -309,39 +305,20 @@ async fn update(node: &Node) -> Value {
     })
 }
 
-/// Send the current version again, the saved bytes, as the owner does at
-/// least once every 24 hours so that copies lost to churn come back (ADR
-/// 0005, section 5): version 0 by `set`, a later version by `update` with the
-/// versions before it. Nothing new is signed.
+/// Send the current position again, the saved bytes, as the owner does at
+/// least once every 24 hours so that copies lost to churn come back. Nothing
+/// new is signed.
 async fn republish(node: &Node) -> Value {
     let identity = node.identity.lock().await;
     let Some(id) = identity.as_ref() else {
         return json!({ "error": "this node has no DID yet: run publish first" });
     };
-    let Some((current, earlier)) = id.chain.split_last() else {
-        return json!({ "error": "this node has no version to send" });
-    };
     let server = node.server.read().await;
     let started = Instant::now();
-    let outcome = if earlier.is_empty() {
-        match server.set_detailed(&id.did, current.clone()).await {
-            SetOutcome::Complete(_) => "complete".to_string(),
-            SetOutcome::Degraded(_) => "degraded".to_string(),
-            SetOutcome::Rejected { reason, .. } => format!("rejected: {reason:?}"),
-        }
-    } else {
-        match server
-            .update(&id.did, current.clone(), earlier.to_vec())
-            .await
-        {
-            Some(true) => "confirmed".to_string(),
-            Some(false) => "not confirmed".to_string(),
-            None => "refused".to_string(),
-        }
-    };
+    let outcome = outcome_name(&server.set_detailed(&id.did, id.current().to_vec()).await);
     let ms = elapsed_ms(started);
     log::info!(
-        "republish {} version {}: {} ({} ms)",
+        "republish {} position {}: {} ({} ms)",
         id.did,
         id.seq(),
         outcome,
@@ -410,24 +387,23 @@ async fn push(node: &Node, target: &str) -> Value {
 }
 
 /// Testbed only: make this node answer every `FindHash` with a made-up
-/// version far ahead (`on`), another version 0 it cannot show (`v0`), or
-/// honestly again (`off`) (ADR 0005, Validation, open point 27). A node that
-/// restarts answers honestly again.
+/// position far ahead (`on`), position 0 under a made-up hash (`v0`), or
+/// honestly again (`off`). A node that restarts answers honestly again.
 async fn lie(node: &Node, lie: Lie) -> Value {
     let listening = node.server.read().await.set_lying(lie);
     log::info!("FindHash answers: {lie:?}");
     json!({ "lying": lie != Lie::Honest, "lie": format!("{lie:?}"), "listening": listening })
 }
 
-/// Drop the pending rotation. The next `update` signs another version with
-/// the same `seq` and the same key: a replica that took the dropped one sees
-/// two versions signed by one key and refuses the new one (ADR 0005).
+/// Drop the pending rotation. The next `update` signs the same position
+/// again: a replica that took the dropped record sees two records at one
+/// position and keeps the first.
 async fn discard(node: &Node) -> Value {
     let mut identity = node.identity.lock().await;
     let dropped = identity
         .as_mut()
         .and_then(|id| id.pending.take())
-        .map(|rotation| signing_key_of(&rotation.record));
+        .map(|record| signing_key_of(&record));
     if let Some(key) = &dropped {
         log::info!("discarded the pending rotation to key {key}");
     }

@@ -5,11 +5,11 @@ testbed network and sends forged records for the DIDs it sees.
 Built on testbed.py: start a network with it first.
 
     testbed/testbed.py up --nodes 10 --k 3 --profile wan-eu
-    testbed/attack.py start                 # race: one forged STORE per UPDATE
+    testbed/attack.py start                 # race: one forged STORE per rotation
     testbed/attack.py race --rounds 20      # crash a replica, rotate, count who fills it
-    testbed/attack.py start --mode burst    # many forged STOREs per UPDATE at once
+    testbed/attack.py start --mode burst    # many forged STOREs per rotation at once
     testbed/attack.py start --mode persist  # forged STOREs to every node, all the time
-    testbed/attack.py start --mode successor  # a forged version 1 after each version 0
+    testbed/attack.py start --mode successor  # a forged position 1 after each position 0
     testbed/attack.py start --mode spoof    # spoofed FindHash answers under guessed ids
     testbed/attack.py restart --rounds 20   # crash a replica, no update, see what it holds
     testbed/attack.py logs

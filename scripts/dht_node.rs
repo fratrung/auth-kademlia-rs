@@ -6,7 +6,7 @@
 /// IS_SEED         if set, skip bootstrap and act as permanent seed
 /// BOOTSTRAP_ADDR  <ip>:<port> of the seed to bootstrap from
 /// ROLE            "publisher" (default) | "retriever"
-///                   publisher  → generate its keys, publish version 0 of a new
+///                   publisher  → generate its keys, publish position 0 of a new
 ///                                DID, write the DID to /shared/did when that
 ///                                directory exists, then keep running
 ///                   retriever  → read the DID from /shared/did (or RETRIEVE_KEY),
@@ -18,18 +18,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use auth_kademlia_rs::auth_handler::did::{canonical_bytes, derive_did, PLACEHOLDER};
+use auth_kademlia_rs::auth_handler::did::PLACEHOLDER;
+use auth_kademlia_rs::auth_handler::owner::OwnerTree;
 use auth_kademlia_rs::auth_handler::DIDSignatureVerifierHandler;
 use auth_kademlia_rs::network::Server;
 use auth_kademlia_rs::storage::{ForgetfulStorage, DEFAULT_MAX_STORAGE_BYTES, DEFAULT_TTL};
 
-use auth_kademlia_rs::crypto::mldsa::{self as mldsa, MlDsa65KeyPair};
-use auth_kademlia_rs::utils::digest_bytes;
+use auth_kademlia_rs::crypto::mldsa;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
 
 /// Where the publisher writes the DID it published, and the retriever reads
-/// it: a volume the two containers share (ADR 0005).
+/// it: a volume the two containers share.
 const DID_FILE: &str = "/shared/did";
 
 /// How long the retriever waits for the DID file.
@@ -39,27 +39,9 @@ fn base64url_encode(pk: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(pk)
 }
 
-/// Wire format: [algorithm: 12 B][ML-DSA-65 signature][DID Document JSON]
-fn build_signed_record(doc: &Value, secret_key: &MlDsa65KeyPair, algorithm: &str) -> Vec<u8> {
-    let doc_bytes = canonical_bytes(doc).expect("a DID Document in canonical form");
-
-    let mut alg_field = [0u8; 12];
-    let copy_len = algorithm.len().min(12);
-    alg_field[..copy_len].copy_from_slice(&algorithm.as_bytes()[..copy_len]);
-
-    let sig = secret_key.sign(&doc_bytes).expect("ML-DSA-65 signing");
-    let sig_bytes = sig.as_slice();
-
-    let mut record = Vec::with_capacity(12 + sig_bytes.len() + doc_bytes.len());
-    record.extend_from_slice(&alg_field);
-    record.extend_from_slice(sig_bytes);
-    record.extend_from_slice(&doc_bytes);
-    record
-}
-
-/// The draft of version 0 of a new DID (ADR 0005): its own DID written as
-/// the placeholder, no `id`, and the hash of the next public key.
-fn version_zero_draft(signing_pk: &[u8], next_pk: &[u8]) -> Value {
+/// The draft of position 0 of a new DID: its own DID written as the
+/// placeholder, no `id`.
+fn position_zero_draft(signing_pk: &[u8]) -> Value {
     let did = PLACEHOLDER;
     json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
@@ -79,7 +61,6 @@ fn version_zero_draft(signing_pk: &[u8], next_pk: &[u8]) -> Value {
             "serviceEndpoint": "http://example.com/device"
         }],
         "seq": 0,
-        "nextKeyHash": base64url_encode(&digest_bytes(next_pk)),
     })
 }
 
@@ -190,18 +171,17 @@ async fn bootstrap_with_retries(server: &Server, ip: &str, port: u16) -> bool {
 }
 
 async fn run_publisher(server: &Server) {
-    // The current key signs version 0; the next one only commits to the
-    // version after it, which this demo does not publish.
-    let dsk = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
-    let next = MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation");
-    log::debug!("Publisher: keypairs generated");
+    // A tree of 64 rotation keys; this demo publishes position 0 only.
+    let owner = OwnerTree::generate().expect("a rotation-key tree");
+    log::debug!("Publisher: rotation-key tree generated");
 
-    let draft = version_zero_draft(dsk.public_key(), next.public_key());
-    let (did, doc) = derive_did(&draft).expect("version 0 gives its DID");
+    let draft = position_zero_draft(owner.public_key(0).expect("position 0"));
+    let genesis = owner.genesis(&draft).expect("a draft body");
+    let did = genesis.did();
     let dht_key = did.clone();
     log::info!("Publisher: DID  = {}", did);
 
-    let record = build_signed_record(&doc, &dsk, "ML-DSA-65");
+    let record = owner.record(&genesis, &draft, 0).expect("position 0");
 
     log::info!(
         "Publisher: signed record size = {} B ({} fragments over UDP)",

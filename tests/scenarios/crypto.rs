@@ -1,16 +1,16 @@
 //! Scenario: cryptographic security invariants end-to-end.
 //!
-//! These tests exercise the full DHT path (set/update) to verify that the
+//! These tests exercise the full DHT path (set) to verify that the
 //! security properties documented in AGENTS.md hold at the protocol level,
 //! not just at the handler unit-test level.
 //!
 //! Covered invariants:
 //!   1. Tampered payload → rejected at set() (wrong sig over modified bytes)
 //!   2. Algorithm field injection → rejected (Ed25519 field, ML-DSA-65 sig)
-//!   3. Downgrade after rotations → rejected: a replica holding version 2
-//!      refuses version 1, sent again by anyone, as stale (ADR 0005)
-//!   4. Pre-rotation: only the key the previous version committed to signs
-//!      the next one; a key revealed by an earlier version cannot.
+//!   3. Downgrade after rotations → rejected: a replica holding position 2
+//!      refuses position 1, sent again by anyone, as stale
+//!   4. Only the key the tree commits to at a position signs it; a key
+//!      revealed at an earlier position cannot.
 //!
 //! Ports: 15860–15865, 15886–15887.
 
@@ -48,10 +48,8 @@ fn tampered_payload_rejected() {
 }
 
 /// A record whose algorithm field has been replaced with a different algorithm
-/// string must be rejected. A node accepts only ML-DSA-65 records (ADR 0003),
-/// so the record is refused before any verifier is chosen; were Ed25519
-/// accepted, its 64-byte signature length would still cut the record in the
-/// wrong place.
+/// string must be rejected. A node accepts only ML-DSA-65 records, so the
+/// record is refused before any verifier is chosen.
 ///
 /// Port: 15861.
 #[test]
@@ -74,9 +72,9 @@ fn algorithm_field_injection_rejected() {
     });
 }
 
-/// After two rotations, version 1 sent again, through `update` or as a STORE,
-/// is refused as stale by every replica holding version 2: an older `seq`
-/// never replaces a newer one, whoever holds the keys it was signed with.
+/// After two rotations, position 1 sent again is refused as stale by every
+/// replica holding position 2: a lower position never replaces a higher one,
+/// whoever holds the keys it was signed with.
 ///
 /// Ports: 15862–15863, 15886.
 #[test]
@@ -98,34 +96,29 @@ fn downgrade_attack_after_rotation_rejected() {
         assert_eq!(
             node_a.set(&key, chain.version(0)).await,
             Some(true),
-            "v0 store must succeed"
+            "position 0 must be stored"
         );
         for seq in 1..=2 {
             assert_eq!(
-                node_a
-                    .update(&key, chain.version(seq), chain.earlier(seq))
-                    .await,
+                node_a.set(&key, chain.version(seq)).await,
                 Some(true),
-                "legitimate rotation to version {seq} must succeed"
+                "legitimate rotation to position {seq} must succeed"
             );
         }
 
-        let downgrade = node_b
-            .update(&key, chain.version(1), chain.earlier(1))
-            .await;
+        let downgrade = node_b.set(&key, chain.version(1)).await;
         assert_ne!(downgrade, Some(true), "a downgrade must not be confirmed");
         assert_eq!(
             node_a.get(&key).await,
             Some(chain.version(2)),
-            "version 2 must remain after the downgrade attempt"
+            "position 2 must remain after the downgrade attempt"
         );
     });
 }
 
-/// A key revealed by an earlier version cannot sign the next version: only
-/// the key the current version committed to can (pre-rotation). The owner's
-/// node refuses the forged version before sending it; the genuine one is
-/// accepted.
+/// A key revealed at an earlier position cannot sign a later one: only the
+/// key the tree commits to at that position can. The owner's node refuses
+/// the forged record before sending it; the genuine one is accepted.
 ///
 /// Ports: 15864–15865, 15887.
 #[test]
@@ -147,45 +140,33 @@ fn revoked_key_cannot_authorise_further_rotation() {
         assert_eq!(
             node_a.set(&key, chain.version(0)).await,
             Some(true),
-            "v0 store must succeed"
+            "position 0 must be stored"
         );
-        assert_eq!(
-            node_a
-                .update(&key, chain.version(1), chain.earlier(1))
-                .await,
-            Some(true),
-            "v0→v1 rotation must succeed"
-        );
-        assert_eq!(
-            node_a
-                .update(&key, chain.version(2), chain.earlier(2))
-                .await,
-            Some(true),
-            "v1→v2 rotation must succeed"
-        );
+        for seq in 1..=2 {
+            assert_eq!(
+                node_a.set(&key, chain.version(seq)).await,
+                Some(true),
+                "rotation to position {seq} must succeed"
+            );
+        }
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-        // Version 3 signed with the key version 1 revealed.
-        let forged = chain.forge(3, &chain.version(2), &chain.keys[1]);
+        // Position 3 signed with the key position 1 revealed.
+        let forged = chain.forge(3, &chain.version(2), &chain.key_pair(1));
         assert!(
-            node_a
-                .update(&key, forged, chain.earlier(3))
-                .await
-                .is_none(),
-            "a key revealed by version 1 must not sign version 3"
+            node_a.set(&key, forged).await.is_none(),
+            "the key of position 1 must not sign position 3"
         );
 
         assert_eq!(
-            node_a
-                .update(&key, chain.version(3), chain.earlier(3))
-                .await,
+            node_a.set(&key, chain.version(3)).await,
             Some(true),
-            "the committed key must sign version 3"
+            "the key of position 3 must sign position 3"
         );
         assert_eq!(
             node_b.get(&key).await,
             Some(chain.version(3)),
-            "v3 must be the current record"
+            "position 3 must be the current record"
         );
 
         node_a.stop().await;

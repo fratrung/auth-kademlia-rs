@@ -1,4 +1,4 @@
-//! Rotation keys committed in a Merkle tree (ADR 0006).
+//! Rotation keys committed in a Merkle tree.
 //!
 //! The DID is the SHA-256 of a canonical genesis that commits the initial
 //! body and the root of a 64-leaf tree. Leaf `i` commits the ML-DSA-65 key
@@ -22,29 +22,29 @@ use super::RECORD_ALGORITHM;
 /// A SHA-256 digest: a leaf, a node, a root or a key.
 pub type Hash = [u8; ID_LEN];
 
-/// Height of the first tree (point 8).
+/// Height of the first tree.
 pub const HEIGHT: usize = 6;
 
 /// Positions of the tree, 64: the documents use 0 to 62.
 pub const POSITIONS: usize = 1 << HEIGHT;
 
-/// The reserved position, refused even with a valid path (point 8).
+/// The reserved position, refused even with a valid path.
 pub const RESERVED: u64 = POSITIONS as u64 - 1;
 
-/// Bytes of an activation code (Decision 2).
+/// Bytes of an activation code.
 pub const CODE_LEN: usize = 32;
 
 /// Bytes of a membership path: one 32-byte sibling per level, 192.
 pub const PATH_LEN: usize = HEIGHT * ID_LEN;
 
-/// The format version committed in the genesis (point 12).
+/// The format version committed in the genesis.
 pub const FORMAT_VERSION: u64 = 1;
 
 /// The hash algorithm committed in the genesis.
 pub const HASH_ALG: &str = "SHA-256";
 
 /// The member of a signed document that holds the genesis, the code and
-/// the path (point 12).
+/// the path.
 pub const PROOF: &str = "treeProof";
 
 /// Domain separation of leaves and nodes: in Certificate Transparency "this
@@ -67,7 +67,7 @@ fn decode_canonical(text: &str) -> Option<Vec<u8>> {
 }
 
 /// A leaf: SHA-256(0x00 ‖ index as 4 bytes big-endian ‖ raw public key ‖
-/// code) (Decision 2). The index ties the leaf to its position, written as
+/// code). The index ties the leaf to its position, written as
 /// LMS writes its leaf number `q` (RFC 8554, section 5.4).
 pub fn leaf_hash(index: u32, public_key: &[u8], code: &[u8; CODE_LEN]) -> Hash {
     let mut input = Vec::with_capacity(1 + 4 + public_key.len() + CODE_LEN);
@@ -78,7 +78,7 @@ pub fn leaf_hash(index: u32, public_key: &[u8], code: &[u8; CODE_LEN]) -> Hash {
     digest_bytes(&input)
 }
 
-/// An internal node: SHA-256(0x01 ‖ left ‖ right) (Decision 2).
+/// An internal node: SHA-256(0x01 ‖ left ‖ right).
 pub fn node_hash(left: &Hash, right: &Hash) -> Hash {
     let mut input = [0u8; 1 + 2 * ID_LEN];
     input[0] = NODE_PREFIX;
@@ -90,7 +90,7 @@ pub fn node_hash(left: &Hash, right: &Hash) -> Hash {
 /// The root reached from `leaf` at `index` through `path`: the leaf's
 /// sibling first, the sibling just below the root last, as LMS orders its
 /// path (RFC 8554, section 5.4). Bit `i` of `index`, from the least
-/// significant, is 1 when the node at level `i` is a right child (point 12).
+/// significant, is 1 when the node at level `i` is a right child.
 pub fn root_from_path(leaf: Hash, index: u32, path: &[u8; PATH_LEN]) -> Hash {
     let mut node = leaf;
     for (level, chunk) in path.chunks_exact(ID_LEN).enumerate() {
@@ -105,7 +105,7 @@ pub fn root_from_path(leaf: Hash, index: u32, path: &[u8; PATH_LEN]) -> Hash {
     node
 }
 
-/// The whole tree, as the owner builds it at provisioning (point 8): every
+/// The whole tree, as the owner builds it at provisioning: every
 /// level, from the 64 leaves up to the root.
 #[derive(Debug, Clone)]
 pub struct Tree {
@@ -151,12 +151,12 @@ impl Tree {
     }
 }
 
-/// The genesis of a DID (Decision 1, point 12): the hash of the initial
+/// The genesis of a DID: the hash of the initial
 /// body and the root, with the algorithms, the height and the format
 /// version, which this node accepts with one value each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Genesis {
-    /// SHA-256 of the hashed body of document 0 (point 7).
+    /// SHA-256 of the hashed body of document 0.
     pub initial_body_hash: Hash,
     /// The root of the tree.
     pub root: Hash,
@@ -176,7 +176,7 @@ impl Genesis {
     }
 
     /// The canonical bytes of the genesis: sorted keys, no whitespace, as
-    /// `serde_json` writes `to_json` (ADR 0005, open point 3).
+    /// `serde_json` writes `to_json`.
     pub fn canonical(&self) -> Vec<u8> {
         format!(
             r#"{{"hashAlg":"{HASH_ALG}","height":{HEIGHT},"initialBodyHash":"{}","root":"{}","sigAlg":"{RECORD_ALGORITHM}","version":{FORMAT_VERSION}}}"#,
@@ -198,7 +198,7 @@ impl Genesis {
 
     /// The genesis a document carries. It holds exactly the six members,
     /// with SHA-256, ML-DSA-65, height 6 and version 1; any other value is
-    /// refused (point 12).
+    /// refused.
     pub fn from_json(value: &Value) -> Result<Self, FormError> {
         let invalid = FormError::Field("genesis");
         let map = value.as_object().ok_or(invalid.clone())?;
@@ -224,7 +224,7 @@ impl Genesis {
 }
 
 /// The SHA-256 of a draft body, as the owner computes `initialBodyHash`
-/// before the DID exists (point 7, step 1): no `id`, no `treeProof`, the
+/// before the DID exists: no `id`, no `treeProof`, the
 /// placeholder in place of the DID.
 pub fn draft_body_hash(draft: &Value) -> Result<Hash, FormError> {
     if draft.get("id").is_some() {
@@ -236,10 +236,9 @@ pub fn draft_body_hash(draft: &Value) -> Result<Hash, FormError> {
     Ok(digest_bytes(&canonical_bytes(draft)?))
 }
 
-/// The SHA-256 of the hashed body of a received document 0 (point 7, step
-/// 3): its `id` must be a canonical DID, it may not hold the placeholder,
-/// and `id` and `treeProof` are removed with the DID written back as the
-/// placeholder (ADR 0005, section 1).
+/// The SHA-256 of the hashed body of a received document 0: its `id` must
+/// be a canonical DID, it may not hold the placeholder, and `id` and
+/// `treeProof` are removed with the DID written back as the placeholder.
 pub fn initial_body_hash(doc: &Value) -> Result<Hash, FormError> {
     let (did, _) = id_of(doc)?;
     if holds_placeholder(doc) {
@@ -255,7 +254,7 @@ pub fn initial_body_hash(doc: &Value) -> Result<Hash, FormError> {
 }
 
 /// The document of a position from its draft body, as the custody backend
-/// completes it before signing (point 7, step 2; point 12): the DID in
+/// completes it before signing: the DID in
 /// place of the placeholder, `id`, and `treeProof` with the genesis, the
 /// code and the path.
 pub fn document_at(
@@ -283,27 +282,26 @@ pub fn document_at(
     Ok(doc)
 }
 
-/// What step 1 reads from a record under ADR 0006.
+/// What step 1 reads from a record under a tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeForm {
-    /// The position: the index of the leaf (point 12).
+    /// The position: the index of the leaf.
     pub seq: u64,
     /// `record_hash` of the record the owner names as its previous
-    /// publication; `None` at position 0. Only its form is checked
-    /// (Decision 4).
+    /// publication; `None` at position 0. Only its form is checked.
     pub prev: Option<Hash>,
     /// SHA-256 of the raw public key of the position, as a credential names
-    /// it (point 9).
+    /// it.
     pub key_hash: Hash,
 }
 
-/// Step 1 for a record sent under `key`, without verifying any signature
-/// (Decision 3, point 12): the layout and algorithm, the canonical form, no
-/// placeholder, an `id` whose suffix is `key`, `seq` from 0 to 62, `prev`
-/// absent at 0 and canonical after, a `treeProof` of exactly the genesis,
-/// the code and the path, a genesis that hashes to `key`, the leaf of the
-/// document's key and code at `seq` reaching the root through the path,
-/// and at 0 the initial body hash.
+/// Step 1 for a record sent under `key`, without verifying any signature:
+/// the layout and algorithm, the canonical form, no placeholder, an `id`
+/// whose suffix is `key`, `seq` from 0 to 62, `prev` absent at 0 and
+/// canonical after, a `treeProof` of exactly the genesis, the code and the
+/// path, a genesis that hashes to `key`, the leaf of the document's key and
+/// code at `seq` reaching the root through the path, and at 0 the initial
+/// body hash.
 pub fn tree_form(key: &Hash, record: &[u8]) -> Result<TreeForm, FormError> {
     let doc = parse_canonical(document_of(record)?)?;
     if holds_placeholder(&doc) {
@@ -312,7 +310,7 @@ pub fn tree_form(key: &Hash, record: &[u8]) -> Result<TreeForm, FormError> {
     if id_of(&doc)?.1 != *key {
         return Err(FormError::WrongKey);
     }
-    // 63 is reserved and refused even when its path verifies (point 8).
+    // 63 is reserved and refused even when its path verifies.
     let seq = doc
         .get("seq")
         .and_then(Value::as_u64)
@@ -373,8 +371,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::super::test_chain::{b64, sha256, sign};
-    use super::super::test_tree::{body, leaf, node, TreeOwner};
+    use super::super::test_tree::{b64, body, leaf, node, sha256, sign, TreeOwner};
     use super::super::{DIDSignatureVerifierHandler, SignatureVerifierHandler};
     use super::*;
 
@@ -594,8 +591,8 @@ mod tests {
         assert!(signature_verifies(&v5));
     }
 
-    /// Open point 1, acceptance: the real key and path of 5 with the wrong
-    /// code are refused even though the signature verifies.
+    /// The real key and path of 5 with the wrong code are refused even
+    /// though the signature verifies.
     #[test]
     fn a_wrong_code_is_refused_even_when_the_signature_verifies() {
         let owner = TreeOwner::new(1);
@@ -620,7 +617,7 @@ mod tests {
         assert_eq!(tree_form(&owner.key, &record), Err(FormError::NotInTree));
     }
 
-    /// Point 8: 63 is reserved and refused with a valid path; beyond the tree
+    /// 63 is reserved and refused with a valid path; beyond the tree
     /// there is no position.
     #[test]
     fn the_reserved_position_and_beyond_are_refused() {
@@ -647,7 +644,7 @@ mod tests {
         }
     }
 
-    /// Point 7, acceptance: with the root fixed, another serial number in
+    /// With the root fixed, another serial number in
     /// the initial body gives another DID, and a leaf-0 signature on the
     /// altered body under the original DID fails the digest check. A later
     /// position may change the field under the original DID.
@@ -817,6 +814,44 @@ mod tests {
             tree_form(&owner.key, &sign(&doc, &owner.keys[5])),
             Err(FormError::Field("publicKeyJwk"))
         );
+    }
+
+    /// The suffix of `id` must be the canonical text of the key: another text
+    /// that a lenient decoder reads as the same 32 bytes is refused.
+    #[test]
+    fn an_id_with_a_non_canonical_suffix_is_refused() {
+        let owner = TreeOwner::new(1);
+        let suffix = b64(&owner.key);
+        let last = suffix.chars().last().unwrap();
+        // The last character carries 2 unused bits; flip the lowest one.
+        let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let index = alphabet.find(last).unwrap();
+        let lenient = format!("{}{}", &suffix[..42], &alphabet[index ^ 1..(index ^ 1) + 1]);
+        for id in [
+            format!("did:iiot:{suffix}="),
+            format!("did:iiot:{}", &suffix[..42]),
+            format!("did:iiot:{lenient}"),
+        ] {
+            let mut doc = owner.doc(5, Some(b"4"));
+            doc["id"] = json!(id);
+            assert!(
+                tree_form(&owner.key, &sign(&doc, &owner.keys[5])).is_err(),
+                "{id}"
+            );
+        }
+    }
+
+    /// The node reads the bytes it is sent: whitespace in the document
+    /// refuses it, though its fields are those of a valid record.
+    #[test]
+    fn a_document_sent_with_whitespace_is_refused() {
+        let owner = TreeOwner::new(1);
+        let pretty = serde_json::to_vec_pretty(&owner.doc(5, Some(b"4"))).unwrap();
+        let record = super::super::test_tree::record_of(&pretty, &owner.keys[5]);
+        assert!(matches!(
+            tree_form(&owner.key, &record),
+            Err(FormError::NotCanonical(_))
+        ));
     }
 
     #[test]

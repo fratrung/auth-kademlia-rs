@@ -2,15 +2,15 @@
 //!
 //! This file holds the struct, its constructor, `listen`, `stop` and
 //! `bootstrap`; its other methods are split by operation:
-//! - `publish.rs`: SET, and the report of a publication;
+//! - `publish.rs`: SET of a record at any position, and its report;
 //! - `read.rs`: GET;
-//! - `update.rs`: UPDATE, a key rotation;
+//! - `status_list.rs`: UPDATE of the Status List, signed by the issuer;
 //! - `maintenance.rs`: refresh, republication, recovery, stats and saved state.
 
 mod maintenance;
 mod publish;
 mod read;
-mod update;
+mod status_list;
 
 pub use maintenance::ServerStats;
 pub use publish::{SetOutcome, SetRejection, SetReport};
@@ -42,7 +42,7 @@ pub struct Server {
     sig_cache: Option<Arc<SignatureCache>>,
 }
 
-/// The DHT key of `name`: the decoded suffix of a DID (ADR 0005), or the
+/// The DHT key of `name`: the decoded suffix of a DID, or the
 /// fixed key of the Status List. `None` for any other text.
 pub fn dht_key(name: &str) -> Option<[u8; ID_LEN]> {
     if name == STATUS_LIST_KEY {

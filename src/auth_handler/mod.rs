@@ -11,8 +11,7 @@
 //! ```
 //!
 //! A record must be signed with ML-DSA-65, and its DID Document must hold the
-//! public key as an RFC 9964 JWK whose `alg` is the record's algorithm
-//! (ADR 0003).
+//! public key as an RFC 9964 JWK whose `alg` is the record's algorithm.
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -29,8 +28,6 @@ use crate::utils::{digest, ID_LEN, STATUS_LIST_KEY};
 pub mod did;
 pub mod owner;
 pub mod rules;
-#[cfg(test)]
-pub(crate) mod test_chain;
 #[cfg(test)]
 pub(crate) mod test_tree;
 pub mod tree;
@@ -57,7 +54,7 @@ pub enum AuthHandlerError {
     KeyMismatch(String),
 }
 
-/// The only algorithm a record may be signed with (ADR 0003).
+/// The only algorithm a record may be signed with.
 pub const RECORD_ALGORITHM: &str = ML_DSA_65;
 
 /// Abstract handler for signature operations performed by the DHT.
@@ -159,11 +156,10 @@ fn public_key_from_did_doc(data: &[u8], alg: &str) -> Result<Vec<u8>, AuthHandle
 }
 
 /// Whether `value` has the form of a record of the DID whose key is `key`
-/// (ADR 0005, step 1): its `id` is that DID, with a canonical suffix, its
-/// document is canonical and carries valid `seq`, `prev` and `nextKeyHash`,
-/// and a version 0 hashes to the key. No signature is verified.
+/// (`tree::tree_form`): its key and code are those of its position in the
+/// tree the DID commits to. No signature is verified.
 fn did_document_matches_key(value: &[u8], key: &[u8; ID_LEN]) -> Result<bool, AuthHandlerError> {
-    Ok(did::record_form(key, value).is_ok())
+    Ok(tree::tree_form(key, value).is_ok())
 }
 
 /// Concrete handler that verifies ML-DSA-65-signed DID Document records.
@@ -227,7 +223,7 @@ impl SignatureVerifierHandler for DIDSignatureVerifierHandler {
 }
 
 /// Whether `value` belongs to `key`: its DID Document has the form of a
-/// record of the DID whose key is `key` (`did::record_form`). No signature.
+/// record of the DID whose key is `key` (`tree::tree_form`). No signature.
 /// The Status List is exempt: its key is fixed and its record is signed by
 /// the issuer.
 pub(crate) fn is_bound_to_key(
@@ -314,11 +310,11 @@ pub(crate) async fn verify_issuer_signed(
 mod tests {
     use super::*;
 
-    /// `(key, record)`: version 0 of a new DID, holding one ML-DSA-65 key
+    /// `(key, record)`: position 5 of a DID, holding one ML-DSA-65 key
     /// (RFC 9964), self-signed.
     fn ml_dsa_65_record() -> ([u8; ID_LEN], Vec<u8>) {
-        let chain = test_chain::Chain::new();
-        (chain.key, chain.version(0).to_vec())
+        let owner = test_tree::TreeOwner::new(1);
+        (owner.key, owner.record(5, Some(b"4")))
     }
 
     /// A complete ML-DSA-65 record passes the check a node runs before storing
@@ -345,8 +341,8 @@ mod tests {
     #[test]
     fn algorithm_header_requires_null_only_right_padding() {
         let mut canonical = [0_u8; 12];
-        canonical[..3].copy_from_slice(b"RSA");
-        assert_eq!(get_alg_string(&canonical).unwrap(), "RSA");
+        canonical[..3].copy_from_slice(b"XYZ");
+        assert_eq!(get_alg_string(&canonical).unwrap(), "XYZ");
 
         let mut embedded_data = canonical;
         embedded_data[4] = b'X';

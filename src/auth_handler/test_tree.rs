@@ -1,4 +1,4 @@
-//! The positions of one DID under ADR 0006, for the tests.
+//! The 64 positions of one DID's tree, for the tests.
 //!
 //! The tree, the genesis and the DID are computed here with `sha2` and
 //! `serde_json` alone, as the Python application computes them, so that the
@@ -6,12 +6,59 @@
 
 use std::sync::Arc;
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::crypto::mldsa::MlDsa65KeyPair;
 use crate::utils::ID_LEN;
 
-use super::test_chain::{b64, put_did, sha256, sign, PLACEHOLDER};
+use super::RECORD_ALGORITHM;
+
+/// What a draft holds in place of its own DID before the DID is known.
+pub(crate) const PLACEHOLDER: &str = "did:iiot:self";
+
+pub(crate) fn b64(bytes: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+pub(crate) fn sha256(bytes: &[u8]) -> [u8; ID_LEN] {
+    Sha256::digest(bytes).into()
+}
+
+/// `| algorithm | signature of body | body |`
+pub(crate) fn record_of(body: &[u8], signer: &MlDsa65KeyPair) -> Vec<u8> {
+    let mut record = vec![0u8; 12];
+    record[..RECORD_ALGORITHM.len()].copy_from_slice(RECORD_ALGORITHM.as_bytes());
+    record.extend_from_slice(&signer.sign(body).expect("ML-DSA-65 signing"));
+    record.extend_from_slice(body);
+    record
+}
+
+/// A record of `doc` as `serde_json` writes it: sorted keys, no whitespace.
+pub(crate) fn sign(doc: &Value, signer: &MlDsa65KeyPair) -> Vec<u8> {
+    record_of(
+        &serde_json::to_vec(doc).expect("a document serializes"),
+        signer,
+    )
+}
+
+/// Write `did` wherever a string value is the placeholder or starts with it
+/// followed by `#`, `?` or `/`.
+pub(crate) fn put_did(value: &mut Value, did: &str) {
+    match value {
+        Value::String(text) => {
+            if let Some(rest) = text.strip_prefix(PLACEHOLDER) {
+                if rest.is_empty() || rest.starts_with(['#', '?', '/']) {
+                    *text = format!("{did}{rest}");
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(|item| put_did(item, did)),
+        Value::Object(map) => map.values_mut().for_each(|item| put_did(item, did)),
+        _ => {}
+    }
+}
 
 /// Positions of the tree: 64, of height 6.
 pub(crate) const POSITIONS: usize = 64;

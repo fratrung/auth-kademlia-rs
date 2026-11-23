@@ -97,7 +97,7 @@ impl Drop for PendingGuard {
 
 impl KademliaProtocol {
     /// A message id for a new request: drawn by `draw` until it is one no
-    /// pending request holds (ADR 0005, open point 25).
+    /// pending request holds.
     pub(super) fn fresh_id<V>(pending: &HashMap<u32, V>, mut draw: impl FnMut() -> u32) -> u32 {
         loop {
             let id = draw();
@@ -110,7 +110,7 @@ impl KademliaProtocol {
     /// An unpredictable message id, from the thread-local generator of
     /// `rand`, seeded by the operating system: a node that learns the id of
     /// one request cannot tell the ids of the others, and answer them in
-    /// another node's name (ADR 0005, open point 25). A request waiting for an
+    /// another node's name. A request waiting for an
     /// answer takes its id through `fresh_id` instead.
     pub(super) fn next_id(&self) -> u32 {
         rand::random()
@@ -686,22 +686,12 @@ mod tests {
             .add_contact(contact_at([5; ID_LEN], silent.local_addr().unwrap().port()));
         let (client, _) = raw_peer([9; ID_LEN]).await;
         let node = protocol.socket.local_addr().unwrap();
-        let chain = crate::auth_handler::test_chain::Chain::new();
-        let (one, two) = (
-            chain.version(0).to_vec(),
-            crate::auth_handler::test_chain::sign(
-                &chain.doc(
-                    0,
-                    None,
-                    chain.keys[0].public_key(),
-                    chain.keys[1].public_key(),
-                ),
-                &chain.keys[0],
-            ),
-        );
+        // The same document signed twice: two requests, not copies.
+        let owner = crate::auth_handler::test_tree::TreeOwner::new(1);
+        let (one, two) = (owner.record(0, None), owner.record(0, None));
         let store = |value: &[u8]| RpcMessage::Store {
             sender_id: [9; ID_LEN],
-            key: chain.key,
+            key: owner.key,
             value: value.to_vec(),
         };
 

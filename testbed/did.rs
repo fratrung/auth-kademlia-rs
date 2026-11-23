@@ -1,9 +1,10 @@
-//! DID records shared by the testbed binaries (ADR 0005): version 0 of a new
-//! DID, the versions after it, and forged versions. Each binary uses part of
-//! it.
+//! DID records shared by the testbed binaries: position 0 of a new DID, the
+//! positions after it, and forged records. Each binary uses part of it.
 #![allow(dead_code)]
 
-use auth_kademlia_rs::auth_handler::did::{canonical_bytes, derive_did, PLACEHOLDER};
+use auth_kademlia_rs::auth_handler::did::{canonical_bytes, PLACEHOLDER};
+use auth_kademlia_rs::auth_handler::owner::{signed_record, OwnerTree};
+use auth_kademlia_rs::auth_handler::tree::Genesis;
 use auth_kademlia_rs::crypto::mldsa::{self as mldsa, MlDsa65KeyPair};
 use auth_kademlia_rs::utils::digest_bytes;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -19,12 +20,11 @@ pub fn new_key() -> MlDsa65KeyPair {
     MlDsa65KeyPair::generate().expect("ML-DSA-65 key generation")
 }
 
-/// A DID Document with its ML-DSA-65 key (RFC 9964) and no key agreement
-/// key: ML-KEM keys are ephemeral, outside the DHT (ADR 0003). It holds
-/// `seq`, `prev` (the base64url SHA-256 of the record before, from version 1)
-/// and `nextKeyHash`, the hash of the key that alone may sign the next
-/// version. It has no `id`: version 0 gets it from `derive_did`.
-fn document(did: &str, signing: &[u8], seq: u64, prev: Option<&str>, next: &[u8]) -> Value {
+/// The draft of position `seq`: its ML-DSA-65 key (RFC 9964), no key
+/// agreement key, its own DID written as the placeholder, no `id`, and after
+/// position 0 the hash of the record it follows.
+fn draft(signing: &[u8], seq: u64, prev: Option<&[u8]>) -> Value {
+    let did = PLACEHOLDER;
     let mut document = json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
         "verificationMethod": [
@@ -42,85 +42,44 @@ fn document(did: &str, signing: &[u8], seq: u64, prev: Option<&str>, next: &[u8]
             "serviceEndpoint": "http://example.com/device"
         }],
         "seq": seq,
-        "nextKeyHash": b64(&digest_bytes(next)),
     });
     if let Some(prev) = prev {
-        document["prev"] = json!(prev);
+        document["prev"] = json!(b64(&digest_bytes(prev)));
     }
     document
 }
 
-/// `[algorithm: 12 B][ML-DSA-65 signature][DID Document JSON]`, the document
-/// in canonical form.
-pub fn signed_record(document: &Value, secret_key: &MlDsa65KeyPair) -> Vec<u8> {
-    let body = canonical_bytes(document).expect("a DID Document in canonical form");
-    let mut record = vec![0u8; 12];
-    record[..ALGORITHM.len()].copy_from_slice(ALGORITHM.as_bytes());
-    record.extend_from_slice(&secret_key.sign(&body).expect("ML-DSA-65 signing"));
-    record.extend_from_slice(&body);
-    record
+/// The tree of a new DID, its genesis, the DID and position 0.
+pub fn new_did() -> (OwnerTree, Genesis, String, Vec<u8>) {
+    let owner = OwnerTree::generate().expect("a rotation-key tree");
+    let initial = draft(owner.public_key(0).expect("position 0"), 0, None);
+    let genesis = owner.genesis(&initial).expect("a draft body");
+    let record = owner.record(&genesis, &initial, 0).expect("position 0");
+    let did = genesis.did();
+    (owner, genesis, did, record)
 }
 
-/// Version 0 of a new DID, signed by `signing` and committing to `next`: the
-/// DID and the record.
-pub fn version_zero(signing: &MlDsa65KeyPair, next: &MlDsa65KeyPair) -> (String, Vec<u8>) {
-    let draft = document(
-        PLACEHOLDER,
-        signing.public_key(),
-        0,
-        None,
-        next.public_key(),
-    );
-    let (did, document) = derive_did(&draft).expect("version 0 gives its DID");
-    (did, signed_record(&document, signing))
+/// Position `seq` of the DID, naming `prev` as the record it follows.
+pub fn position(owner: &OwnerTree, genesis: &Genesis, seq: u64, prev: &[u8]) -> Vec<u8> {
+    let public_key = owner.public_key(seq).expect("a position of the tree");
+    owner
+        .record(genesis, &draft(public_key, seq, Some(prev)), seq)
+        .expect("a record of the tree")
 }
 
-/// Version `seq` of `did`, after the record `prev`: signed by `signing`, the
-/// key the version before committed to, and committing to `next`.
-pub fn version_after(
-    did: &str,
-    seq: u64,
-    prev: &[u8],
-    signing: &MlDsa65KeyPair,
-    next: &MlDsa65KeyPair,
-) -> Vec<u8> {
-    let prev = b64(&digest_bytes(prev));
-    signed_version(did, seq, &prev, signing, next)
-}
-
-fn signed_version(
-    did: &str,
-    seq: u64,
-    prev: &str,
-    signing: &MlDsa65KeyPair,
-    next: &MlDsa65KeyPair,
-) -> Vec<u8> {
-    let mut document = document(
-        did,
-        signing.public_key(),
-        seq,
-        Some(prev),
-        next.public_key(),
-    );
-    document["id"] = json!(did);
-    signed_record(&document, signing)
-}
-
-/// A forged version for the DID of `observed`: the version a replica may take
-/// next, self-signed by a key of the attacker's own, which no version
-/// committed to. For an observed version N ≥ 1 it is another version N with
-/// the same `prev`; for a version 0, a version 1 after it. Only a replica
-/// that cannot check the key against the version before could take it.
+/// A forged record for the DID of `observed`: the next position, with its
+/// public proof copied, the attacker's own key in the document and its
+/// signature. The key is not the tree's at that position, so no replica
+/// takes it, whatever the network says.
 pub fn forge(observed: &[u8]) -> Option<Vec<u8>> {
-    let document = document_of(observed)?;
-    let did = document["id"].as_str()?;
+    let mut document = document_of(observed)?;
     let seq = document["seq"].as_u64()?;
-    let (attacker, next) = (new_key(), new_key());
-    if seq == 0 {
-        return Some(version_after(did, 1, observed, &attacker, &next));
-    }
-    let prev = document["prev"].as_str()?;
-    Some(signed_version(did, seq, prev, &attacker, &next))
+    let attacker = new_key();
+    document["seq"] = json!(seq + 1);
+    document["prev"] = json!(b64(&digest_bytes(observed)));
+    document["verificationMethod"][0]["publicKeyJwk"]["pub"] = json!(b64(attacker.public_key()));
+    let body = canonical_bytes(&document).ok()?;
+    Some(signed_record(&attacker.sign(&body).ok()?, &body))
 }
 
 fn document_of(record: &[u8]) -> Option<Value> {
