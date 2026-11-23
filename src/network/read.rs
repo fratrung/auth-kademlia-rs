@@ -16,12 +16,14 @@ pub(super) fn read_quorum(alpha: usize) -> usize {
 }
 
 impl Server {
-    /// Look up `key` in the DHT. A DID Document comes from local storage if
-    /// present, otherwise from the first remote record that passes verification.
-    /// This does not prove it is current or authentic: a forged, correctly
-    /// self-signed record passes too, and the caller must compare its public key
-    /// with the VC. The Status List is read through a quorum.
-    /// Returns `None` if no record is found or none passes verification.
+    /// Look up `key` in the DHT. A DID record comes from local storage if
+    /// this node holds one, without asking the network, otherwise from the
+    /// first remote record whose key is the tree's at its position and whose
+    /// signature verifies. It is the owner's record, not necessarily its
+    /// current position: the caller compares its key with the credential, and
+    /// `repair` fetches the one the credential names. The Status List is read
+    /// through a quorum. Returns `None` if no record is found or none passes
+    /// verification.
     pub async fn get(&self, key: &str) -> Option<Vec<u8>> {
         log::info!("get({})", key);
         let dkey = dht_key(key)?;

@@ -252,8 +252,11 @@ impl PyServer {
 
     /// Look up ``key``, a DID, in the DHT.
     ///
-    /// Checks local storage first, then performs an iterative network lookup.
-    /// The signature embedded in the stored record is verified before returning.
+    /// A record held locally is returned without asking the network;
+    /// otherwise an iterative lookup returns the first record whose key is
+    /// the one its DID commits to and whose signature verifies. It may be a
+    /// superseded position: when it fails the caller's check, ``repair``
+    /// fetches the one the credential names.
     ///
     /// Returns:
     ///     bytes | None: Raw record bytes, or ``None`` if not found / invalid.
@@ -262,6 +265,44 @@ impl PyServer {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let s = inner.read().await;
             let result = s.get(&key).await;
+            Python::with_gil(|py| -> PyResult<Option<PyObject>> {
+                Ok(result.map(|v| PyBytes::new_bound(py, &v).into_py(py)))
+            })
+        })
+    }
+
+    /// Repair the record of ``did`` that this node served, ``failed_record``,
+    /// once it has failed the caller's check: look in the network for the
+    /// record at position ``seq`` whose raw public key has SHA-256
+    /// ``key_hash``, as the caller's credential names them, and store it
+    /// here, where it replaces ``failed_record`` and the next ``get`` serves
+    /// it without asking the network.
+    ///
+    /// ``seq`` must be above the position of ``failed_record``. The lookup
+    /// gives up after a few seconds. A verified record above ``seq`` met on
+    /// the way supersedes the expected one, which is then refused.
+    ///
+    /// Returns:
+    ///     bytes | None: The expected record, now stored here, or ``None``
+    ///     when none was found or this node holds a higher position.
+    ///
+    /// Raises:
+    ///     ValueError: ``key_hash`` is not 32 bytes long.
+    fn repair<'py>(
+        &self,
+        py: Python<'py>,
+        did: String,
+        failed_record: Vec<u8>,
+        seq: u64,
+        key_hash: Vec<u8>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let key_hash: [u8; ID_LEN] = key_hash
+            .try_into()
+            .map_err(|_| PyValueError::new_err(format!("key_hash must be {ID_LEN} bytes")))?;
+        let inner = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let s = inner.read().await;
+            let result = s.repair(&did, &failed_record, seq, &key_hash).await;
             Python::with_gil(|py| -> PyResult<Option<PyObject>> {
                 Ok(result.map(|v| PyBytes::new_bound(py, &v).into_py(py)))
             })

@@ -4,12 +4,14 @@
 //! `bootstrap`; its other methods are split by operation:
 //! - `publish.rs`: SET of a record at any position, and its report;
 //! - `read.rs`: GET;
+//! - `repair.rs`: repair of a served record that failed the caller's check;
 //! - `status_list.rs`: UPDATE of the Status List, signed by the issuer;
 //! - `maintenance.rs`: refresh, republication, recovery, stats and saved state.
 
 mod maintenance;
 mod publish;
 mod read;
+mod repair;
 mod status_list;
 
 pub use maintenance::ServerStats;
