@@ -7,6 +7,15 @@ and what an attacker who reads the network can achieve. The measurements that
 led to fixes are in `testbed/README.md` and in the commit history; they are not
 repeated here.
 
+**These results were measured with the record format of ADR 0005**, a chain
+of versions each committing to the next key, checked at empty replicas by a
+quorum of answers. ADR 0006 replaced it with a tree of rotation keys: a record
+proves its own key, an empty replica stores it unless a node shows a higher
+one, and there is no UPDATE request nor replay. The experiments are to be run
+again on the current code; until then, those about the check, rotations,
+liars and availability (E3, E4, A4, L1, L2) describe rules the code no longer
+follows.
+
 Each experiment states the question it answers, how it is run, what is
 measured, the results and how to read them. The raw data of every run is in
 `experiments/2026-11-11-adr0005/` (section 1), and that of L2 and L3 in

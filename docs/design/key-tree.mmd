@@ -1,0 +1,20 @@
+flowchart TB
+    DID["DID = did:iiot: + SHA-256 of the genesis"]
+    GEN["Genesis<br/>initialBodyHash, root,<br/>SHA-256, ML-DSA-65, height 6, version 1"]
+    ROOT["Root"]
+    NODES["Five levels of nodes<br/>node = SHA-256(0x01, left, right)"]
+    L0["Leaf 0<br/>key 0, code 0"]
+    L1["Leaf 1<br/>key 1, code 1"]
+    LD["..."]
+    L5["Leaf 5<br/>key 5, code 5"]
+    LE["..."]
+    L63["Leaf 63<br/>reserved"]
+    REC["Record at position 5<br/>seq 5, signed by key 5,<br/>prev = hash of the record published before,<br/>treeProof = code 5, genesis, path of leaf 5"]
+    DID --- GEN --- ROOT --- NODES
+    NODES --- L0
+    NODES --- L1
+    NODES --- LD
+    NODES --- L5
+    NODES --- LE
+    NODES --- L63
+    REC -. "leaf 5 and its path reach the root" .-> ROOT

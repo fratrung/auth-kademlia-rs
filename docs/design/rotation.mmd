@@ -1,0 +1,16 @@
+sequenceDiagram
+    autonumber
+    participant O as Owner
+    participant R1 as Replica holding 3
+    participant R2 as Replica already holding 5
+    participant R3 as Empty replica
+    Note over O: position 5 due, saved as the highest activated,<br/>signed once by key 5 and saved, prev = hash of record 3
+    O->>R1: STORE(5)
+    Note over R1: key 5 and code 5 reach the root through the path,<br/>the signature verifies: replace 3 with 5
+    R1-->>O: Stored
+    O->>R2: STORE(5), a retry
+    R2-->>O: AlreadyStored, nothing verified
+    O->>R3: STORE(5)
+    Note over R3: network check (STORE check diagram):<br/>nobody shows a higher position
+    R3-->>O: Stored
+    Note over O: codes 4 and 6 to 62 stay private

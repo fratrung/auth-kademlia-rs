@@ -11,9 +11,9 @@ It states what the application must do for the guarantees of
 2. [Running a node](#2-running-a-node)
 3. [Record format](#3-record-format)
 4. [Creating a DID](#4-creating-a-did)
-5. [Publishing the first version](#5-publishing-the-first-version)
+5. [Publishing a record](#5-publishing-a-record)
 6. [Rotating the key](#6-rotating-the-key)
-7. [Keeping the chain and republishing](#7-keeping-the-chain-and-republishing)
+7. [Republishing](#7-republishing)
 8. [Resolving a DID](#8-resolving-a-did)
 9. [Key custody](#9-key-custody)
 10. [The Status List](#10-the-status-list)
@@ -23,12 +23,11 @@ It states what the application must do for the guarantees of
 
 | The node | The application |
 |---|---|
-| Checks the form, the binding to the DID and the signature of every record | Builds DID Documents in canonical form and computes the DID |
-| Applies the rules of each replica: keeps one version, replaced only by its verified successor | Generates the keys and keeps the seed of the next one in protected storage |
-| Checks the network before an empty replica stores a record | Signs each version once, saves it, and resends the saved bytes on every retry |
-| Replays the owner's chain to replicas that miss versions | Keeps every version it has published |
-| Republishes the records it holds every hour | Republishes its own record at least once every 24 hours |
-| Returns a verified record on a read | Decides whether the key it reads is trusted |
+| Checks the form of every record, its key against the tree its DID commits to, and its signature | Builds the tree, the genesis and documents in canonical form, and computes the DID |
+| Keeps one record per DID, replaced by any verified higher position | Keeps the seeds and activation codes in protected storage, and releases a code only with its position |
+| Before an empty replica stores a record, looks for a node that shows a higher one | Signs each position once, saves it, and resends the saved bytes on every retry |
+| Republishes the records it holds every hour | Never reuses a position: saves the highest one activated before publishing it |
+| Returns a verified record on a read | Republishes its current record at least once every 24 hours, and decides whether the key it reads is trusted |
 
 ## 2. Running a node
 
@@ -46,7 +45,7 @@ async def start(port: int, seeds: list[tuple[str, int]]) -> authkademlia_py.Serv
 ```
 
 - Use the same `ksize` and `alpha` on every node of a network: replica sets
-  and quorums derive from them.
+  and the Status List quorum derive from them.
 - `sig_cache=True` keeps the results of signature verifications for an hour;
   it pays off when the same records are read repeatedly.
 - `issuer_path` is needed only on nodes that verify the Status List
@@ -59,9 +58,11 @@ async def start(port: int, seeds: list[tuple[str, int]]) -> authkademlia_py.Serv
 A Rust application uses `auth_kademlia_rs::network::Server` with the same
 operations, inside a Tokio runtime whose blocking pool is bounded by the
 number of cores, as [`examples/publish_did.rs`](../examples/publish_did.rs)
-shows. The DID helpers of section 4 are available in Rust as
-`auth_kademlia_rs::auth_handler::did` (`derive_did`, `canonical_bytes`,
-`key_of_did`).
+shows. There the owner's side of section 4 is
+`auth_kademlia_rs::auth_handler::owner::OwnerTree`, which generates the
+secrets, gives the genesis and signs the record of a position; the formats
+are in `auth_handler::tree` (`Tree`, `Genesis`, `document_at`) and
+`auth_handler::did` (`canonical_bytes`, `key_of_did`).
 
 ## 3. Record format
 
@@ -72,20 +73,31 @@ A record is the signed DID Document, prefixed by its algorithm and signature:
 ```
 
 The signature is ML-DSA-65 over the document bytes, by the key the document
-itself declares. A node refuses as invalid any record that breaks one of the
-following requirements.
+declares. That key must be the one the DID commits to at the document's
+position: every DID commits, through its genesis, to a Merkle tree of 64
+leaves, and leaf `i` holds the key and a random 32-byte activation code of
+position `i`. Positions 0 to 62 sign documents; 63 is reserved. A node
+refuses as invalid any record that breaks one of the following
+requirements.
+
+![The tree of a DID](design/key-tree.png)
 
 **Fields.**
 
 | Field | Content |
 |---|---|
 | `id` | The DID. It never changes. |
-| `verificationMethod[0].publicKeyJwk` | The key that signs this version: `{"kty": "AKP", "alg": "ML-DSA-65", "pub": <base64url of the 1952-byte raw public key>}`. `MlDsaKeyManager.get_jose_format(public_key)` returns it. |
-| `seq` | 0 for the first version, then one more for each version. |
-| `prev` | Absent in version 0. In version N, the base64url SHA-256 of the whole record of version N−1. |
-| `nextKeyHash` | The base64url SHA-256 of the raw public key that will sign the next version. It may not be the hash of the document's own key. |
+| `verificationMethod[0].publicKeyJwk` | The key of the position: `{"kty": "AKP", "alg": "ML-DSA-65", "pub": <base64url of the 1952-byte raw public key>}`. `MlDsaKeyManager.get_jose_format(public_key)` returns it. |
+| `seq` | The position, from 0 to 62. Positions need not follow each other: after 2 the owner may publish 5. |
+| `prev` | Absent at position 0. After it, the base64url SHA-256 of the whole record the owner published before. Nodes check only its form. |
+| `treeProof` | Exactly three members: `code`, the activation code of the position (43 characters); `genesis`, the object whose hash is the DID; `path`, the six sibling hashes from the leaf to the root (192 bytes, 256 characters). |
 
-Base64url is always without padding; a hash is 43 characters.
+The genesis holds exactly `hashAlg` (`"SHA-256"`), `height` (6),
+`initialBodyHash`, `root`, `sigAlg` (`"ML-DSA-65"`) and `version` (1).
+`initialBodyHash` is the SHA-256 of the body of position 0: its document
+without `id` and `treeProof`, with the placeholder `did:iiot:self` wherever
+the DID appears. Base64url is always without padding; a hash is 43
+characters.
 
 **Canonical form.** The document bytes must be exactly those of
 `json.dumps(doc, sort_keys=True, separators=(",", ":"))`:
@@ -94,12 +106,13 @@ Base64url is always without padding; a hash is 43 characters.
 - integers within ±(2^53 − 1), and no floating-point numbers;
 - keys sorted, no whitespace.
 
-A document must not contain the placeholder `did:iiot:self`, which only
-drafts of version 0 use.
+A signed document must not contain the placeholder `did:iiot:self`, which
+only bodies use.
 
 **Reference helpers.** The following functions use only the Python standard
-library. They give the DID of the test vector in
-`src/auth_handler/did.rs` (`the_python_test_vector_gives_the_same_did`).
+library. They give the root, the initial body hash and the DID of the test
+vector in `src/auth_handler/tree.rs`
+(`the_python_test_vector_gives_the_same_did`).
 
 ```python
 import base64
@@ -110,6 +123,9 @@ PLACEHOLDER = "did:iiot:self"
 MAX_INTEGER = 2**53 - 1
 ALGORITHM = b"ML-DSA-65".ljust(12, b"\0")
 SIGNATURE_LEN = 3309
+HEIGHT = 6
+POSITIONS = 2**HEIGHT     # 0 to 62 sign documents
+RESERVED = POSITIONS - 1  # 63 is never used
 
 
 def b64(raw: bytes) -> str:
@@ -162,37 +178,82 @@ def replace_did(value, old: str, new: str):
     return value
 
 
-def document(did, public_key, seq, next_public_key, previous_record=None, services=()):
-    """One version of a DID Document, without `id`."""
+def leaf(position: int, public_key: bytes, code: bytes) -> bytes:
+    return sha256(b"\x00" + position.to_bytes(4, "big") + public_key + code)
+
+
+def node(left: bytes, right: bytes) -> bytes:
+    return sha256(b"\x01" + left + right)
+
+
+def tree(leaves: list[bytes]) -> list[list[bytes]]:
+    """Every level of the tree, from the 64 leaves up to the root."""
+    levels = [leaves]
+    while len(levels[-1]) > 1:
+        below = levels[-1]
+        levels.append([node(below[n], below[n + 1]) for n in range(0, len(below), 2)])
+    return levels
+
+
+def path(levels: list[list[bytes]], position: int) -> bytes:
+    """The 192-byte membership path of a position: its sibling at each level,
+    the leaf's sibling first."""
+    siblings = b""
+    for level in levels[:HEIGHT]:
+        siblings += level[position ^ 1]
+        position //= 2
+    return siblings
+
+
+def genesis(initial_body_hash: bytes, root: bytes) -> dict:
+    return {
+        "hashAlg": "SHA-256",
+        "height": HEIGHT,
+        "initialBodyHash": b64(initial_body_hash),
+        "root": b64(root),
+        "sigAlg": "ML-DSA-65",
+        "version": 1,
+    }
+
+
+def did_of(genesis: dict) -> str:
+    return "did:iiot:" + b64(sha256(canonical(genesis)))
+
+
+def body(public_key: bytes, seq: int, previous_record: bytes | None = None,
+         services=()) -> dict:
+    """The body of position `seq`: its own DID written as the placeholder,
+    no `id`, no `treeProof`."""
     doc = {
         "@context": ["https://www.w3.org/ns/did/v1"],
         "verificationMethod": [{
-            "id": did + "#k0",
+            "id": PLACEHOLDER + "#k0",
             "type": "JsonWebKey2020",
-            "controller": did,
+            "controller": PLACEHOLDER,
             "publicKeyJwk": {"kty": "AKP", "alg": "ML-DSA-65", "pub": b64(public_key)},
         }],
-        "authentication": [did + "#k0"],
-        "service": [replace_did(s, PLACEHOLDER, did) for s in services],
+        "authentication": [PLACEHOLDER + "#k0"],
+        "service": list(services),
         "seq": seq,
-        "nextKeyHash": b64(sha256(next_public_key)),
     }
     if previous_record is not None:
         doc["prev"] = b64(sha256(previous_record))
     return doc
 
 
-def derive_did(draft: dict):
-    """The DID of a draft of version 0, and the document to sign."""
-    did = "did:iiot:" + b64(sha256(canonical(draft)))
-    doc = replace_did(draft, PLACEHOLDER, did)
+def document(body: dict, genesis: dict, code: bytes, path: bytes) -> dict:
+    """The document to sign: the DID in place of the placeholder, `id`, and
+    `treeProof` with the genesis, the code and the path of the position."""
+    did = did_of(genesis)
+    doc = replace_did(body, PLACEHOLDER, did)
     doc["id"] = did
-    return did, doc
+    doc["treeProof"] = {"code": b64(code), "genesis": genesis, "path": b64(path)}
+    return doc
 
 
 def signed_record(key_manager, private_key: bytes, doc: dict) -> bytes:
-    body = canonical(doc)
-    return ALGORITHM + key_manager.sign(private_key, body) + body
+    data = canonical(doc)
+    return ALGORITHM + key_manager.sign(private_key, data) + data
 
 
 def parse_record(record: bytes):
@@ -202,14 +263,14 @@ def parse_record(record: bytes):
     return algorithm, signature, doc
 ```
 
-The services may be written with the placeholder (`did:iiot:self#device`):
-`document` puts the DID in their place.
+Services are written with the placeholder (`did:iiot:self#device`):
+`document` puts the DID in its place.
 
 ## 4. Creating a DID
 
-The DID is the hash of the first version of the document, so it is fixed by
-the first key, the hash of the second key and every other field of that
-version.
+The DID is the hash of the genesis, so it fixes the body of position 0 and
+every key and code of the tree. Nothing about a DID can be added to the
+tree later.
 
 ![Creating a DID](design/did-creation.png)
 
@@ -218,147 +279,155 @@ import secrets
 
 key_manager = authkademlia_py.MlDsaKeyManager("keys")
 
-current_seed = secrets.token_bytes(32)
-next_seed = secrets.token_bytes(32)      # kept in protected storage
-public_key, private_key = key_manager.keypair_from_seed(current_seed)
-next_public_key, _ = key_manager.keypair_from_seed(next_seed)
+# 64 seeds and 64 codes, kept in protected storage.
+seeds = [secrets.token_bytes(32) for _ in range(POSITIONS)]
+codes = [secrets.token_bytes(32) for _ in range(POSITIONS)]
+public_keys = [key_manager.keypair_from_seed(seed)[0] for seed in seeds]
+levels = tree([leaf(i, public_keys[i], codes[i]) for i in range(POSITIONS)])
 
 services = [{
     "id": PLACEHOLDER + "#device",
     "type": "DeviceAgent",
     "serviceEndpoint": "https://device.example/agent",
 }]
-draft = document(PLACEHOLDER, public_key, 0, next_public_key, services=services)
-did, doc = derive_did(draft)
+initial = body(public_keys[0], 0, services=services)
+tree_genesis = genesis(sha256(canonical(initial)), levels[-1][0])
+did = did_of(tree_genesis)
+
+_, private_key = key_manager.keypair_from_seed(seeds[0])
+doc = document(initial, tree_genesis, codes[0], path(levels, 0))
 record_0 = signed_record(key_manager, private_key, doc)
 ```
 
-1. Generate the current key and the seed of the next key.
-2. Write the first version with every field except `id`, and the placeholder
-   `did:iiot:self` wherever the document refers to its own DID.
-3. Hash its canonical bytes: the DID is `did:iiot:` followed by the
-   base64url of the hash. The DHT key is the hash itself.
-4. Put the DID in place of the placeholder, add `id`, and sign.
-5. **Save before sending:** the DID, `record_0`, the current key, and the
-   next seed in protected storage ([section 9](#9-key-custody)).
+1. Generate a random seed and a random activation code for each of the 64
+   positions, the reserved one included: its leaf completes the tree. Derive
+   each public key from its seed and compute the leaves and the root.
+2. Write the body of position 0 with every field except `id` and
+   `treeProof`, and the placeholder `did:iiot:self` wherever the document
+   refers to its own DID.
+3. Build the genesis from the hash of that body and the root. The DID is
+   `did:iiot:` followed by the base64url SHA-256 of the canonical genesis;
+   the DHT key is the hash itself.
+4. Complete the document with the DID, `id` and `treeProof`, and sign it
+   with the key of position 0.
+5. **Save before sending:** the DID, the genesis, `record_0` as the
+   published record, position 0 as the highest activated, and the seeds and
+   codes in protected storage ([section 9](#9-key-custody)).
 
-`keypair_from_seed` gives the same key pair for the same 32-byte seed, so the
-application needs to keep only the seed of the next key.
+`keypair_from_seed` gives the same key pair for the same 32-byte seed, so
+the application keeps only seeds, never private keys.
 
-## 5. Publishing the first version
+## 5. Publishing a record
+
+Every position, the first included, is published with the same call:
 
 ```python
-result = await node.set_detailed(did, record_0)
+result = await node.set_detailed(did, record)
 ```
 
 `result["status"]` is `complete`, `degraded` or `rejected`; `result["reason"]`
 explains a rejection, and `result["report"]` counts the answers of the
 replicas (`expected_replicas`, `acknowledged_replicas`, `unavailable_nodes`,
-`conflict_rejections`, `stale_rejections`, `newer_claimed`,
-`unproven_refusals`, and others). A replica that refuses the record counts
-only once it shows why: `set_detailed` asks it for its record and checks it
-against version 0. A refusal it cannot back up, such as one from a node that
-lies, only means that replica did not store the record, and is counted in
-`unproven_refusals`.
+`conflict_rejections`, `stale_rejections`, `unproven_refusals`, and others).
+A replica that refuses the record counts only once it shows why:
+`set_detailed` asks it for its record, checks that it proves the refusal and
+verifies it. A refusal it cannot back up only means that replica did not
+store the record, and is counted in `unproven_refusals`.
 
 | Outcome | Meaning | Action |
 |---|---|---|
 | `complete` | Every replica that answered holds the record | None |
 | `degraded` | Some replicas did not acknowledge it, or refused it without showing why | Retry later with the same bytes |
 | `rejected`, `unavailable`, `no_responsible_nodes` or `capacity_exceeded` | No replica took it | Retry later with the same bytes |
-| `rejected`, `invalid_record` | The record is malformed or does not bind to the DID, or no replica stored it and replicas called it invalid | Fix the construction of the document |
-| `rejected`, `existing_record` | A replica showed version 0 of this DID signed again | Version 0 was signed twice: publish the saved record only |
-| `rejected`, `replica_conflict` | No replica stored it, and the replicas that refused it showed nothing to back up the refusal | Retry later with the same bytes; if it persists, a node near the DID may be lying |
-| `rejected`, `newer_version` | A replica showed version 1, or most replicas report a later version | Publish the current version with `update` |
-| `rejected`, `use_update` | The record is not a version 0 | Use `update` |
+| `rejected`, `invalid_record` | The record does not verify for the DID, so it never left the node; or no replica stored it and replicas called it invalid | Fix the construction of the document |
+| `rejected`, `existing_record` | A replica showed another valid record at this position | If the application signed this position twice, publish only the saved record. Otherwise the key of this position has leaked: see [section 9](#9-key-custody) |
+| `rejected`, `newer_version` | A replica showed a valid record of this DID at a higher position | If the application published it and its saved state is behind, raise the highest activated position to it and go on from there. Otherwise the keys and codes of the tree have leaked, and the device needs a new DID |
+| `rejected`, `replica_conflict` | No replica stored it, and those that refused showed nothing to back up the refusal | Retry later with the same bytes; if it persists, a node near the DID may be lying |
 
 `set(did, record)` is the short form: `True` for complete, `False` for
 degraded or unavailable, `None` for a rejected record.
 
 A retry with byte-identical data is always safe: a replica that already holds
-it answers that it does. Never sign version 0 again to retry: FIPS 204 makes
-randomized signing the default, so a second signature of the same document
-can be a different record, which replicas refuse as a conflict.
+it answers that it does. Never sign a position again to retry: FIPS 204
+makes randomized signing the default, so a second signature of the same
+document is a different record, which replicas refuse as a conflict.
 
 ## 6. Rotating the key
 
-Every new version is a key rotation: version N is signed by the key that
-version N−1 committed to, and commits to a new one. A change of services
-or endpoints is therefore also a rotation.
-
-![The chain of versions](design/version-chain.png)
+A rotation publishes a higher position, signed by its own key. A replica
+checks that key against the tree and replaces the lower position it holds;
+it needs no record in between, and the owner sends nothing else. A change of
+services or endpoints is also a rotation.
 
 ```python
-async def rotate(node, key_manager, did, chain, next_seed, services):
-    """`chain` holds the saved records of versions 0 to N-1."""
-    seed_after = secrets.token_bytes(32)
-    # Save seed_after in protected storage before signing anything with it.
-    public_key, private_key = key_manager.keypair_from_seed(next_seed)
-    public_key_after, _ = key_manager.keypair_from_seed(seed_after)
-    doc = document(did, public_key, len(chain), public_key_after,
-                   previous_record=chain[-1], services=services)
-    doc["id"] = did
-    record = signed_record(key_manager, private_key, doc)
-    # Save `record` as the pending version before sending it.
-    return await node.update(did, record, chain)
+async def rotate(node, key_manager, state, position, services):
+    """Publish `position`, above every position activated so far."""
+    if position <= state.highest or position >= RESERVED or position in state.skipped:
+        raise ValueError("position not available")
+    state.highest = position
+    state.save()                      # durably, before the record exists
+    public_key, private_key = key_manager.keypair_from_seed(state.seeds[position])
+    draft = body(public_key, position, previous_record=state.published,
+                 services=services)
+    doc = document(draft, state.genesis, state.codes[position],
+                   path(state.levels, position))
+    state.pending = signed_record(key_manager, private_key, doc)
+    state.save()                      # before sending it
+    result = await node.set_detailed(state.did, state.pending)
+    if result["status"] != "rejected":
+        state.published, state.pending = state.pending, None
+        state.save()
+    return result
 ```
 
 The order of the steps makes the rotation safe across a crash:
 
-1. Generate the seed of the key after the next one, and save it.
-2. Derive the committed key from the stored next seed.
-3. Build version N with the same `id`, `seq` N, `prev` the hash of the saved
-   record of version N−1, the committed key, and the hash of the new next key.
-4. Sign it once and save the record as the pending version.
-5. Send it with `update(did, record, earlier)`, where `earlier` holds the
-   saved records of versions 0 to N−1.
+1. Pick the position: the one due by the schedule, above the highest
+   activated, never a skipped one nor 63.
+2. Save it as the highest activated position, with a write the operating
+   system has flushed to storage, before the record is signed.
+3. Build its body with `seq` the position and `prev` the hash of the record
+   published before, and complete it with that position's code and path.
+4. Sign it once and save the record as pending.
+5. Publish it with `set_detailed`. Once a replica holds it, it is the
+   published record, and a degraded publication is completed by
+   republication ([section 7](#7-republishing)). Rejected because no replica
+   took it, it stays pending and is retried with the same bytes.
 
-After a restart, a pending version is sent again from the saved bytes and is
-never signed again.
+After a restart, a pending record is sent again from the saved bytes and is
+never signed again, and the highest activated position never goes back,
+even if the clock does.
 
-| `update` returns | Meaning | Action |
-|---|---|---|
-| `True` | A strict majority of the consistency group acknowledged the exact record during this call | Add it to the chain; erase the previous private key |
-| `False` | Too few acknowledgements, even if some replicas applied the update | Keep it pending; retry later with the same arguments |
-| `None` | Refused before sending: a version 0, a record that does not bind or verify, or `earlier` that is not its chain | Fix the saved chain; do not sign another version N |
+**Schedule.** Rotation is periodic: from a start time `T`, every interval
+`D`, the position due is `floor((now - T) / D)`. The interval is a
+deployment choice, a week or a month. After an outage the device publishes
+the position due directly: back in the slot of 5 after publishing 2, it
+publishes 5 with `prev` naming record 2, and the codes of 3 and 4 are never
+released. A position may also be published before its slot when the current
+key has leaked ([section 9](#9-key-custody)): the position due is then the
+greater of the schedule's index and the highest activated position, so the
+next one is due at its normal time.
 
-The group includes the local replica when selected and the closest remote
-replicas, up to `alpha` members in total. A remote majority suffices even if
-the owner's DHT copy could not be written. The owner's saved chain is separate.
+When position 62 has been published the tree is exhausted: the device needs
+a new DID.
 
-`earlier` is used only to replay the chain to replicas that miss versions:
-a replica behind receives the versions it lacks, one at a time, and an empty
-replica receives the chain from version 0 when the network check allows it.
-Passing fewer versions limits that replay.
-
-When the owner is itself a replica, it verifies each saved record it needs to
-install locally. Each successor must follow the stored bytes and use the key
-they authorize. If a step fails, earlier verified steps remain available for
-the next retry.
-
-A second, different version N signed by the same key is proof of duplicity:
-replicas holding the first refuse the second and log it.
-
-## 7. Keeping the chain and republishing
-
-Keep every published version, about 6.5 KB each: with a rotation a week, a
-year of versions is about 345 KB. Nodes hold only the current version.
+## 7. Republishing
 
 At least once every 24 hours, and whenever the device comes back online,
-send the current version again with the saved bytes:
+send the published record again with the saved bytes:
 
 ```python
-if len(chain) == 1:
-    await node.set_detailed(did, chain[0])
-else:
-    await node.update(did, chain[-1], chain[:-1])
+await node.set_detailed(state.did, state.published)
 ```
 
-Replicas holding the record republish it every hour, but an empty replica
-accepts a later version from them only when enough of the nodes it asks hold
-it (13 with `k` = 20). Below that, only the owner can restore the copies:
-[EXPERIMENTS.md](../EXPERIMENTS.md), L2, measures both cases. A copy that nobody
+Replicas holding the record republish it every hour, and an empty replica
+stores a verified record unless a node shows it a higher one, so replicas
+that lose their copy get it back from the others. The owner's republication
+restores the copies when no replica is left to send them. A copy that nobody
 sends again expires after 14 days.
+
+Nodes keep only the current record, and so does the owner: the records
+before it are needed neither for retries nor by any replica.
 
 ## 8. Resolving a DID
 
@@ -367,14 +436,17 @@ record = await node.get(did)              # bytes, or None
 if record is not None:
     algorithm, signature, doc = parse_record(record)
     public_key = doc["verificationMethod"][0]["publicKeyJwk"]["pub"]
+    position = doc["seq"]
 ```
 
-A record returned by `get` binds to the DID and its signature verifies. It is
-not proof that the version is the current one, nor that the key belongs to
-the device: a replica can be behind, and a node can serve a later version
-that it signed itself. The application decides whether to trust the key, for
-example by comparing it with the key bound in the device's Verifiable
-Credential.
+A record returned by `get` is one the owner signed: its key is the one its
+DID commits to at its position, and its signature verifies. It is not proof
+that the position is the current one: a replica can be behind, and an empty
+replica that saw no higher position stores the record it is offered. The
+application decides whether to trust the key, for example by comparing it
+with the key bound in the device's Verifiable Credential. That protects
+against a superseded record only if the credential of a superseded key is
+revoked, or expires, at rotation.
 
 Accept a DID from outside only in canonical form: `did:iiot:` followed by 43
 base64url characters that decode to 32 bytes and encode back to the same
@@ -395,21 +467,27 @@ def is_canonical_did(did: str) -> bool:
 
 ## 9. Key custody
 
-- **The current key** signs the current version and the device's
-  authentications.
-- **The next key** signs only the next version. Keep it as its 32-byte seed in
-  a secure element, TPM, TEE or HSM where the device has one, and derive the
-  key pair only at the rotation. Pre-rotation protects the DID only as far as
-  the next seed is better protected than the current key.
-- **After a confirmed rotation**, erase the previous private key. Retries do
-  not need it: they resend saved bytes.
-- **A seed suspected of having leaked**: rotate with it at once. There is no
-  other way to change the commitment.
-- **A lost next seed**: no further rotation is possible, and the device needs
-  a new DID.
-- **A stolen current key** cannot rotate. It can sign a competing version at
-  the current `seq`, which replicas holding the genuine version refuse;
-  [DESIGN.md](../DESIGN.md), section 13, describes the remaining exposure.
+- **The seeds and codes** of the 64 positions are the DID's secrets. Keep
+  them in a secure element, TPM, TEE or HSM where the device has one, and
+  derive a key pair only to sign its position. A copy of all of them gives
+  every future position to whoever holds it.
+- **A code stays private** until the record of its position is published;
+  the record makes it public.
+- **After a rotation**, once the new position is published and its
+  credential issued, erase the seeds below it. Retries resend saved bytes and
+  need no key.
+- **A stolen current key** cannot sign a higher position, which needs that
+  position's key and its unreleased code. It can sign another document at
+  the current position, whose code is public: replicas holding the genuine
+  one refuse it, but an empty replica may store it. Publish the next
+  position at once, even before its slot, and have the credential of the
+  stolen key revoked. When and with what authorization to rotate early is
+  the application's decision, typically signed by the issuer, which issues
+  the new credential; the nodes never see it.
+- **A leaked seed of a future position**: skip that position for good,
+  across restarts, and never release its code.
+- **Lost seeds and codes**: no further rotation is possible, and the device
+  needs a new DID.
 
 ## 10. The Status List
 
@@ -418,13 +496,17 @@ with the issuer key whose raw ML-DSA-65 public key nodes read from the file
 passed as `issuer_path`:
 
 ```python
-await node.update("status-list", signed_list, [])
+await node.set("status-list", signed_list)            # the first list
+await node.update_status_list(signed_list)            # every later one
 status_list = await node.get("status-list")
 ```
 
-A read of the Status List requires two byte-identical answers (with
-`alpha` = 3). The list carries no version yet, so nodes accept any list the
-issuer signed, an older one included ([DESIGN.md](../DESIGN.md), section 10).
+`update_status_list` returns `True` when a strict majority of the replicas
+took the list, `False` otherwise, and `None` when no list is published yet or
+the signature does not verify. A read of the Status List requires two
+byte-identical answers (with `alpha` = 3). The list carries no version yet, so
+nodes accept any list the issuer signed, an older one included
+([DESIGN.md](../DESIGN.md), "Status List").
 
 ## 11. Migrating from UUID-based DIDs
 
@@ -436,13 +518,14 @@ to the old one are issued again.
 
 | Before | Now |
 |---|---|
-| `did:iiot:<UUID>`; the DHT key is the SHA-256 of the UUID | `did:iiot:<hash of version 0>`; the DHT key is the decoded hash |
-| Documents without `seq`, `prev` and `nextKeyHash` | Canonical JSON, checked by every node, with `seq`, `prev` and `nextKeyHash` |
-| `update(key, value, auth_signature)`, the new record signed again with the old key | `update(did, value, earlier)`: the chain authorizes the update, and every update rotates the key |
-| `set` and `set_detailed` for any record | Only for version 0; later versions with `update` |
-| `set_detailed` report without stale counts | `stale_rejections`, `newer_claimed`, `unproven_refusals`; reasons `newer_version` and `use_update`; `existing_record` only when a replica shows version 0 signed again |
-| `update("status-list", value, None)` | `update("status-list", value, [])` |
+| `did:iiot:<UUID>`; the DHT key is the SHA-256 of the UUID | `did:iiot:<SHA-256 of the genesis>`; the DHT key is the decoded hash |
+| Documents without `seq`, `prev` and `treeProof` | Canonical JSON, checked by every node, with `seq` (the position), `prev` after position 0, and `treeProof` |
+| `update(key, value, auth_signature)`, the new record signed again with the old key | `set(did, record)` for every position: the tree authorizes the key of each position |
+| `set_detailed` report without stale counts | `stale_rejections` and `unproven_refusals`; reason `newer_version`; `existing_record` only when a replica shows another record at the same position |
+| `update("status-list", value, None)` | `update_status_list(value)` |
+| `Ed25519KeyManager` | Removed: records are signed with ML-DSA-65 only |
 | — | `MlDsaKeyManager.keypair_from_seed(seed)` |
 
-The application now keeps the chain of its versions and the seed of the next
-key, and republishes at least once every 24 hours.
+The application now keeps the seeds and codes of its tree, the published
+record and the highest activated position, and republishes at least once
+every 24 hours.

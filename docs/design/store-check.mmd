@@ -3,32 +3,22 @@ sequenceDiagram
     participant S as Sender
     participant R as Empty replica
     participant C as Nodes closest to the DID
-    S->>R: STORE(key, version N)
-    Note over R: no record for key, so it cannot check<br/>version N against the version before
-    opt record not in form, or not bound to key
+    S->>R: STORE(key, record at position N)
+    Note over R: the record proves its own key,<br/>but a higher position may exist
+    opt record not in form, or its key not in the tree at N
         R-->>S: InvalidRecord (nobody asked)
     end
     R->>C: FindHash(key), all of them at once, deadline 2 s
-    C-->>R: seq and SHA-256 of their record, or closer nodes
-    opt version 0 (R2), no quorum for a later version, and nodes claim another version 0
-        R->>C: FindValue(key) to the k-1 closest that claim one, at once
+    C-->>R: position and SHA-256 of their record, or closer nodes
+    opt some nodes claim a position above N
+        R->>C: FindValue(key), one per distinct claim,<br/>to the closest node that made it, at most k-1, at once
         C-->>R: their record, or nothing
-        Note over R: a claim counts only if shown: the same document signed again,<br/>hashing to the claim, with a valid signature<br/>a claim not shown, or not in time, is dropped
+        Note over R: a record counts if it hashes to the claim,<br/>is in the tree at a higher position and its signature verifies
     end
-    alt version 0 (R2): a quorum claims a later version, or another version 0 was shown
-        R-->>S: NewerClaimed or Conflict (nothing stored)
-    else version N >= 1 (R5): one answer is enough to refuse
-        Note over R: a later version: NewerClaimed<br/>another version N, a version N-1 that is not its prev,<br/>or a version older than N-1: Conflict
-        R-->>S: NewerClaimed or Conflict (nothing verified or stored)
-    else no refusal, and every node asked answered
-        opt version N >= 1
-            R->>C: FindValue(key) to the nodes that answered N-1 and prev
-            C-->>R: version N-1
-            Note over R: its hash is prev and it commits to the key of version N<br/>votes: holders of N and confirmed N-1, 13 of 19 at k = 20<br/>for version 1, one confirmed version 0 is enough
-        end
-        Note over R: verify the signature,<br/>then insert if still absent
+    alt a higher record verified
+        Note over R: store the higher record
+        R-->>S: Stale
+    else none: claims not shown, silence, or nobody to ask
+        Note over R: verify the signature of the record sent,<br/>then insert if still absent
         R-->>S: Stored
-    else a node did not answer, nobody to ask, or too few votes
-        Note over R: refuse: fail-safe default
-        R--xS: no answer, the sender counts it unavailable
     end

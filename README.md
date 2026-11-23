@@ -31,12 +31,13 @@ identities do not depend on any single operator.
 A conventional DHT stores any value under any key. AuthKademlia-RS restricts
 storage to records whose integrity and ownership every node can verify:
 
-- every record is a DID Document signed with ML-DSA-65 (FIPS 204) by the key
-  it declares;
-- a DID is derived from the device's first DID Document, so that its
-  identifier is self-certifying;
-- each version of a document commits to the key that will sign the next one,
-  so that updates are authorized by the chain of versions itself.
+- every record is a DID Document signed with ML-DSA-65 (FIPS 204) by a key
+  its DID commits to;
+- a DID is the hash of a genesis that commits the device's first DID Document
+  and a Merkle tree of its rotation keys, so that its identifier is
+  self-certifying;
+- each record carries the proof that its key is the tree's at its position,
+  so that any replica checks a rotation on its own, without earlier records.
 
 The implementation targets edge and embedded nodes: multi-core devices of low
 per-core performance, where signature verification must use every core. It
@@ -46,22 +47,24 @@ and exposes Python bindings for application logic.
 ## Features
 
 **Identity and integrity**
-- Self-certifying DIDs: `did:iiot:` followed by the base64url SHA-256 of the
-  first DID Document, which is also the DHT key.
-- Pre-rotated keys: every version names the hash of the next signing key;
-  every update is a key rotation.
-- Versioned records: sequence numbers and hash links between versions, checked
-  by every replica.
+- Self-certifying DIDs: `did:iiot:` followed by the base64url SHA-256 of a
+  genesis that commits the first DID Document and the root of a tree of 64
+  rotation keys; the hash is also the DHT key.
+- Pre-committed rotation keys: each position's key and a private activation
+  code form a leaf of the tree, and a record carries its Merkle path, so that
+  every node checks any position against the DID alone.
+- Ordered records: a replica takes any verified higher position and refuses a
+  lower one.
 - Post-quantum cryptography: ML-DSA-65 record signatures and ephemeral
   ML-KEM-768 key pairs for key agreement between devices, from `aws-lc-rs`.
 
 **Protocol**
 - Kademlia with 256-bit identifiers and the full XOR metric, k-buckets with
   replacement lists, and iterative lookups that tolerate unresponsive peers.
-- A network check before an empty replica stores a record, which refuses on
-  any contradicting answer and on silence.
+- A network check before an empty replica stores a record, which looks for a
+  verified higher position; claims and silence refuse nothing.
 - An issuer-signed revocation list (Status List) read by quorum.
-- Application-level fragmentation of records of about 6.5 KB over UDP, with
+- Application-level fragmentation of records of about 7 KB over UDP, with
   receipts, round-trip-based retransmission and random message identifiers.
 
 **Runtime**
@@ -78,28 +81,28 @@ and exposes Python bindings for application logic.
 
 **Guarantees.** Under the assumptions below, AuthKademlia-RS ensures that:
 
-- a stored record was signed by the key its DID Document declares;
-- no party other than the device can publish a first document under the
-  device's DID;
-- only the holder of the committed next key can publish a new version of a
-  DID, so that theft of the current key alone does not transfer control;
-- a replica holding a DID accepts only the verified successor of its version,
-  so that earlier versions cannot be replayed as current;
-- a replica that holds no version stores a record only if the nodes closest to
-  the DID do not contradict it.
+- a stored record was signed by the key its DID commits to at the record's
+  position;
+- no party other than the device can publish a record under the device's DID;
+- only the holder of a position's key and activation code can publish that
+  position, so that theft of the current key alone does not transfer control;
+- a replica holding a DID never replaces it with a lower position, so that
+  earlier records cannot be replayed as current there;
+- a replica that holds nothing stores a record unless a node close to the DID
+  shows it a verified higher one.
 
-**Assumptions.** ML-DSA-65 and SHA-256 are secure; the next signing key is
-better protected than the current one; among the nodes closest to a DID, fewer
-than a quorum collude; and an attacker who forges answers cannot observe the
-traffic.
+**Assumptions.** ML-DSA-65 and SHA-256 are secure; the seeds and activation
+codes of unpublished positions stay secret; and an attacker who forges answers
+cannot observe the traffic.
 
-**Limitations.** A read returns a verified record, not a proof of freshness or
-of ownership: applications compare the public key with the one bound in the
-Verifiable Credential. A single misbehaving node close to a DID can prevent
-empty replicas from being repaired; below a quorum of holders, only the owner
-can restore lost copies; and a quorum of colluding nodes controls what that
-DID resolves to. The threat model, the security properties and the
-known limits are detailed in [DESIGN.md](DESIGN.md).
+**Limitations.** A read returns a record the owner signed, not a proof of
+freshness: applications compare the public key with the one bound in the
+Verifiable Credential. An empty replica that sees no holder of a higher
+position may store a superseded record until republication replaces it;
+nodes answering under made-up identifiers can delay checks and hide newer
+records, but not forge one; and colluding nodes that surround a DID decide
+which of the owner's records it resolves to. The threat model, the security
+properties and the known limits are detailed in [DESIGN.md](DESIGN.md).
 
 ## Architecture
 
@@ -175,17 +178,20 @@ async def resolve(did: str) -> bytes | None:
     return record
 ```
 
-The module also exposes publication (`set_detailed`), rotation (`update`), the
-ML-DSA-65 key manager with seed-based key derivation, and the ephemeral
-ML-KEM-768 key manager. The [integration guide](docs/integration.md) shows
-how an application creates a DID, rotates its key, keeps its chain of versions
-and resolves other DIDs.
+The module also exposes publication of every position (`set_detailed`), the
+Status List update (`update_status_list`), the ML-DSA-65 key manager with
+seed-based key derivation, and the ephemeral ML-KEM-768 key manager. The
+[integration guide](docs/integration.md) shows how an application creates a
+DID and its tree of keys, rotates, republishes and resolves other DIDs.
 
 ## Evaluation
 
 The implementation was evaluated on a Docker testbed of 127 nodes with a
 replication factor of 20, under LAN conditions and WAN latencies derived from
 published backbone measurements, against an attacker that observes all traffic.
+These results were measured with the previous record format, a chain of
+versions each committing to the next key; the measurements of the current
+format are being repeated ([EXPERIMENTS.md](EXPERIMENTS.md)).
 
 | Aspect | Result |
 |---|---|

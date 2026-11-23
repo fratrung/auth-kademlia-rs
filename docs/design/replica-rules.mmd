@@ -1,34 +1,28 @@
 flowchart TD
-    IN["STORE or UPDATE of version N of a DID"]
-    FORM{"Canonical form, bound<br/>to the key?"}
-    HOLDS{"Does the replica<br/>hold a version?"}
+    IN["STORE of a record at position N of a DID"]
+    FORM{"Canonical, bound to the key,<br/>key and code at N reach the root?"}
+    HOLDS{"Does the replica<br/>hold a record?"}
     CHECK["Network check<br/>(empty replica diagram)"]
-    UPD["UPDATE: MissingPrevious<br/>the owner replays its chain"]
     SAME{"Same bytes?"}
-    NEXT{"N = held + 1?"}
-    OK{"prev = hash of the held record,<br/>key hashes to its nextKeyHash,<br/>signature verifies?"}
-    OLDER{"N below the held version?"}
-    EQ{"N = held version?"}
+    CMP{"N against the<br/>held position"}
+    SIGH{"Signature verifies?"}
+    SIGE{"Signature verifies?"}
     INV["InvalidRecord"]
     AS["AlreadyStored"]
-    REP["Replace (compare and swap):<br/>Stored or Updated"]
-    CON["Conflict"]
+    REP["Replace (compare and swap): Stored"]
     STALE["Stale"]
-    DUP["Conflict, logged as duplicity<br/>when the same key signed both"]
-    MISS["MissingPrevious<br/>nothing is asked"]
+    CON["Conflict, the stored record stays<br/>logged as a repeated signing or as duplicity"]
     IN --> FORM
     FORM -- no --> INV
     FORM -- yes --> HOLDS
-    HOLDS -- "no, STORE" --> CHECK
-    HOLDS -- "no, UPDATE" --> UPD
+    HOLDS -- no --> CHECK
     HOLDS -- yes --> SAME
     SAME -- yes --> AS
-    SAME -- no --> NEXT
-    NEXT -- yes --> OK
-    OK -- yes --> REP
-    OK -- no --> CON
-    NEXT -- no --> OLDER
-    OLDER -- yes --> STALE
-    OLDER -- no --> EQ
-    EQ -- yes --> DUP
-    EQ -- "no, further ahead" --> MISS
+    SAME -- no --> CMP
+    CMP -- higher --> SIGH
+    SIGH -- yes --> REP
+    SIGH -- no --> INV
+    CMP -- lower --> STALE
+    CMP -- equal --> SIGE
+    SIGE -- yes --> CON
+    SIGE -- no --> INV

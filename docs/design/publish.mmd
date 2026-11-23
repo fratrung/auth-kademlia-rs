@@ -3,18 +3,18 @@ sequenceDiagram
     participant O as Owner
     participant N as Nodes on the path
     participant R as Replicas (k closest to the DID)
-    Note over O: record = version 0 = algorithm | signature | DID Document<br/>key = the SHA-256 of version 0 in hashed form, the DID's suffix
+    Note over O: record at any position = algorithm | signature | DID Document<br/>key = the SHA-256 of the genesis, the DID's suffix
     O->>N: FIND_NODE(key), iterative, alpha at a time
     N-->>O: closer nodes
     Note over O: no copy is read first, the k closest are the replicas
     par to each replica
         O->>R: STORE(key, record)
-        Note over R: empty, so it checks the network first<br/>(see the STORE check diagram)
-        R-->>O: Stored, or a refusal
+        Note over R: decides by what it holds, or checks the network<br/>(see the replica rules and the STORE check)
+        R-->>O: Stored, AlreadyStored, or a refusal
     end
-    opt a replica refused (Conflict, Stale, NewerClaimed)
+    opt a replica refused (Conflict, Stale)
         O->>R: FIND_VALUE(key) to each replica that refused, at once
         R-->>O: its record, or nothing
-        Note over O: checked against version 0, then its signature<br/>version 0 signed again: ExistingRecord<br/>version 1 under the committed key: NewerVersion<br/>anything else: a replica that did not store
+        Note over O: would a holder of it refuse? then its signature<br/>another record at the same position: ExistingRecord<br/>a higher position: NewerVersion<br/>anything else: a replica that did not store
     end
     Note over O: Complete if every replica stored it,<br/>Degraded if some did not, or refused without showing why

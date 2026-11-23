@@ -16,115 +16,101 @@ by earlier releases cannot be carried over: each device creates a new DID.
 application.
 
 - **DIDs** are self-certifying: `did:iiot:` followed by the base64url SHA-256
-  of the first version of the DID Document, with its own DID written as the
-  placeholder `did:iiot:self`. The DHT key is the decoded hash. DIDs based on
-  a UUID are refused.
-- **DID Documents** carry `seq`, `prev` (the hash of the previous record) and
-  `nextKeyHash` (the hash of the key that signs the next version), and must be
-  in canonical JSON: printable ASCII, sorted keys, no whitespace, integers
-  within ±(2^53 − 1).
-- **Updates** carry no `auth_signature`. Version N must be signed by the key
-  that version N−1 committed to, so every update is a key rotation.
+  of a genesis that commits the initial document body and the root of a tree
+  of 64 rotation keys, each with an activation code. The DHT key is the
+  decoded hash. DIDs based on a UUID are refused.
+- **DID Documents** carry `seq`, the position of their key in the tree (0 to
+  62; 63 is reserved), `prev` from position 1, and `treeProof`: the genesis,
+  the activation code of the position and its Merkle path. They must be in
+  canonical JSON: printable ASCII, sorted keys, no whitespace, integers within
+  ±(2^53 − 1).
+- **Rotations** carry no `auth_signature`: position N is signed by the key the
+  tree commits to at N, and any position may follow any lower one.
 - **Wire protocol:**
-  - `Update` carries the record only, and `UpdateResult` returns a status:
-    `Updated`, `AlreadyStored`, `MissingPrevious` (with the version held),
-    `Stale`, `Conflict`, `CapacityExceeded` or `InvalidRecord`;
-  - `StoreResult` adds `Stale`, `NewerClaimed` and `MissingPrevious`;
-  - `FindHashHit` carries the version number of the record held;
+  - `Update` and `UpdateResult` are removed: every position is published with
+    `Store`;
+  - `StoreResult` adds `Stale`;
+  - `FindHashHit` carries the position of the record held;
   - message ids are drawn at random for each request.
 - **Rust API:**
-  - `Server::set` and `Server::set_detailed` publish only a version 0; a
-    later version is refused with `SetRejection::UseUpdate`;
-  - `Server::update(key, value, earlier)` replaces
-    `Server::update(key, value, auth_signature)`: `earlier` holds the owner's
-    previous versions;
-  - `SetReport` adds `stale_rejections`, `newer_claimed` and
-    `unproven_refusals`, and `SetRejection` adds `NewerVersion` and
-    `UseUpdate`;
+  - `Server::set` and `Server::set_detailed` publish any position;
+    `Server::update` is removed, and `Server::update_status_list(value)`
+    replaces it for the Status List;
+  - `SetReport` adds `stale_rejections` and `unproven_refusals`, and
+    `SetRejection` adds `NewerVersion`;
   - `SignatureVerifierHandler::handle_update_verification` is removed.
-- **Python API:** `Server.update(key, value, earlier)`; the `set_detailed`
-  report adds `stale_rejections`, `newer_claimed` and `unproven_refusals`,
-  and the reasons
-  `newer_version` and `use_update`; keys are DIDs. The Status List is
-  updated with `update("status-list", value, [])`.
+- **Python API:** `Server.update` is removed: `set` publishes every position,
+  and `update_status_list(value)` replaces the Status List. The `set_detailed`
+  report adds `stale_rejections` and `unproven_refusals`, and the reason
+  `newer_version`. Keys are DIDs. `Ed25519KeyManager` is removed.
 
 ### Added
 
+- The `auth_handler::tree` module: leaf and node hashes, membership paths,
+  the genesis, and the check of a record against the tree its DID commits to;
+  `auth_handler::owner::OwnerTree`, the owner's tree with its secrets in
+  memory.
 - Key pairs derived from a 32-byte seed: `MlDsa65KeyPair::from_seed` in Rust
-  and `MlDsaKeyManager.keypair_from_seed` in Python, so that an application
-  keeps only the seed of its next key.
-- The `auth_handler::did` module: DID derivation, canonical form, DHT key of
-  a DID.
-- Validation of a successor by a replica that holds the previous version, and
-  its atomic replacement (`ForgetfulStorage::replace_if`).
-- A network check of empty replicas for every version: a first version is
-  refused when a quorum of the closest nodes reports a later one; a later
-  version is refused on any contradicting answer, and is otherwise accepted
-  once the previous version has been fetched and verified and a quorum
-  agrees.
-- Replay of the owner's chain to replicas that are behind or empty.
-- Testbed: chains of versions on each node; attack modes that forge a
-  successor of every first version (`successor`) and spoof `FindHash` answers
-  (`spoof`); a testbed-only switch that makes a node lie in `FindHash`,
-  claiming a later version (`lie on`) or another first version (`lie v0`,
-  `--lie v0` in the measurements);
-  measurement modes for rotations with liars (`update --liars`), copies under
-  churn (`churn`), and replicas lost while the owner is offline (`outage`,
-  with the `push` command), with what readers in the network and joining
-  readers get then (`--reads`, `--joiners`).
-- Counters for the new outcomes of the network check, and for the claims of
-  another first version dropped because they were not shown
-  (`unshown_claims`).
-- Documentation: an integration guide, the evaluation of this release in
-  `EXPERIMENTS.md` with its raw data in `experiments/`, and new diagrams in
-  `DESIGN.md`.
+  and `MlDsaKeyManager.keypair_from_seed` in Python.
+- The `auth_handler::did` module: DID suffix and canonical form.
+- Atomic replacement of a stored record by a verified higher position
+  (`ForgetfulStorage::replace_if`).
+- A network check of empty replicas: a record is refused as stale only when
+  a node shows a verified higher position, which the replica then stores; a
+  claim, a silence or another record at the same position refuses nothing.
+- Testbed: a tree of rotation keys on each node; attack modes that forge a
+  record after every position seen (`race`, `burst`, `successor`, `persist`)
+  and spoof `FindHash` answers (`spoof`); a testbed-only switch that makes a
+  node lie in `FindHash`, claiming a position far ahead (`lie on`) or
+  position 0 under a made-up hash (`lie v0`); measurement modes for rotations
+  with liars (`update --liars`), copies under churn (`churn`), and replicas
+  lost while the owner is offline (`outage`, with the `push` command), with
+  what readers in the network and joining readers get then (`--reads`,
+  `--joiners`).
+- Counters for the outcomes of the network check (`accepted`,
+  `accepted_with_silence`, `superseded`) and for the claims of a higher
+  position dropped because they were not shown (`unshown_claims`).
+- Documentation: an integration guide, the evaluation in `EXPERIMENTS.md`
+  with its raw data in `experiments/`, and new diagrams in `DESIGN.md`.
 
 ### Changed
 
-- A replica keeps one version per DID and replaces it only with its verified
-  successor. An older version is refused as `Stale`, and another version with
-  the same number as `Conflict`, logged as duplicity.
-- A rotation sends about 6.5 KB in 5 fragments to each replica, instead of
-  about 9.8 KB in 8: 31% less traffic, as measured on 127 nodes.
+- A replica keeps one record per DID and replaces it with any verified
+  higher position. A lower position is refused as `Stale`, and another
+  record at the same position as `Conflict`, logged as duplicity or as a
+  repeated signing.
+- `set` and `set_detailed` read no copy first: they find the closest nodes and
+  send the record. A replica that refuses it counts only once it shows a
+  record that proves the refusal: `existing_record` means a replica showed
+  another valid record at the same position, `newer_version` a valid higher
+  position. Any other refusal, or an `InvalidRecord` answer, makes the outcome
+  `degraded`, or `replica_conflict` when no replica stored the record.
 - The Docker demonstration shares the new DID between publisher and retriever
   through a temporary volume.
-- `set` and `set_detailed` no longer read the DID from the network before
-  publishing: they find the closest nodes and send the record, as `update`
-  does. A replica that refuses it counts only once it shows its record and
-  that record proves the refusal against version 0: `existing_record` means
-  a replica showed version 0 signed twice, `newer_version` that one showed
-  version 1 or most replicas claim a later version. Any other refusal, or an
-  `InvalidRecord` answer, makes the outcome `degraded`, or `replica_conflict`
-  when no replica stored the record.
-- An empty replica refuses a first version because of another first version
-  only once the node that claims it shows it: the same document signed again,
-  with a valid signature.
 
 ### Removed
 
-- DIDs based on UUIDs, the `auth_signature` of updates, and the `uuid`
-  dependency.
+- DIDs based on UUIDs, the `auth_signature` of updates, the `Update` request,
+  and the `uuid` dependency.
 - Ed25519 and RSA signing and verification, `Ed25519KeyManager` in Python,
   and the `ed25519-dalek` and `rsa` dependencies. No record could use them:
   records are signed with ML-DSA-65 only.
 
 ### Security
 
-- Nobody but the device can publish a first version under its DID.
-- Theft of the current key does not allow a rotation: the next key is kept
-  as a seed until the rotation that reveals it.
-- An earlier version cannot be replayed as the current one at a replica that
-  holds the DID, nor at an empty replica while at least a quorum of the nodes
-  it asks hold the DID.
-- One node can no longer stop a DID from being created: not by serving a
-  version 1 signed by its own key to the owner's lookup, nor by refusing the
-  first version without showing why, nor by claiming another first version
-  it does not have. Before, each of these blocked the publication and told
-  the application it had signed its first version twice.
-- Known limits: one node that claims a later version, or does not answer,
-  keeps an empty replica empty; below a quorum of holders only the owner can
-  restore copies; a quorum of colluding nodes near a DID controls what it
-  resolves to. See `DESIGN.md`, section 13, and `EXPERIMENTS.md`.
+- Every record proves its own key from its DID: no node, under any number of
+  made-up ids, can make a replica store a record the owner did not sign.
+- Theft of the current key does not allow signing another position: each
+  position's key is committed in the tree, and its activation code stays
+  private until the owner publishes that position.
+- A lower position cannot replace a higher one at a replica that holds the
+  DID, nor at an empty replica that can see a holder of a higher position.
+- One node can no longer stop a DID from being created or rotated: claims of
+  a later position, silence and refusals not shown refuse nothing.
+- Known limits: an empty replica that sees no higher position may store an
+  authentic but superseded record, so readers rely on their credential check
+  of the key; made-up ids can still fill routing tables and delay a check.
+  See `DESIGN.md` and `EXPERIMENTS.md`.
 
 ## Earlier changes
 
