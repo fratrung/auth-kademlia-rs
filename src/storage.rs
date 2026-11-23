@@ -259,6 +259,12 @@ impl ForgetfulStorage {
         self.max_storage_bytes
     }
 
+    /// Whether the store holds no entry at all, not even an expired record
+    /// that has not yet been pruned or a marker.
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
     /// The highest position accepted for `key` whose record has expired,
     /// while it is remembered: one more TTL after the record's expiry.
     /// `None` while the record is live, as `get` returns it.

@@ -182,7 +182,9 @@ impl Server {
     }
 
     /// Probe failing contacts and, while no contact is responding, retry the
-    /// bootstrap seeds. Does no network work while the routing table is healthy.
+    /// bootstrap seeds. Once a contact answers again, or first answers a node
+    /// that started with records and has not looked up its own id, look it
+    /// up. Does no network work while the routing table is healthy.
     pub(super) fn schedule_maintenance(&self) {
         let Some(owner) = &self.protocol else {
             return;
@@ -202,9 +204,14 @@ impl Server {
 
                 if proto.router.read().await.live_contacts() > 0 {
                     seed_delay = MAINTENANCE_TICK;
-                    if isolated {
+                    // A node that started with records and was contacted
+                    // before it looked up its own id, such as a seed with
+                    // no seeds of its own, joins here.
+                    if isolated || !proto.has_joined() {
+                        if isolated {
+                            log::info!("Reconnected, refreshing the routing table");
+                        }
                         isolated = false;
-                        log::info!("Reconnected, refreshing the routing table");
                         let neighbors = proto.router.read().await.find_neighbors(&node, None);
                         NodeSpiderCrawl::new(
                             Arc::clone(&proto),
@@ -215,6 +222,7 @@ impl Server {
                         )
                         .find()
                         .await;
+                        proto.note_joined();
                     }
                     continue;
                 }

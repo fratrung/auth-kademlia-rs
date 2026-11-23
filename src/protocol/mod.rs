@@ -31,7 +31,7 @@ use welcome::WELCOME_CONCURRENCY;
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::atomic::{AtomicU32, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::Instant;
 
@@ -64,6 +64,13 @@ pub struct KademliaProtocol {
     /// Shared with `Server` so a verification result cached in one layer is
     /// immediately reused by the other. `None` when the cache is disabled.
     sig_cache: Option<Arc<SignatureCache>>,
+    /// False while this node holds records from before it started listening
+    /// and has not finished a lookup of its own id (`note_joined`): its
+    /// table is still sparse, so it would take itself for one of the closest
+    /// nodes to keys it is far from, and send records, possibly superseded
+    /// while it was down, to nodes outside the `k` closest, which keep them.
+    /// The nodes it meets meanwhile enter its table but are sent nothing.
+    joined: AtomicBool,
     /// Nodes waiting for, or receiving, the records they should hold.
     welcome_in_flight: DashMap<[u8; ID_LEN], ()>,
     /// Bounds whole-storage scans caused by newly discovered peers.
@@ -121,6 +128,7 @@ impl KademliaProtocol {
         sig_cache: Option<Arc<SignatureCache>>,
     ) -> Self {
         let router = RoutingTable::new(source_node.clone(), ksize);
+        let joined = AtomicBool::new(storage.is_empty());
         Self {
             router: Arc::new(RwLock::new(router)),
             storage,
@@ -131,6 +139,7 @@ impl KademliaProtocol {
             alpha,
             store_lookups: Arc::new(AtomicUsize::new(0)),
             sig_cache,
+            joined,
             welcome_in_flight: DashMap::new(),
             welcome_permits: Arc::new(Semaphore::new(WELCOME_CONCURRENCY)),
             oldest_pings_in_flight: DashMap::new(),

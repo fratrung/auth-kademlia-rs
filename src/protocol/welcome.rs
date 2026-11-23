@@ -2,6 +2,7 @@
 //! table at once; sending them the records they should hold waits in a
 //! bounded queue that runs one replication at a time.
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use futures::stream::{self, StreamExt};
@@ -32,7 +33,10 @@ impl KademliaProtocol {
     /// A node made contact: add it to the routing table at once (Kademlia
     /// §2.2), and queue the records it should hold (§2.5). Only the records
     /// are bounded, because finding them scans the whole storage: one scan
-    /// runs at a time and at most `MAX_WELCOME_QUEUE` nodes wait for it.
+    /// runs at a time and at most `MAX_WELCOME_QUEUE` nodes wait for it. A
+    /// node that started with records queues nothing until it has joined
+    /// (`note_joined`); the nodes met before then get their records from
+    /// the republication.
     pub(super) async fn schedule_welcome_if_new(self: &Arc<Self>, node: Node) {
         let returned = self
             .note_alive(&node)
@@ -43,6 +47,14 @@ impl KademliaProtocol {
         }
         self.add_contact(node.clone()).await;
 
+        if !self.has_joined() {
+            log::debug!(
+                "{} sends nothing to {} until it has joined the network",
+                self.source_node,
+                node
+            );
+            return;
+        }
         if self.welcome_in_flight.contains_key(&node.id) {
             return;
         }
@@ -63,6 +75,22 @@ impl KademliaProtocol {
             }
             p.welcome_in_flight.remove(&node.id);
         });
+    }
+
+    /// A lookup of this node's own id is over, from at least one contact
+    /// that answered (`Server::bootstrap`, or the maintenance tick once a
+    /// contact answers): its table now holds the nodes closest to it, and
+    /// the nodes it meets from now on are sent the records they should hold.
+    pub(crate) fn note_joined(&self) {
+        if !self.joined.swap(true, Ordering::AcqRel) {
+            log::info!("Joined the network: new nodes are sent the records they should hold");
+        }
+    }
+
+    /// Whether new nodes are sent the records they should hold
+    /// (`note_joined`).
+    pub(crate) fn has_joined(&self) -> bool {
+        self.joined.load(Ordering::Acquire)
     }
 
     /// Send a node that just joined or just came back the records it should
@@ -242,6 +270,51 @@ mod tests {
             }
             other => panic!("expected a Store, got {}", rpc_message_name(&other)),
         }
+    }
+
+    /// A node that starts with records, as one restarted from its data
+    /// directory, sends them to no node it meets until it has looked up its
+    /// own id: with a sparse table it takes itself for one of the closest
+    /// nodes to any key. The nodes it meets still enter its table.
+    #[tokio::test]
+    async fn a_node_that_starts_with_records_sends_them_only_once_it_has_joined() {
+        let storage = Arc::new(ForgetfulStorage::new(-1));
+        storage.set(welcome_key().to_vec(), b"record".to_vec());
+        let protocol =
+            test_protocol_with_storage(Arc::new(TestHandler::new(true, true)), false, storage)
+                .await;
+        serve(&protocol);
+
+        let (early, contact) = meet(&protocol, 0x20).await;
+        assert!(
+            try_read_frame(&early, Duration::from_millis(500))
+                .await
+                .is_none(),
+            "a node met before joining was sent something"
+        );
+        assert!(protocol
+            .router
+            .read()
+            .await
+            .get_contact(&contact.id)
+            .is_some());
+
+        protocol.note_joined();
+        // Closer to the key than the node met before, so the record is due to it.
+        let (late, contact) = raw_peer(id_at_distance(0x10)).await;
+        let to = protocol.socket.local_addr().unwrap();
+        send_raw(
+            &late,
+            to,
+            1,
+            true,
+            RpcMessage::Ping {
+                sender_id: contact.id,
+            },
+        )
+        .await;
+        let (store, _) = read_frame_of_kind(&late, true).await;
+        assert!(matches!(store.message, RpcMessage::Store { .. }));
     }
 
     /// Nodes met while a replication is under way wait for their records in

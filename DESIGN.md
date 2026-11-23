@@ -536,6 +536,18 @@ any list the issuer signed, an older one included.
   scanning the whole storage, so new nodes wait for their records in a queue,
   one at a time (section 12). A node beyond the queue's bound is still added
   to the routing table and gets its records from the next republication.
+- **A node that starts with records**, such as a replica restarted from its
+  data directory (see Restarts below), sends them to nobody until a lookup of
+  its own id is over: the one of `bootstrap`, or the one the recovery runs
+  once a contact answers. Until then its table holds the few nodes met first,
+  so it takes itself for one of the closest nodes to keys it is far from, and
+  would send records, possibly superseded while it was down, to nodes outside
+  the `k` closest. No other node's republication reaches those nodes: they
+  would serve the old position to their own reads until their own hourly
+  republication is refused as stale and repairs them. In the testbed, before
+  this rule, 461 of 2520 reads after a rotation returned an older position.
+  The nodes it meets meanwhile still enter its table, and get their records
+  from the republication.
 - **Returning nodes**, silent for at least 2.5 s, are treated as new and
   refilled the same way. A node that crashes and restarts within about a second
   is not noticed by its neighbours, and stays empty until a republication.

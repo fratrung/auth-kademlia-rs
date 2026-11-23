@@ -1,6 +1,6 @@
 //! A replica that keeps its records on disk, over real UDP: what it serves
-//! after a power cut, and what it answers when the disk refuses a write.
-//! Ports: 16042-16045.
+//! after a power cut, what it answers when the disk refuses a write, and to
+//! whom it sends its records once restarted. Ports: 16042-16048.
 
 mod common;
 
@@ -57,8 +57,11 @@ fn set_read_only(dir: &Path, read_only: bool) -> bool {
 }
 
 async fn start(port: u16, storage: ForgetfulStorage) -> Server {
+    start_as(port, [(port % 251) as u8; ID_LEN], storage).await
+}
+
+async fn start_as(port: u16, id: [u8; ID_LEN], storage: ForgetfulStorage) -> Server {
     let handler = Arc::new(DIDSignatureVerifierHandler::new(Path::new("unused")));
-    let id = [(port % 251) as u8; ID_LEN];
     let mut server = Server::new(handler, 20, 3, Some(id), Some(Arc::new(storage)), false);
     server
         .listen(port, "127.0.0.1")
@@ -122,5 +125,64 @@ fn a_replica_that_cannot_write_does_not_confirm_the_record() {
         set_read_only(&dir.0, false);
         drop(replica);
         assert_eq!(persistent(&dir).get(&chain.key), Some(chain.version(5)));
+    });
+}
+
+/// An id at XOR distance `distance` from `key`, in its last byte, or far
+/// from it when `distance` is 0.
+fn id_near(key: &[u8; ID_LEN], distance: u8) -> [u8; ID_LEN] {
+    let mut id = *key;
+    if distance == 0 {
+        id[0] ^= 0x80;
+    } else {
+        id[ID_LEN - 1] ^= distance;
+    }
+    id
+}
+
+/// A replica restarted from its directory meets the seed first, far from
+/// the key: with nobody else in its table it would take itself for the
+/// closest node to the key and send it its record, which may have been
+/// superseded while it was down. It sends it to nobody until its bootstrap
+/// lookup is over; then a node that joins close to the key receives it.
+#[test]
+fn a_restarted_replica_sends_its_records_only_once_it_has_joined() {
+    runtime().block_on(async {
+        let dir = DataDir::new(16046);
+        let chain = Chain::with_versions(0);
+        persistent(&dir).set(chain.key.to_vec(), chain.version(0));
+
+        let seed = start_as(
+            16046,
+            id_near(&chain.key, 0),
+            ForgetfulStorage::new(DEFAULT_TTL),
+        )
+        .await;
+        let replica = start_as(16047, id_near(&chain.key, 0x01), persistent(&dir)).await;
+        assert!(!replica
+            .bootstrap(vec![("127.0.0.1".to_string(), 16046)])
+            .await
+            .is_empty());
+
+        let joiner = start_as(
+            16048,
+            id_near(&chain.key, 0x10),
+            ForgetfulStorage::new(DEFAULT_TTL),
+        )
+        .await;
+        assert!(!joiner
+            .bootstrap(vec![("127.0.0.1".to_string(), 16047)])
+            .await
+            .is_empty());
+        let mut waited = Duration::ZERO;
+        while joiner.storage.get(&chain.key).is_none() && waited < Duration::from_secs(5) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            waited += Duration::from_millis(50);
+        }
+        assert_eq!(joiner.storage.get(&chain.key), Some(chain.version(0)));
+        assert!(
+            seed.storage.get(&chain.key).is_none(),
+            "the seed received the record"
+        );
     });
 }

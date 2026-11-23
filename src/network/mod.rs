@@ -201,7 +201,10 @@ impl Server {
     }
 
     /// Ping each address in `addrs`, then run a `NodeSpiderCrawl` to populate
-    /// the routing table. Returns the k-closest nodes discovered.
+    /// the routing table. Returns the k-closest nodes discovered. Once that
+    /// lookup is over, from at least one address that answered, a node that
+    /// started with records sends new nodes the records they should hold
+    /// (`KademliaProtocol::note_joined`).
     pub async fn bootstrap(&self, addrs: Vec<(String, u16)>) -> Vec<Node> {
         log::debug!("Bootstrapping with {} initial contacts", addrs.len());
         if let Some(proto) = &self.protocol {
@@ -219,7 +222,8 @@ impl Server {
 
         match &self.protocol {
             Some(proto) => {
-                NodeSpiderCrawl::new(
+                let reached = !nodes.is_empty();
+                let closest = NodeSpiderCrawl::new(
                     Arc::clone(proto),
                     self.node.clone(),
                     nodes,
@@ -227,7 +231,11 @@ impl Server {
                     self.alpha,
                 )
                 .find()
-                .await
+                .await;
+                if reached {
+                    proto.note_joined();
+                }
+                closest
             }
             None => vec![],
         }

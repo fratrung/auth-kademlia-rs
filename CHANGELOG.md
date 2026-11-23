@@ -63,7 +63,10 @@ application.
   `DATA_DIR` in `dht_node`. A replica keeps each record in a file, written to
   the device before it acknowledges the record, and serves it again after a
   restart with the rest of its TTL; renewals are written every hour. A STORE
-  whose record cannot be written gets no answer.
+  whose record cannot be written gets no answer. A node that starts with
+  records sends them to the nodes it meets only once the lookup of its own id
+  is over, so that a restarted replica does not give a superseded record to
+  nodes outside the `k` closest.
 - The marker of an expired DID record: its position is remembered for one
   more TTL, also across restarts, so that a replay of a lower position is
   refused even when no node answers the check, and a GET or a repair returns
