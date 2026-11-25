@@ -543,6 +543,15 @@ def is_canonical_did(did: str) -> bool:
   would each sign the next position. The lock is advisory and holds on a
   local file system: keep the directory on a local disk, and never run a
   copy of it on a second device.
+- **A damaged file is refused.** Each file of the custody ends with the
+  SHA-256 of its other bytes. If the storage changes a byte of `tree` or
+  `state`, `Custody(dir)` raises `RuntimeError` rather than decide from a
+  wrong state: a flipped bit could otherwise sign a published position
+  again or move the calendar. A damaged `secrets` raises it in the calls
+  that read it: `prepare`, `activate_early` and `mark_published`. With damaged secrets the custody
+  still opens, so `published()` keeps serving the republication. The custody
+  repairs nothing: restore the directory only from a copy at least as recent
+  as the damaged one, or provision a new DID.
 - **The file backend trusts the device's clock and files.** Whoever can
   write them can move the calendar; enforcing it against the host needs a
   backend inside a TEE or a secure element, behind the same Rust trait

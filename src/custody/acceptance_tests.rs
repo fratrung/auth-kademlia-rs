@@ -648,3 +648,56 @@ fn position_zero_is_due_from_provisioning_until_the_end_of_its_slot() {
         assert_eq!(custody.due(), Due::Position(due), "at {at}");
     }
 }
+
+/// A bit the device flips in a file of the custody is refused, never
+/// trusted. In `state` the highest activated position 1 would become 0, and
+/// position 1 would be signed again; in `tree` a week would become about 19
+/// hours, and positions would be consumed early. `secrets` is checked when a
+/// position is signed: the custody still opens and serves its published
+/// record, and activates nothing.
+#[test]
+fn a_custody_file_whose_bytes_changed_is_refused() {
+    let flip = |dir: &TestDir, name: &str, at: usize, bit: u8| {
+        let path = dir.path().join(name);
+        let original = std::fs::read(&path).unwrap();
+        let mut damaged = original.clone();
+        damaged[at] ^= 1 << bit;
+        std::fs::write(&path, damaged).unwrap();
+        original
+    };
+    let open = |dir: &TestDir, now: &Arc<AtomicU64>| {
+        FileCustody::open_with(dir.path().to_path_buf(), clock(now))
+    };
+
+    let owner = Owner::new();
+    let zero = owner.publish(0);
+    owner.at(slot(1));
+    let one = owner.custody.prepare(1, &template()).unwrap();
+    let (dir, now) = owner.close();
+    // After the 6 bytes of the header: in `state` the highest activated
+    // position, 8 bytes big-endian, whose last bit turns 1 into 0; in `tree`
+    // the start, then the interval, whose bit 29 is set in a week of
+    // milliseconds.
+    for (name, at, bit) in [("state", 13, 0), ("tree", 18, 5)] {
+        let original = flip(&dir, name, at, bit);
+        assert!(
+            matches!(open(&dir, &now), Err(CustodyError::Damaged(file)) if file == name),
+            "{name}"
+        );
+        std::fs::write(dir.path().join(name), original).unwrap();
+    }
+
+    // The seed of position 2, after the header and the 64-byte secrets of
+    // positions 0 and 1.
+    flip(&dir, "secrets", 6 + 2 * 64, 1);
+    let custody = open(&dir, &now).unwrap();
+    assert_eq!(custody.pending(), Some(one));
+    assert_eq!(custody.published(), Some(zero.clone()));
+    assert!(signature_verifies(&zero));
+    now.store(slot(2), Ordering::SeqCst);
+    assert!(matches!(
+        custody.prepare(2, &template()),
+        Err(CustodyError::Damaged("secrets"))
+    ));
+    assert_eq!(custody.due(), Due::Position(2));
+}

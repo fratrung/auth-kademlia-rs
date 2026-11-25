@@ -21,6 +21,16 @@
 //! A position's secrets are read only to sign it. Once a record is
 //! published, the secrets of the positions below it are erased, since no
 //! call signs below the highest activated position again.
+//!
+//! Each file ends with the SHA-256 of the bytes before it, and a file that
+//! does not match it is refused (`Damaged`): `tree` and `state` when the
+//! custody opens, `secrets` when a position is signed, so that a custody
+//! whose secrets are damaged still opens and serves its published record.
+//! The rules rest on these files: a bit the device flips in the highest
+//! activated position would sign a position again, one in the skipped
+//! positions would sign a position whose key leaked, one in the calendar
+//! would consume positions early or stop the rotation. The hash is no
+//! defence against a party that can write the files: it can recompute it.
 
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
@@ -44,7 +54,7 @@ use super::{
 };
 
 const MAGIC: &[u8; 4] = b"AKCU";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 const TREE: (&str, u8) = ("tree", 1);
 const SECRETS: (&str, u8) = ("secrets", 2);
 const STATE: (&str, u8) = ("state", 3);
@@ -319,9 +329,9 @@ impl FileCustody {
         // replaced by another instance before it lets go of the directory.
         let lock = lock_dir(&dir)?;
         let (calendar, genesis, tree) =
-            decode_tree(&fs::read(dir.join(TREE.0))?).ok_or(CustodyError::Damaged("tree"))?;
+            decode_tree(&read_file(&dir, TREE.0)?).ok_or(CustodyError::Damaged("tree"))?;
         let state =
-            State::decode(&fs::read(dir.join(STATE.0))?).ok_or(CustodyError::Damaged("state"))?;
+            State::decode(&read_file(&dir, STATE.0)?).ok_or(CustodyError::Damaged("state"))?;
         let custody = Self {
             dir,
             calendar,
@@ -359,8 +369,7 @@ impl FileCustody {
     }
 
     fn read_secrets(&self) -> Result<Secrets, CustodyError> {
-        Secrets::decode(&fs::read(self.dir.join(SECRETS.0))?)
-            .ok_or(CustodyError::Damaged("secrets"))
+        Secrets::decode(&read_file(&self.dir, SECRETS.0)?).ok_or(CustodyError::Damaged("secrets"))
     }
 
     /// The new record of `position`, above the highest activated, written
@@ -520,15 +529,33 @@ impl Custody for FileCustody {
     }
 }
 
+/// Make the file `name` of `dir` hold `bytes` followed by their SHA-256.
 fn write_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), CustodyError> {
     let temporary = dir.join(format!("{name}.tmp"));
+    let mut sealed = bytes.to_vec();
+    sealed.extend_from_slice(&digest_bytes(bytes));
     Ok(write_durably(
         dir,
         &temporary,
         &dir.join(name),
-        bytes,
+        &sealed,
         true,
     )?)
+}
+
+/// The bytes `write_file` wrote as the file `name` of `dir`, if they still
+/// match the SHA-256 that ends it; `Damaged` otherwise.
+fn read_file(dir: &Path, name: &'static str) -> Result<Vec<u8>, CustodyError> {
+    let mut bytes = fs::read(dir.join(name))?;
+    let len = bytes
+        .len()
+        .checked_sub(ID_LEN)
+        .ok_or(CustodyError::Damaged(name))?;
+    if digest_bytes(&bytes[..len]) != bytes[len..] {
+        return Err(CustodyError::Damaged(name));
+    }
+    bytes.truncate(len);
+    Ok(bytes)
 }
 
 /// The exclusive lock of `dir`, created if missing. It is `flock` on Unix,

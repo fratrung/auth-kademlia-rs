@@ -516,9 +516,15 @@ Once a record is published, the secrets of the positions below it are
 erased. The file backend keeps the seeds and codes, the calendar and the
 records in a directory only the process's user can read, and one instance
 at a time holds it, through an exclusive lock: each instance decides from
-its own copy of the state, so two would each sign the next position. It
-trusts the device's clock and files, and enforcing the calendar against the
-host needs a backend that keeps its own.
+its own copy of the state, so two would each sign the next position. Each
+of its files ends with the SHA-256 of its other bytes, and a file that does
+not match it is refused rather than trusted: one bit the device flipped in
+the highest activated position would sign that position again, one in the
+calendar would consume positions early or stop the rotation. The secrets are
+checked only when a position is signed, so a custody whose secrets are
+damaged still serves its published record. It trusts the device's clock
+and files, and enforcing the calendar against the host needs a backend that
+keeps its own.
 
 ## 10. Status List
 
@@ -663,8 +669,13 @@ any list the issuer signed, an older one included.
 - **A copy of all the seeds and codes** gives every future position to its
   holder: the DID must be replaced. A lost store ends rotation the same way.
 - **The file custody trusts its host.** A party that can write its files or
-  set the clock can move the calendar, and a custody restored from an older
-  backup can sign a published position again.
+  set the clock can move the calendar (the hash at the end of each file
+  catches what the device damaged, not a party that can recompute it), and
+  a custody restored from an older backup can sign a published position
+  again.
+- **A damaged custody stops.** It refuses to open, or to sign once its
+  secrets are damaged, and repairs nothing: it can be restored only from a
+  copy at least as recent, otherwise the DID must be replaced.
 - **A tree has 63 positions.** Once position 62 is published the DID cannot
   rotate again; moving to a new tree is not defined yet.
 - **Expiries follow the device's clock.** They are wall clock times, so that

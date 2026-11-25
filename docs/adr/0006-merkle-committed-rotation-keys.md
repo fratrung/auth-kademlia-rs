@@ -231,6 +231,20 @@ fragments than the sender sent for a message of 261 801 to 262 144 bytes,
 counting a partial last fragment as full; both ends now take the
 fragments of a message of 256 KiB.
 
+**Damaged files.** Decided, 2026-11-25. Each file of the backend ends with
+the SHA-256 of its other bytes, as the replica's files do (point 5), and a
+file that does not match it is refused: the calendar and the activation
+state when the backend opens, the secrets when a position is signed, so a
+backend whose secrets are damaged still serves its published record.
+Without it the backend checked only the form of its files. One bit the
+storage flipped in the greatest activated position, 1 to 0, made it sign
+position 1 again; one in the skipped positions made a leaked position
+signable; one in the interval turned a week into 19 hours and exhausted
+the tree; and about half of all single-bit changes of the state opened
+unnoticed (found by probes after a review). A damaged backend stops and
+repairs nothing: it can be restored only from a copy at least as recent,
+for the reason the lock gives above.
+
 **Acceptance cases.** Use controlled time in the custody tests.
 
 | Case | Expected result |
@@ -762,6 +776,7 @@ read 4 to 9% more. The latency of a publication does not change (E1).
 | The theft of the current key | Each later position needs its own key and its own code, which stay secret until it is published | `revoked_key_cannot_authorise_further_rotation`, `a_record_with_another_code_fails_the_tree_though_its_signature_verifies` | |
 | The owner reusing a position, after a restart or with the clock set back | The custody writes the highest activated position durably before it returns a record, and signs nothing below it (point 1) | `a_restart_in_slot_5_after_publishing_2_prepares_5_after_2`, `a_clock_set_back_reopens_no_position` | |
 | Two instances of the custody on one store, each signing the next position | An exclusive lock on the store, held while an instance lives (point 1) | `one_instance_at_a_time_holds_a_custody` | |
+| A custody file damaged by the storage, signing a position again or moving the calendar | The SHA-256 at the end of each file; a file that does not match it is refused (point 1) | `a_custody_file_whose_bytes_changed_is_refused` | |
 | A position activated for a record too long to send | A record is at most 255 KiB, part of its form, checked before the position is written as activated (point 1) | `a_record_too_long_to_publish_activates_nothing`, `the_longest_record_fits_in_a_store_and_in_an_answer` | |
 | An early activation without authority | The application's verifier checks the issuer's authorization; it reaches only the next position that is not skipped | `a_position_is_never_signed_before_its_slot_without_an_authorization`, `an_authorization_holds_once_for_its_did_and_position`, `an_authorization_never_reaches_a_skipped_lower_or_reserved_position` | |
 | Reading the custody's files | Files readable by the owner's user only; the secrets below a published position are erased | `only_the_owner_can_read_the_custody`, `publishing_erases_the_secrets_below_the_published_position` | |

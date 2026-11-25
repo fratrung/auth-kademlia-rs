@@ -21,9 +21,9 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 369 tests
-cargo test --features counters       # 372: also the counters' own tests
-cargo test --features testbed        # 373: also the testbed's FindHash lie switch
+cargo test                           # all 370 tests
+cargo test --features counters       # 373: also the counters' own tests
+cargo test --features testbed        # 374: also the testbed's FindHash lie switch
 cargo test <name>                    # single test, e.g. test_key_rotation_is_published_with_set
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -151,7 +151,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day TTL and configurable byte budget (default 512 MiB), with lazy expiry on read; times in Unix milliseconds; `insert_if_absent` and `replace_if` (compare and swap under the entry); optionally persistent (`persistent`, `flush_renewals`); the marker of an expired DID record (`marker`, `record_or_marker`) |
 | `src/durable.rs` | The files of a persistent store, one per key: a record and its expiry, or a marker, followed by the SHA-256 of those bytes (a file that does not match is not loaded); atomic replacement (`write_durably`: temporary file, fsync, rename, fsync of the directory, also used by the custody) and loading |
 | `src/custody/mod.rs` | The owner's custody of a DID: the `Custody` trait, the `Calendar` (`floor((now - T) / D)`), `Activation` (highest activated, skipped positions, `due`, `next_early`), `ActivationVerifier`, and the template the application writes (`draft_of`, `template_of`) |
-| `src/custody/file.rs` | `FileCustody`: the custody in a directory (`tree`, `secrets`, `state`, owner-only), held by one instance at a time (`lock`, an exclusive `flock`), the record of a position signed when due and written as the highest activated before it is returned, early activation, skip, and the erasure of the secrets below a published record |
+| `src/custody/file.rs` | `FileCustody`: the custody in a directory (`tree`, `secrets`, `state`, owner-only, each ending with the SHA-256 of its other bytes: `read_file` refuses one that does not match as `Damaged`), held by one instance at a time (`lock`, an exclusive `flock`), the record of a position signed when due and written as the highest activated before it is returned, early activation, skip, and the erasure of the secrets below a published record |
 | `src/custody/acceptance_tests.rs` | The custody's acceptance cases on the file backend, with a clock the tests move |
 | `src/signature_cache.rs` | `SignatureCache` — moka bounded cache (SHA-256 key, TTL 1 h, 4096 entries) for ML-DSA-65 verification results |
 | `src/fragmentation.rs` | KADF fragmentation + reassembly (`encode_fragments`, `parse_fragment`, `accept_fragment`, `ReassemblyMap`) |
@@ -324,6 +324,14 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
   only the next position that is not skipped, and the application's verifier is called
   before anything is signed, without the custody's lock (it may call back
   into it). A skipped position is never signed nor its code released.
+  Each custody file ends with the SHA-256 of its other bytes: `tree` and
+  `state` are refused at `open` when it does not match, `secrets` when a
+  position is signed, so a custody with damaged secrets still serves its
+  published record. Do not read them without it: one bit flipped in the
+  highest activated position signed that position again, one in the
+  skipped positions signed a position whose key leaked, one in the
+  interval took a week to 19 hours and exhausted the tree, and about half
+  of all single-bit changes of `state` opened unnoticed.
   `OwnerTree` holds secrets in memory and enforces none of this: tests,
   examples and the testbed only.
 - A remote DID GET takes no vote: `find_first_valid` returns the first record
@@ -467,7 +475,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/quorum_tests.rs` | 16 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum and update, retry of a publication, a rotation that fills empty replicas, and the network check of a STORE to an empty replica |
 | `tests/repair_tests.rs` | 3 | Repair over real UDP: the expected record found, stored and served locally; no match without it; no answer |
 | `tests/chain_tests.rs` | 8 | Positions of one DID over real UDP: a rotation that reaches every replica, the owner restoring empty replicas, refusals of `set` that count only once shown, forged and old genuine records at empty replicas |
-| `src/**` (inline) | 251 | Module-level `#[test]` blocks (incl. the custody's acceptance cases and calendar, persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
+| `src/**` (inline) | 252 | Module-level `#[test]` blocks (incl. the custody's acceptance cases and calendar, persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 

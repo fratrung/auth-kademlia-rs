@@ -62,7 +62,10 @@ application.
   time holds a custody's directory, through an exclusive lock: another
   opening or provisioning of it fails with `CustodyError::Busy`
   (`RuntimeError` in Python) until the first is dropped or its process
-  ends.
+  ends. Each file of the custody ends with the SHA-256 of its other bytes,
+  and a file that does not match it is refused with `CustodyError::Damaged`
+  (`RuntimeError` in Python): the calendar and the state when the custody
+  opens, the secrets when a position is signed.
 - Persistent replica storage: `ForgetfulStorage::persistent(dir, ttl,
   max_storage_bytes)`, `Server(data_dir=..., flush_secs=3600)` in Python and
   `DATA_DIR` in `dht_node`. A replica keeps each record in a file, written to
