@@ -468,6 +468,18 @@ microseconds per file, where verifying every record's signature at each
 start would cost one ML-DSA verification per record and still not cover
 markers. It does not stop a party that can write the files.
 
+**Amended, 2026-11-25: renewals in their own file, once a day.** The
+batch of changed expiries is one file of renewals, each entry the key, the
+SHA-256 of the record it renews and the later expiry; a record file is
+written only when its record changes, and on recovery a renewal applies
+only to the record whose hash it carries, so a renewal of 5 never extends
+6. The first implementation kept the expiry inside each record file and
+rewrote the whole file to renew it: with hourly republication every flush
+rewrote every record, about 7 KB to move 8 bytes, some 1.3 GB a year for a
+replica of 20 records. The default batching interval is now one day, as is
+the republication (point 10), well within the 14-day TTL: a power cut loses
+at most a day of TTL, never a record.
+
 At the ADR 0005 estimate of 6.5 KB per record, 20 DIDs require about 130 KB
 of record bytes before filesystem and ADR 0006 format overhead. A weekly
 rotation at every DID would add about 130 KB of new record payload writes
@@ -640,6 +652,11 @@ holder could take only the next version (R3).
 Acceptance test: a holder of 5 republishes to a replica that holds 6, and
 ends with 6. Repeat with a replica that answers `Stale` and shows nothing,
 or an invalid record: the holder keeps 5.
+
+**Amended, 2026-11-25.** The republication runs once a day instead of every
+hour, for the records no other node sent during the day (point 5): a holder
+left behind is repaired within a day, and a replica that restarted empty
+without its neighbours noticing waits up to a day for its records.
 
 ### 11. Rollout: replace the ADR 0005 records
 

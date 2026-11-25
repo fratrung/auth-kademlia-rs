@@ -26,7 +26,7 @@ It states what the application must do for the guarantees of
 | Checks the form of every record, its key against the tree its DID commits to, and its signature | Writes the template of its document; its custody builds the tree, the genesis and the DID ([section 4](#4-creating-a-did)) |
 | Keeps one record per DID, replaced by any verified higher position | Keeps the custody's directory as private as a key; the custody releases a code only with its position |
 | Before an empty replica stores a record, looks for a node that shows a higher one | Publishes the record the custody prepares, and resends the saved bytes on every retry |
-| Republishes the records it holds every hour, and takes a higher one a replica shows | Prepares the position due; the custody signs each position once and never one below the highest activated |
+| Republishes the records it holds every day, and takes a higher one a replica shows | Prepares the position due; the custody signs each position once and never one below the highest activated |
 | Returns a verified record on a read, and on request fetches the one a credential names | Republishes its current record at least once every 24 hours, and decides whether the key it reads is trusted |
 
 ## 2. Running a node
@@ -51,8 +51,9 @@ async def start(port: int, seeds: list[tuple[str, int]]) -> authkademlia_py.Serv
 - `data_dir="/var/lib/dht"` keeps the records the node holds on disk, so that
   after a power cut it serves them again, with the rest of their TTL, before
   any other node answers. A new record is on disk before the node
-  acknowledges it; renewed expiries are written every `flush_secs` (3600 by
-  default). Without `data_dir` a restarted node is empty until other nodes
+  acknowledges it; renewed expiries are written every `flush_secs` (86400,
+  one day, by default), all in one file: a record file is written only when
+  its record changes. Without `data_dir` a restarted node is empty until other nodes
   send it its records. On a device, prefer a persistent directory.
 - `issuer_path` is needed only on nodes that verify the Status List
   ([section 10](#10-the-status-list)).
@@ -464,7 +465,7 @@ send the published record again with the saved bytes:
 await node.set_detailed(custody.did, custody.published())
 ```
 
-Replicas holding the record republish it every hour, and an empty replica
+Replicas holding the record republish it every day, and an empty replica
 stores a verified record unless a node shows it a higher one, so replicas
 that lose their copy get it back from the others. The owner's republication
 restores the copies when no replica is left to send them. A copy that nobody

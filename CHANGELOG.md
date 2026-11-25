@@ -67,10 +67,13 @@ application.
   (`RuntimeError` in Python): the calendar and the state when the custody
   opens, the secrets when a position is signed.
 - Persistent replica storage: `ForgetfulStorage::persistent(dir, ttl,
-  max_storage_bytes)`, `Server(data_dir=..., flush_secs=3600)` in Python and
+  max_storage_bytes)`, `Server(data_dir=..., flush_secs=86400)` in Python and
   `DATA_DIR` in `dht_node`. A replica keeps each record in a file, written to
   the device before it acknowledges the record, and serves it again after a
-  restart with the rest of its TTL; renewals are written every hour. A STORE
+  restart with the rest of its TTL. A record file is written only when its
+  record changes: the expiries that renewals move later are written once a
+  day, all in one file, each with the SHA-256 of the record it renews, so
+  that it never extends another record. A STORE
   whose record cannot be written gets no answer. Each file ends with the
   SHA-256 of its other bytes, and a file that does not match it is not
   loaded. A node that starts with
@@ -121,6 +124,9 @@ application.
 
 ### Changed
 
+- A node republishes the records it holds once a day instead of every hour,
+  those that no other node sent it during the day; buckets are still
+  refreshed every hour.
 - A receiver takes every fragmented message the sender lets through, up to
   256 KiB: it counted a partly filled last fragment as full and dropped
   messages of 261 801 to 262 144 bytes.

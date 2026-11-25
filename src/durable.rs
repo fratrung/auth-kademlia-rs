@@ -7,14 +7,22 @@
 //! a journaling file system such as ext4 a power cut then leaves the old
 //! file or the new one, never a mix of them.
 //!
+//! A record file is written when its record changes, never to renew it.
+//! The expiries that renewals moved later are kept apart, all in one file,
+//! `renewals`, each with the SHA-256 of the record it renews: a renewal
+//! rewrites a few bytes per record instead of every record, and applies
+//! only to the exact record it renewed, never to one written after it.
+//!
 //! Each file ends with the SHA-256 of the bytes before it. A file whose
 //! bytes the device changed, such as a flipped bit on an SD card, is not
 //! loaded, as a file that cannot be read: the store would otherwise serve,
 //! and keep against valid copies, a record whose signature no longer
-//! verifies, or remember a position that was never accepted. A writer that
-//! can change the files can also recompute the hash: it is no defence
-//! against the host.
+//! verifies, or remember a position that was never accepted. A damaged
+//! file of renewals is ignored, and the records keep the expiries of their
+//! own files. A writer that can change the files can also recompute the
+//! hash: it is no defence against the host.
 
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -25,17 +33,78 @@ const MAGIC: &[u8; 4] = b"AKRS";
 const VERSION: u8 = 2;
 const RECORD: u8 = 1;
 const MARKER: u8 = 2;
+const RENEWALS: u8 = 3;
 const HEADER_LEN: usize = MAGIC.len() + 2;
 const CHECKSUM_LEN: usize = ID_LEN;
 const EXTENSION: &str = "rec";
 const TEMPORARY: &str = "tmp";
+const RENEWALS_FILE: &str = "renewals";
 
 /// What a file holds for its key. Times are milliseconds since the Unix
 /// epoch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Stored {
-    Record { value: Vec<u8>, expires: u64 },
-    Marker { seq: u64, until: u64 },
+    /// A record, the expiry its file holds, and the later expiry a renewal
+    /// of this exact record gave it, if any.
+    Record {
+        value: Vec<u8>,
+        expires: u64,
+        renewed: Option<u64>,
+    },
+    Marker {
+        seq: u64,
+        until: u64,
+    },
+}
+
+/// The renewals of a file of renewals: by key, the SHA-256 of the record
+/// each renews and its later expiry.
+type Renewed = HashMap<Vec<u8>, ([u8; ID_LEN], u64)>;
+
+/// The bytes of one renewal of a key of `ID_LEN` bytes in the file of
+/// renewals: the length of the key, the key, the SHA-256 of the record and
+/// the expiry.
+const RENEWAL_LEN: usize = 2 + ID_LEN + ID_LEN + 8;
+
+/// The file of renewals as it is built, one renewal at a time, for
+/// `write_renewals`: the renewals go straight into the bytes of the file,
+/// sized once, rather than into a list copied into them afterwards.
+#[derive(Debug)]
+pub(crate) struct Renewals {
+    bytes: Vec<u8>,
+    count: usize,
+}
+
+impl Renewals {
+    /// Room for `entries` renewals of keys of `ID_LEN` bytes and the
+    /// SHA-256 that ends the file, in one allocation.
+    pub(crate) fn with_capacity(entries: usize) -> Self {
+        let mut bytes = Vec::with_capacity(HEADER_LEN + entries * RENEWAL_LEN + CHECKSUM_LEN);
+        bytes.extend_from_slice(&header(RENEWALS));
+        Self { bytes, count: 0 }
+    }
+
+    /// A later expiry for the record of `key` whose SHA-256 is `record`.
+    pub(crate) fn push(
+        &mut self,
+        key: &[u8],
+        record: &[u8; ID_LEN],
+        expires: u64,
+    ) -> io::Result<()> {
+        let len = u16::try_from(key.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "key too long"))?;
+        self.bytes.extend_from_slice(&len.to_be_bytes());
+        self.bytes.extend_from_slice(key);
+        self.bytes.extend_from_slice(record);
+        self.bytes.extend_from_slice(&expires.to_be_bytes());
+        self.count += 1;
+        Ok(())
+    }
+
+    /// How many renewals it holds.
+    pub(crate) fn count(&self) -> usize {
+        self.count
+    }
 }
 
 /// The directory of a persistent store.
@@ -74,16 +143,45 @@ impl DurableDir {
     }
 
     fn replace(&self, key: &[u8], bytes: &[u8]) -> io::Result<()> {
-        let temporary = self.path(key, TEMPORARY);
-        let mut sealed = bytes.to_vec();
-        sealed.extend_from_slice(&digest_bytes(bytes));
         write_durably(
             &self.dir,
-            &temporary,
+            &self.path(key, TEMPORARY),
             &self.path(key, EXTENSION),
-            &sealed,
+            &seal(bytes),
             false,
         )
+    }
+
+    /// Make the file of renewals hold `renewals`, and only them, durably,
+    /// before returning.
+    pub(crate) fn write_renewals(&self, renewals: Renewals) -> io::Result<()> {
+        let mut bytes = renewals.bytes;
+        let checksum = digest_bytes(&bytes);
+        bytes.extend_from_slice(&checksum);
+        let target = self.dir.join(RENEWALS_FILE);
+        let temporary = target.with_extension(TEMPORARY);
+        write_durably(&self.dir, &temporary, &target, &bytes, false)
+    }
+
+    /// The renewals the file of renewals holds, by key; none if it is
+    /// missing, or damaged, which is logged.
+    fn renewals(&self) -> Renewed {
+        let path = self.dir.join(RENEWALS_FILE);
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return HashMap::new(),
+            Err(error) => {
+                log::warn!("storage: cannot read {}: {error}", path.display());
+                return HashMap::new();
+            }
+        };
+        decode_renewals(&bytes).unwrap_or_else(|| {
+            log::warn!(
+                "storage: {} is damaged, records keep the expiries of their files",
+                path.display()
+            );
+            HashMap::new()
+        })
     }
 
     /// Remove the file of `key`, if any.
@@ -95,10 +193,12 @@ impl DurableDir {
         }
     }
 
-    /// Every key and what its file holds. A temporary file is what a crash
+    /// Every key and what its file holds, a record with the later expiry a
+    /// renewal of its exact bytes gave it. A temporary file is what a crash
     /// left before its rename, and is removed; a file that cannot be read
     /// is logged and left where it is.
     pub(crate) fn load(&self) -> io::Result<Vec<(Vec<u8>, Stored)>> {
+        let renewals = self.renewals();
         let mut entries = vec![];
         for entry in fs::read_dir(&self.dir)? {
             let path = entry?.path();
@@ -115,7 +215,21 @@ impl DurableDir {
                 .and_then(|stem| stem.to_str())
                 .and_then(|stem| hex::decode(stem).ok());
             match (key, fs::read(&path).ok().as_deref().and_then(decode)) {
-                (Some(key), Some(stored)) => entries.push((key, stored)),
+                (Some(key), Some(Stored::Record { value, expires, .. })) => {
+                    let renewed = renewals
+                        .get(&key)
+                        .filter(|(record, later)| {
+                            *later > expires && *record == digest_bytes(&value)
+                        })
+                        .map(|(_, later)| *later);
+                    let record = Stored::Record {
+                        value,
+                        expires,
+                        renewed,
+                    };
+                    entries.push((key, record));
+                }
+                (Some(key), Some(marker)) => entries.push((key, marker)),
                 _ => log::warn!("storage: cannot read {}, left as is", path.display()),
             }
         }
@@ -166,7 +280,9 @@ pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
 
 /// `| "AKRS" | version | kind | ... | SHA-256 |`, integers big-endian: a
 /// record is its expiry and its bytes, a marker its position and its
-/// deadline, and the hash covers everything before it.
+/// deadline, the file of renewals a list of `| key length (2) | key |
+/// SHA-256 of the record | expiry |`, and the hash covers everything before
+/// it.
 fn header(kind: u8) -> Vec<u8> {
     let mut bytes = MAGIC.to_vec();
     bytes.push(VERSION);
@@ -174,7 +290,15 @@ fn header(kind: u8) -> Vec<u8> {
     bytes
 }
 
-fn decode(bytes: &[u8]) -> Option<Stored> {
+/// `bytes` followed by their SHA-256.
+fn seal(bytes: &[u8]) -> Vec<u8> {
+    let mut sealed = bytes.to_vec();
+    sealed.extend_from_slice(&digest_bytes(bytes));
+    sealed
+}
+
+/// The kind and the body of a file whose hash and header hold.
+fn unseal(bytes: &[u8]) -> Option<(u8, &[u8])> {
     let (sealed, checksum) = bytes.split_at_checked(bytes.len().checked_sub(CHECKSUM_LEN)?)?;
     if digest_bytes(sealed) != checksum {
         return None;
@@ -183,20 +307,42 @@ fn decode(bytes: &[u8]) -> Option<Stored> {
     if &header[..MAGIC.len()] != MAGIC || header[MAGIC.len()] != VERSION {
         return None;
     }
-    let number = |at: usize| -> Option<u64> {
-        Some(u64::from_be_bytes(body.get(at..at + 8)?.try_into().ok()?))
-    };
-    match header[MAGIC.len() + 1] {
-        RECORD => Some(Stored::Record {
-            expires: number(0)?,
+    Some((header[MAGIC.len() + 1], body))
+}
+
+fn number(bytes: &[u8], at: usize) -> Option<u64> {
+    Some(u64::from_be_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
+}
+
+fn decode(bytes: &[u8]) -> Option<Stored> {
+    match unseal(bytes)? {
+        (RECORD, body) => Some(Stored::Record {
+            expires: number(body, 0)?,
             value: body.get(8..)?.to_vec(),
+            renewed: None,
         }),
-        MARKER if body.len() == 16 => Some(Stored::Marker {
-            seq: number(0)?,
-            until: number(8)?,
+        (MARKER, body) if body.len() == 16 => Some(Stored::Marker {
+            seq: number(body, 0)?,
+            until: number(body, 8)?,
         }),
         _ => None,
     }
+}
+
+fn decode_renewals(bytes: &[u8]) -> Option<Renewed> {
+    let (RENEWALS, mut body) = unseal(bytes)? else {
+        return None;
+    };
+    let mut renewals = HashMap::new();
+    while !body.is_empty() {
+        let (len, rest) = body.split_first_chunk::<2>()?;
+        let (key, rest) = rest.split_at_checked(usize::from(u16::from_be_bytes(*len)))?;
+        let (record, rest) = rest.split_first_chunk::<ID_LEN>()?;
+        let expires = number(rest, 0)?;
+        renewals.insert(key.to_vec(), (*record, expires));
+        body = &rest[8..];
+    }
+    Some(renewals)
 }
 
 #[cfg(test)]
@@ -264,6 +410,7 @@ mod tests {
         let record = Stored::Record {
             value: b"record".to_vec(),
             expires: 1_700_000_000_000,
+            renewed: None,
         };
         let marker = Stored::Marker { seq: 6, until: 42 };
         let mut loaded = store.load().unwrap();
@@ -314,6 +461,44 @@ mod tests {
         }
         assert!(store.load().unwrap().is_empty());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    /// A renewal moves the expiry of the exact record it renewed, and only
+    /// later: not that of another record under the same key. A damaged file
+    /// of renewals moves nothing.
+    #[test]
+    fn a_renewal_applies_only_to_the_record_it_renewed() {
+        let dir = TestDir::new();
+        let store = DurableDir::open(dir.path().to_path_buf()).unwrap();
+        for (key, value) in [(1u8, &b"six"[..]), (2, b"seven"), (3, b"eight")] {
+            store.write_record(&[key; 32], value, 100).unwrap();
+        }
+        let mut renewals = Renewals::with_capacity(3);
+        for (key, record, expires) in [(1u8, &b"six"[..], 200), (2, b"six", 200), (3, b"eight", 50)]
+        {
+            renewals
+                .push(&[key; 32], &digest_bytes(record), expires)
+                .unwrap();
+        }
+        store.write_renewals(renewals).unwrap();
+        let renewed = || -> Vec<Option<u64>> {
+            let mut loaded = store.load().unwrap();
+            loaded.sort_by(|a, b| a.0.cmp(&b.0));
+            loaded
+                .into_iter()
+                .map(|(_, stored)| match stored {
+                    Stored::Record { renewed, .. } => renewed,
+                    Stored::Marker { .. } => None,
+                })
+                .collect()
+        };
+        assert_eq!(renewed(), vec![Some(200), None, None]);
+
+        let path = dir.path().join(RENEWALS_FILE);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[HEADER_LEN + 2] ^= 0x01;
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(renewed(), vec![None, None, None]);
     }
 
     #[test]

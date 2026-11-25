@@ -162,7 +162,8 @@ impl PyServer {
     ///                         so that it serves them again after a restart.
     ///                         ``None`` (default) keeps them in memory only.
     ///     flush_secs (int):   With ``data_dir``, how often renewed expiries
-    ///                         are written to disk. Default: 3600.
+    ///                         are written to disk, all in one file. Default:
+    ///                         86400, one day.
     ///
     /// Raises:
     ///     RuntimeError: ``data_dir`` cannot be created or read.
@@ -175,7 +176,7 @@ impl PyServer {
         sig_cache=false,
         max_storage_bytes=536_870_912,
         data_dir=None,
-        flush_secs=3600
+        flush_secs=86_400
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(

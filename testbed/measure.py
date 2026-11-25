@@ -528,7 +528,7 @@ def cmd_outage(args):
     """The owner goes offline, frozen so that it keeps its versions, and
     `--lost` replicas holding the record restart empty at once, as in a power
     cut at one site. Then every replica that still holds it sends it to the k
-    nodes closest to the key (`ctl <node> push`), as the hourly republication
+    nodes closest to the key (`ctl <node> push`), as the daily republication
     does, one after the other, and the script counts what the replicas hold.
     With `--owner-returns` the owner then comes back, sends its current version
     again (`ctl <node> republish`), and the

@@ -50,7 +50,7 @@ PyO3 binding or in Rust, decides what to publish and when.
 
 | Component | Role | Section |
 |---|---|---|
-| Network API | Publication of any position, reads and repairs, the Status List; hourly refresh and republication, maintenance of contacts | 6, 8, 10, 11 |
+| Network API | Publication of any position, reads and repairs, the Status List; hourly refresh, daily republication, maintenance of contacts | 6, 8, 10, 11 |
 | Protocol | The RPC handlers; the rules a replica applies to a record; the network check of an empty replica | 7 |
 | Lookups and routing | Kademlia's k-buckets and iterative lookups | 5 |
 | Transport | UDP datagrams, fragments of large records, receipts and resends | 4 |
@@ -555,7 +555,7 @@ any list the issuer signed, an older one included.
   so it takes itself for one of the closest nodes to keys it is far from, and
   would send records, possibly superseded while it was down, to nodes outside
   the `k` closest. No other node's republication reaches those nodes: they
-  would serve the old position to their own reads until their own hourly
+  would serve the old position to their own reads until their own
   republication is refused as stale and repairs them. In the testbed, before
   this rule, 461 of 2520 reads after a rotation returned an older position.
   The nodes it meets meanwhile still enter its table, and get their records
@@ -563,8 +563,11 @@ any list the issuer signed, an older one included.
 - **Returning nodes**, silent for at least 2.5 s, are treated as new and
   refilled the same way. A node that crashes and restarts within about a second
   is not noticed by its neighbours, and stays empty until a republication.
-- **Republication:** every hour each node sends records older than an hour to
-  the `k` closest nodes. An empty replica stores what it is sent unless a node
+- **Republication:** once a day each node sends the records that no other
+  node sent it during the day to the `k` closest nodes; buckets that no
+  lookup touched are still refreshed every hour. A day, well within the TTL
+  of 14, costs each record one round a day rather than one an hour, and a
+  replica that restarted empty unnoticed waits for it up to a day. An empty replica stores what it is sent unless a node
   shows it a higher position, and a replica behind takes any higher position,
   so the holders alone refill the replicas that came back empty and move on
   those left behind. A replica that refuses a republication as `Stale` may
@@ -595,9 +598,13 @@ any list the issuer signed, an older one included.
   other node answers. A new or changed record is on the device before the
   replica acknowledges it; if the disk refuses the write, nothing changes
   and the replica does not answer, so the sender counts it as unavailable.
-  A renewal of the same bytes only moves the expiry, so it reaches the disk
-  with the next hourly flush: a power cut loses at most an hour of TTL, which
-  the next renewal gives back. A file is replaced by writing a temporary one,
+  A renewal of the same bytes only moves the expiry, so the record file is
+  not written again: once a day the expiries that renewals moved later are
+  written all in one file, each with the SHA-256 of the record it renews, so
+  that it never extends a record written after it. A power cut loses at most
+  a day of TTL, which the next renewal gives back. Writing the expiry in each
+  record file made every flush rewrite every record, about 7 KB to move 8
+  bytes. A file is replaced by writing a temporary one,
   flushing it, renaming it over the old one and flushing the directory, so a
   power cut leaves the old file or the new one. The marker of an expired
   record lives in the same file. Each file ends with the SHA-256 of its
@@ -623,7 +630,7 @@ any list the issuer signed, an older one included.
 - With a data directory, a write of a new or changed record waits for the
   device under the lock of its entry, so that memory and disk never
   disagree. Such writes are rare, a first copy or a rotation; renewals,
-  expiries and the hourly flush run on the blocking pool.
+  expiries and the daily flush run on the blocking pool.
 - Sending new nodes their records (section 11) scans the whole storage, so one
   scan runs at a time and at most 256 nodes wait for it. The bound is on the
   records, not on the routing table: a node met beyond it is still added. The

@@ -334,7 +334,7 @@ async fn republish(node: &Node) -> Value {
 }
 
 /// Send the record this node holds for a DID to the `k` nodes closest to it,
-/// as the hourly republication does with every record older than an hour,
+/// as the daily republication does with every record older than a day,
 /// but at once, so that a measurement need not wait for the timer. Each
 /// replica decides by its own rules; the answers say what it did, and
 /// `repaired` whether this node took a higher record a replica showed when

@@ -171,6 +171,7 @@ impl Server {
         });
 
         self.schedule_refresh();
+        self.schedule_republish();
         self.schedule_maintenance();
         self.schedule_stats_log();
         self.schedule_flush();

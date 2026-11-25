@@ -20,7 +20,7 @@ pub(super) const WELCOME_CONCURRENCY: usize = 1;
 
 /// Nodes waiting for, or receiving, the records they should hold. A node met
 /// beyond this still enters the routing table, and gets its records from the
-/// hourly republication.
+/// daily republication.
 const MAX_WELCOME_QUEUE: usize = 256;
 
 /// Records whose neighbours are computed under one read lock of the routing

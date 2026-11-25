@@ -1,6 +1,6 @@
-//! The node's background work: bucket refresh and hourly republication,
-//! recovery of failing contacts and seeds, the stats log, and the saved
-//! state.
+//! The node's background work: hourly bucket refresh and daily
+//! republication, recovery of failing contacts and seeds, the stats log,
+//! and the saved state.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -16,6 +16,15 @@ use super::Server;
 const MAINTENANCE_TICK: Duration = Duration::from_secs(1);
 
 const REJOIN_BACKOFF_MAX: Duration = Duration::from_secs(60);
+
+/// How often the buckets no lookup touched are refreshed (Kademlia §2.3).
+const REFRESH_INTERVAL: Duration = Duration::from_secs(3600);
+
+/// How often a node sends the records it holds to the nodes closest to
+/// their keys, those that nobody sent it meanwhile: once a day, well within
+/// the 14-day TTL, so that each record, and its renewal on disk, costs one
+/// round a day rather than one an hour.
+const REPUBLISH_INTERVAL: Duration = Duration::from_secs(24 * 3600);
 
 /// Operational snapshot suitable for monitoring and language bindings.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -264,13 +273,12 @@ impl Server {
             return;
         };
         let proto = Arc::clone(owner);
-        let storage = Arc::clone(&self.storage);
         let ksize = self.ksize;
         let alpha = self.alpha;
 
         owner.spawn_task(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(3600)).await;
+                tokio::time::sleep(REFRESH_INTERVAL).await;
                 log::debug!("Routing table refresh triggered");
 
                 let refresh_ids = proto.get_refresh_ids().await;
@@ -283,8 +291,24 @@ impl Server {
                     futs.push(spider.find());
                 }
                 futures::future::join_all(futs).await;
+            }
+        });
+    }
 
-                let old_entries = storage.iter_older_than(3600);
+    /// Republish, once a day, the records that no other node sent this one
+    /// during the day (Kademlia §2.5): a record a holder republished reached
+    /// the others, which then skip it.
+    pub(super) fn schedule_republish(&self) {
+        let Some(owner) = &self.protocol else {
+            return;
+        };
+        let proto = Arc::clone(owner);
+        let storage = Arc::clone(&self.storage);
+
+        owner.spawn_task(async move {
+            loop {
+                tokio::time::sleep(REPUBLISH_INTERVAL).await;
+                let old_entries = storage.iter_older_than(REPUBLISH_INTERVAL.as_secs());
                 for (key_vec, value) in old_entries {
                     if key_vec.len() != ID_LEN {
                         continue;

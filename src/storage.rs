@@ -3,8 +3,10 @@
 //! `IStorage` is the interface the protocol uses. `ForgetfulStorage` keeps
 //! its entries in a `DashMap`. Given a data directory it also keeps each one
 //! in a file (`durable`): a new or changed record is on the device before the
-//! write returns, while a renewal of the same bytes waits for the next
-//! `flush_renewals`. Once a DID record expires, the highest position accepted
+//! write returns. A renewal of the same bytes only moves the expiry, in
+//! memory; the next `flush_renewals` writes every expiry renewed since the
+//! records' files were written, all in one file, and the record files stay
+//! as they are. Once a DID record expires, the highest position accepted
 //! for its key is remembered for one more TTL (`marker`). Expiry is lazy:
 //! reads check it, and `prune_expired` reclaims what expired.
 //!
@@ -13,7 +15,7 @@
 
 use std::io;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -21,8 +23,8 @@ use dashmap::mapref::entry::{Entry, VacantEntry};
 use dashmap::DashMap;
 
 use crate::auth_handler::tree::tree_form;
-use crate::durable::{DurableDir, Stored};
-use crate::utils::ID_LEN;
+use crate::durable::{DurableDir, Renewals, Stored};
+use crate::utils::{digest_bytes, ID_LEN};
 
 /// Two weeks in seconds — the default record TTL used by AuthKademlia.
 pub const DEFAULT_TTL: i64 = 14 * 24 * 60 * 60;
@@ -31,8 +33,9 @@ pub const DEFAULT_TTL: i64 = 14 * 24 * 60 * 60;
 pub const DEFAULT_MAX_STORAGE_BYTES: usize = 512 * 1024 * 1024;
 
 /// How often the renewals of a persistent store reach the device: the
-/// period of the republication that renews its records.
-pub const DEFAULT_FLUSH_INTERVAL: Duration = Duration::from_secs(3600);
+/// period of the republication that renews its records, one day. A power
+/// cut loses at most that much of a record's TTL, never the record.
+pub const DEFAULT_FLUSH_INTERVAL: Duration = Duration::from_secs(24 * 3600);
 
 /// What a marker costs in the storage budget besides its key: its position
 /// and its deadline.
@@ -116,12 +119,13 @@ fn position_of(key: &[u8], value: &[u8]) -> Option<u64> {
 /// What the store holds for a key.
 #[derive(Debug, Clone)]
 enum Slot {
-    /// A record, written or last renewed at `renewed_at`. `durable_at` is
-    /// the renewal its file holds; a flush brings the file up to date.
+    /// A record, written or last renewed at `renewed_at`. `written_at` is
+    /// the time its file was written, the renewal that file holds; a later
+    /// renewal reaches the disk in the file of renewals.
     Record {
         value: Vec<u8>,
         renewed_at: u64,
-        durable_at: u64,
+        written_at: u64,
     },
     /// The highest position accepted for the key, remembered until `until`
     /// after its record expired.
@@ -147,6 +151,8 @@ pub struct ForgetfulStorage {
     clock: Clock,
     durable: Option<DurableDir>,
     flush_interval: Duration,
+    /// A record was renewed since the last `flush_renewals`.
+    renewed: AtomicBool,
 }
 
 impl ForgetfulStorage {
@@ -174,6 +180,7 @@ impl ForgetfulStorage {
             clock,
             durable: None,
             flush_interval: DEFAULT_FLUSH_INTERVAL,
+            renewed: AtomicBool::new(false),
         }
     }
 
@@ -200,12 +207,17 @@ impl ForgetfulStorage {
         let now = store.now();
         for (key, stored) in durable.load()? {
             let mut slot = match stored {
-                Stored::Record { value, expires } => {
-                    let renewed_at = store.renewed_at_of(expires, now);
+                Stored::Record {
+                    value,
+                    expires,
+                    renewed,
+                } => {
+                    let written_at = store.renewed_at_of(expires, now);
                     Slot::Record {
                         value,
-                        renewed_at,
-                        durable_at: renewed_at,
+                        renewed_at: renewed
+                            .map_or(written_at, |later| store.renewed_at_of(later, now)),
+                        written_at,
                     }
                 }
                 Stored::Marker { seq, until } => Slot::Marker { seq, until },
@@ -294,42 +306,53 @@ impl ForgetfulStorage {
         }
     }
 
-    /// Write to disk the renewals made since the last flush, each as its
-    /// record stands now: a renewal never brings back a record that was
-    /// replaced meanwhile. Returns how many files were written.
+    /// If a record was renewed since the last flush, write the expiry of
+    /// every record renewed since its file was written, with the SHA-256 of
+    /// the record it renews, to the file of renewals: one write, whatever
+    /// the number of records, and none when nothing was renewed. The record
+    /// files are not written, and a renewal applies only to the record it
+    /// renewed, never to one that replaced it. Returns how many renewals
+    /// were written.
     pub fn flush_renewals(&self) -> usize {
         let Some(durable) = &self.durable else {
             return 0;
         };
-        let pending: Vec<Vec<u8>> = self
-            .data
-            .iter()
-            .filter(|entry| is_renewed(entry.value()))
-            .map(|entry| entry.key().clone())
-            .collect();
-        let mut written = 0;
-        for key in pending {
-            let Some(mut slot) = self.data.get_mut(&key) else {
-                continue;
-            };
+        // Cleared first: a renewal made while the file is written is
+        // written by the next flush.
+        if !self.renewed.swap(false, Ordering::AcqRel) {
+            return 0;
+        }
+        let written = self.renewals().and_then(|renewals| {
+            let count = renewals.count();
+            durable.write_renewals(renewals).map(|()| count)
+        });
+        match written {
+            Ok(count) => count,
+            Err(error) => {
+                log::error!("storage: the file of renewals: {error}");
+                self.renewed.store(true, Ordering::Release);
+                0
+            }
+        }
+    }
+
+    /// The renewals of the records renewed since their files were written,
+    /// built straight into the bytes of the file of renewals.
+    fn renewals(&self) -> io::Result<Renewals> {
+        let mut renewals = Renewals::with_capacity(self.data.len());
+        for entry in self.data.iter() {
             if let Slot::Record {
                 value,
                 renewed_at,
-                durable_at,
-            } = &mut *slot
+                written_at,
+            } = entry.value()
             {
-                if renewed_at != durable_at
-                    && report(
-                        &key,
-                        durable.write_record(&key, value, self.expires(*renewed_at)),
-                    )
-                {
-                    *durable_at = *renewed_at;
-                    written += 1;
+                if renewed_at > written_at {
+                    renewals.push(entry.key(), &digest_bytes(value), self.expires(*renewed_at))?;
                 }
             }
         }
-        written
+        Ok(renewals)
     }
 
     /// Turn the DID records that expired into the markers of their positions,
@@ -455,7 +478,7 @@ impl ForgetfulStorage {
         entry.insert(Slot::Record {
             value,
             renewed_at: now,
-            durable_at: now,
+            written_at: now,
         });
         StorageWriteStatus::Stored
     }
@@ -481,7 +504,7 @@ impl ForgetfulStorage {
         *slot = Slot::Record {
             value,
             renewed_at: now,
-            durable_at: now,
+            written_at: now,
         };
         StorageWriteStatus::Stored
     }
@@ -509,6 +532,15 @@ impl ForgetfulStorage {
             .fetch_sub(released, Ordering::AcqRel);
         debug_assert!(previous >= released, "storage byte accounting underflow");
     }
+
+    /// A renewal of `slot`, a live record: a fresh expiry, in memory until
+    /// the next flush.
+    fn renew(&self, slot: &mut Slot, now: u64) {
+        if let Slot::Record { renewed_at, .. } = slot {
+            *renewed_at = now;
+            self.renewed.store(true, Ordering::Release);
+        }
+    }
 }
 
 /// `true` when `result`, a file operation for `key`, succeeded; a failure
@@ -528,18 +560,6 @@ fn charge(key: &[u8], slot: &Slot) -> usize {
         }
 }
 
-fn is_renewed(slot: &Slot) -> bool {
-    matches!(slot, Slot::Record { renewed_at, durable_at, .. } if renewed_at != durable_at)
-}
-
-/// A renewal of `slot`, a live record: a fresh expiry, in memory until the
-/// next flush.
-fn renew(slot: &mut Slot, now: u64) {
-    if let Slot::Record { renewed_at, .. } = slot {
-        *renewed_at = now;
-    }
-}
-
 impl IStorage for ForgetfulStorage {
     fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageWriteStatus {
         let now = self.now();
@@ -547,7 +567,7 @@ impl IStorage for ForgetfulStorage {
             Entry::Vacant(entry) => self.insert_new(entry, value, now),
             Entry::Occupied(mut entry) => {
                 if self.live_value(entry.get(), now) == Some(&value) {
-                    renew(entry.get_mut(), now);
+                    self.renew(entry.get_mut(), now);
                     return StorageWriteStatus::AlreadyStored;
                 }
                 let key = entry.key().clone();
@@ -562,7 +582,7 @@ impl IStorage for ForgetfulStorage {
             Entry::Vacant(entry) => self.insert_new(entry, value, now),
             Entry::Occupied(mut entry) => match self.live_value(entry.get(), now) {
                 Some(held) if *held == value => {
-                    renew(entry.get_mut(), now);
+                    self.renew(entry.get_mut(), now);
                     StorageWriteStatus::AlreadyStored
                 }
                 Some(_) => StorageWriteStatus::Conflict,
@@ -586,7 +606,7 @@ impl IStorage for ForgetfulStorage {
             return ReplaceStatus::Changed;
         }
         if new == expected {
-            renew(&mut entry, now);
+            self.renew(&mut entry, now);
             return ReplaceStatus::Replaced;
         }
         match self.write_slot(key, &mut entry, new, now) {
@@ -935,6 +955,43 @@ mod tests {
         drop(store);
         time.store(T0 + 2_000 + TTL_MS - 1, Ordering::Relaxed);
         assert_eq!(reopen(&dir, &clock).get(b"k"), Some(b"six".to_vec()));
+    }
+
+    /// A flush writes the renewed expiries, all in the file of renewals, and
+    /// no record file: those keep the bytes they were written with. A flush
+    /// with no renewal since the last one writes nothing.
+    #[test]
+    fn a_flush_writes_the_renewed_expiries_and_not_the_records() {
+        let (time, clock) = clock();
+        let dir = TestDir::new();
+        let files = || {
+            let mut files: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|entry| {
+                    let path = entry.unwrap().path();
+                    let bytes = std::fs::read(&path).unwrap();
+                    (path, bytes)
+                })
+                .collect();
+            files.sort();
+            files
+        };
+        let store = reopen(&dir, &clock);
+        store.set(b"a".to_vec(), b"six".to_vec());
+        store.set(b"b".to_vec(), b"seven".to_vec());
+        let records = files();
+        time.store(T0 + 10_000, Ordering::Relaxed);
+        store.set(b"a".to_vec(), b"six".to_vec());
+        store.set(b"b".to_vec(), b"seven".to_vec());
+        assert_eq!(store.flush_renewals(), 2);
+        let flushed = files();
+        assert_eq!(flushed.len(), records.len() + 1);
+        assert!(records.iter().all(|file| flushed.contains(file)));
+
+        let renewals = dir.path().join("renewals");
+        std::fs::remove_file(&renewals).unwrap();
+        assert_eq!(store.flush_renewals(), 0);
+        assert!(!renewals.exists());
     }
 
     /// An expired DID record leaves the marker of its position for one more
