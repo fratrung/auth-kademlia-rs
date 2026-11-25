@@ -637,7 +637,7 @@ restore. See
 (`ctl <node> counters`) before and after each operation.
 
 `EXPERIMENTS.md` holds the experiments that validate the current code
-(latency, traffic, check, rotation, attacks, liars, churn, owner offline, readers under attack) with their setup
+(latency, traffic, check, rotation, attacks, liars, churn, owner offline, readers under attack, memory and writes) with their setup
 and results, and `experiments/<date>-<topic>/` the raw data of each campaign
 with the script that ran it; rerun and update them when a change affects
 them. `testbed/README.md` keeps the commands and the measurements that led to

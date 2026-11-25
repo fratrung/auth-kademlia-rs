@@ -1,0 +1,83 @@
+{
+ "nodes": 30,
+ "k": 20,
+ "alpha": 3,
+ "dids_per_node": 10,
+ "threads": {
+  "min": 6,
+  "median": 6.0,
+  "max": 6
+ },
+ "published_ok": 300,
+ "published_of": 300,
+ "idle_rss_kb": {
+  "min": 6052,
+  "median": 6364.0,
+  "max": 6536
+ },
+ "idle_heap": {
+  "min": 300763,
+  "median": 307228.0,
+  "max": 309326
+ },
+ "idle_routing": {
+  "min": 21,
+  "median": 27.0,
+  "max": 29
+ },
+ "loaded_records": {
+  "min": 158,
+  "median": 208.5,
+  "max": 228
+ },
+ "loaded_rss_kb": {
+  "min": 9460,
+  "median": 9814.0,
+  "max": 10116
+ },
+ "loaded_heap": {
+  "min": 1497863,
+  "median": 1857487.0,
+  "max": 1998107
+ },
+ "loaded_routing": {
+  "min": 29,
+  "median": 29.0,
+  "max": 29
+ },
+ "hwm_kb_end": {
+  "min": 9632,
+  "median": 9958.0,
+  "max": 10212
+ },
+ "heap_peak_in_round": {
+  "min": 2878650,
+  "median": 3509231.0,
+  "max": 3701289
+ },
+ "round_republished": 300,
+ "round_seconds": 3.0,
+ "round_bytes_total": 51258000,
+ "round_bytes_per_node": {
+  "min": 210496,
+  "median": 276055.0,
+  "max": 23017093
+ },
+ "round_bytes_by_type": {
+  "Store": 43062000,
+  "FindNodeResult": 6534000,
+  "FindHash": 510000,
+  "FindNode": 510000,
+  "FindHashHit": 366000,
+  "StoreResult": 150000,
+  "Received": 126000,
+  "FindValueNodes": 0,
+  "Pong": 0,
+  "Ping": 0
+ },
+ "data_dir_bytes": {
+  "min": 1244320,
+  "median": 1558935.0,
+  "max": 1654380
+ }
+}

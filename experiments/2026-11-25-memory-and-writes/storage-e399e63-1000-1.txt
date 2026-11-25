@@ -1,0 +1,11 @@
+record_len 7024
+heap_after_insert 7172495
+insert_wchar 7070000 insert_device 8192000
+disk_after_insert files 1000 bytes 7070000 blocks 8192000
+day_cycles 1 day_wchar 7070127 day_device 8192000
+flush_peak_extra_heap 78390
+disk_after_day files 1000 bytes 7070000 blocks 8192000
+heap_after_day 7178735
+reopen_heap 7174575 reopen_peak_extra 7232975
+reopened_records 1000
+rss_kb 11284 hwm_kb 17852

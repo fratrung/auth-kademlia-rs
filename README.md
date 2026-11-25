@@ -206,6 +206,7 @@ published backbone measurements, against an attacker that observes all traffic.
 | Replicas lost with the owner offline | refilled by the other holders down to 4 holders left; with every replica lost, restored by the owner's return |
 | Readers in the worst case | with the owner offline, replicas lost and a persistent attacker, no forged record stored or read, by nodes in the network or just joined |
 | Records on disk | a replica that crashes comes back with its records: no copy lost, also with all 20 replicas crashed at once; every read after a rotation got the current position |
+| Memory and writes | without Docker, 30 nodes as processes: about 8 MiB of memory per node with the records of DIDs only; a replica of 20 records on disk writes 4 KiB a day |
 
 [EXPERIMENTS.md](EXPERIMENTS.md) reports the setup, the results and the
 measured limitations of every experiment; the raw data is in

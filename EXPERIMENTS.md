@@ -4,7 +4,8 @@ This file collects the experiments that validate how AuthKademlia nodes and the
 DHT behave, run on the Docker testbed (`testbed/`) against the current code:
 how fast a record is published, rotated and read, what it costs in traffic,
 what an attacker who reads the network can achieve, and how many copies of a
-record survive crashes. The measurements that led to fixes are in
+record survive crashes; and, without Docker, what a node takes in memory
+and on disk and what it writes (R1). The measurements that led to fixes are in
 `testbed/README.md` and in the commit history; they are not repeated here.
 
 The results are those of the current record format (ADR 0006): a DID commits
@@ -36,8 +37,9 @@ in `experiments/2026-11-11-adr0005/` and `experiments/2026-11-11-owner-outage/`.
 13. [L2. Replicas lost while the owner is offline](#13-l2-replicas-lost-while-the-owner-is-offline)
 14. [L3. What readers get in the worst case](#14-l3-what-readers-get-in-the-worst-case)
 15. [D1. Crashes with records on disk](#15-d1-crashes-with-records-on-disk)
-16. [Summary](#16-summary)
-17. [How to reproduce](#17-how-to-reproduce)
+16. [R1. Memory, disk and writes of a node](#16-r1-memory-disk-and-writes-of-a-node)
+17. [Summary](#17-summary)
+18. [How to reproduce](#18-how-to-reproduce)
 
 ## 1. Environment
 
@@ -402,8 +404,9 @@ What the attacker's forged STOREs got:
   0005 answered in all.
 - Without a rotation, the restarted replica is still empty after 3 s in every
   round: its neighbours do not notice a node that comes back within about a
-  second, so they send it nothing. The hourly republication, or the owner's
-  next rotation or republication, fills it (L1). With its records on disk it
+  second, so they send it nothing. The holders' republication (hourly when
+  this was run, daily since `f183e76`, R1), or the owner's next rotation or
+  republication, fills it (L1). With its records on disk it
   comes back with them (D1).
 
 ## 9. A3. A forged position 1 right after position 0
@@ -542,8 +545,8 @@ Every republication was `complete`.
 **Reading.**
 - Each crash takes a copy away and nothing fills it until the owner's
   republication, which fills every empty replica at once: the copies go from
-  20 down to 15 and back every minute. The holders' hourly republication did
-  not run: the records were younger than an hour.
+  20 down to 15 and back every minute. The holders' republication, hourly
+  then, did not run: the records were younger than an hour.
 - **The liars change nothing**: the copies follow the same cycle with 0, 1 or
   13 of them. Under ADR 0005 one liar kept the record below 13 copies a fifth
   of the time, and 13 liars kept every honest replica empty.
@@ -561,7 +564,7 @@ offline?
 (`docker pause`, so that it keeps its records and does not answer). M of the
 replicas holding the current position crash and come back empty at once, with
 M = 4, 7, 8, 12 and 16. Each replica that still holds the record then sends it
-to the `k` nodes closest to the key, one after the other, as the hourly
+to the `k` nodes closest to the key, one after the other, as the holders'
 republication does (testbed command `push`), and the script counts what the
 replicas hold. The owner then comes back and sends its current record again
 with the saved bytes, and the replicas are counted once more. 5 rounds per M,
@@ -703,7 +706,7 @@ them.
   the position before the rotation, which goes to the `k` closest only: 2
   extra holders per restart in a check with 30 nodes and `k` = 3. They were
   authentic records, and their holders repair themselves at their next
-  hourly republication, when the replicas answer `Stale`; until then they
+  republication (hourly then), when the replicas answer `Stale`; until then they
   served the position before, and a GET with a local copy does not ask the
   network.
 - **The fix:** a node that starts with records sends them to nobody until a
@@ -719,7 +722,101 @@ them.
   the only difference between the two runs; how they made the nodes leave
   the forged STOREs unanswered was not measured.
 
-## 16. Summary
+## 16. R1. Memory, disk and writes of a node
+
+**Question.** How much memory and disk does a node take, what does a replica
+with its records on disk write to the device in a day, and what does the
+republication send? Until `e399e63` a renewal rewrote the file of its record,
+and the republication and the flush ran every hour; since `f183e76` the
+renewals go to one file, a record file is written only when its record
+changes, and both run once a day. What did that change?
+
+**Setup.** No Docker: `experiments/2026-11-25-memory-and-writes/run.sh`
+builds its probes from a copy of the repository at each commit and runs them
+on the host of section 1, one step at a time, with the data directories on
+ext4 on a SATA SSD. Its `README.md` defines every field.
+- **One store** (`ForgetfulStorage::persistent`) of real records of
+  position 0 (7,024 bytes): 20, about what a node holds with DID records
+  only (`k` = 20, one DID per node), and 1000. A day is 24 rounds of renewals
+  and flushes before `f183e76` and one since; each code runs both, to tell
+  the file of renewals from the interval. Heap is what Rust allocates (the C
+  code of aws-lc allocates outside it); writes are the bytes the kernel sends
+  to the device (`/proc/self/io`), in pages of 4 KiB, without the journal of
+  the file system.
+- **Whole nodes**: 30 processes on loopback, `k` = 20, `alpha` = 3, each with
+  4 runtime threads and at most 4 blocking ones, as on a Raspberry Pi 4, its
+  records on disk and the counters on. Every node publishes 1 new DID, or 10;
+  then one round of republication, node after node, each republishing the
+  records no other node renewed since the round started, as each node does
+  once a day.
+- **The custody**: one DID provisioned at `f28c760`, before the SHA-256 of
+  its files, and at `e399e63`.
+
+**Results.** Bytes written to the device in a day:
+
+| Records | Before (24 a day) | File of renewals, 24 a day | Old files, once a day | Since `f183e76` (once a day) |
+|---|---|---|---|---|
+| 20 | 3.75 MiB | 96 KiB | 160 KiB | **4 KiB** |
+| 1000 | 187.5 MiB | 1.78 MiB | 7.81 MiB | **76 KiB** |
+
+The store, before and since `f183e76`:
+
+| | 20 records | 1000 records |
+|---|---|---|
+| Heap of the records | 150 KiB, both | 6.84 MiB, both |
+| Allocated by a flush, above the records | 22.7 KiB, now 1.9 KiB | 76.6 KiB, now 72.7 KiB |
+| Highest heap while opening the directory | 155 KiB, now 158 KiB | 6.89 MiB, now 6.97 MiB |
+| Data directory | 20 files, 160 KiB of blocks; now one more, the renewals, 1.5 KiB | 1000 files, 7.81 MiB; now one more, 72 KiB |
+
+Whole nodes, median of 30:
+
+| | Before | Since `f183e76` |
+|---|---|---|
+| Memory of the process (RSS), no record | 6.20 MiB, of which 0.29 MiB of heap | 6.22 MiB, 0.29 MiB of heap |
+| With 1 DID per node: records held, RSS, heap | 19, 8.04 MiB, 0.46 MiB | 19.5, 8.07 MiB, 0.47 MiB |
+| With 10 DIDs per node | 208.5, 9.58 MiB, 1.77 MiB | 197.5, 9.60 MiB, 1.70 MiB |
+| Highest RSS, 10 DIDs, round included | 9.72 MiB | 9.73 MiB |
+| Threads | 6 | 6 |
+| Data directory, 10 DIDs | 1.49 MiB | 1.46 MiB |
+| One round of republication, 30 DIDs, sent by all nodes | 4.90 MiB | 4.89 MiB |
+| The same, 300 DIDs | 48.9 MiB | 48.9 MiB |
+| Rounds a day | 24 | **1** |
+
+The custody: each of its three files is 32 bytes longer (`tree` 2,134,
+`secrets` 4,134, `state` 7,089 bytes), on as many blocks as before (4, 8 and
+8 KiB); opening it allocates the same 11.2 KiB.
+
+**Reading.**
+- **A replica of 20 records writes 4 KiB a day instead of 3.75 MiB**: 1.4 MiB
+  a year instead of 1.34 GiB, on the SD card of a cheap device. Before, every
+  hourly flush rewrote the 7 KB file of each record to move its expiry; the
+  file of renewals alone divides the writes by 40, the daily interval by 24,
+  both by about 960. A day now costs one page of the device, and one file
+  renamed and synced instead of 480; the journal of the file system, not
+  counted here, falls with them.
+- **The memory of the records is unchanged**: a record of 7,024 bytes takes
+  about 7,170 with its key and its entry. A flush allocates less than
+  before. Opening the directory reads the renewals into a map first: 80 KiB
+  more at the highest for 1000 records, freed once the records are loaded.
+- **A whole node takes about 6.2 MiB with no record**, of which 0.3 MiB of
+  heap: the rest is the program, its libraries and the stacks of its 6
+  threads, and does not grow with the records. With the records of DIDs only
+  (about `k`) it takes 8 MiB, with ten times as many 9.6 MiB. The same
+  before and since `f183e76`.
+- **One record costs about 167 KiB per round of republication** in the
+  network: 84% the `k` − 1 copies of the record, the rest the node lookup
+  and the checks of the replicas that did not hold it. With one DID per node
+  that is 167 KiB sent per node and per round, as much received: 3.9 MiB a
+  day before, 167 KiB since. In the round of the probe the first nodes do
+  most of the work, because they run first; in a network whose nodes started
+  at different times it is spread, and only the total counts.
+- **Limits.** The host is x86-64, not a Raspberry Pi: the part of the memory
+  that does not depend on the records will differ on ARM. 30 nodes only; the
+  owner's daily republication of its own record, the same before and since,
+  is not counted; nor is the Python interpreter of a node run through the
+  binding.
+
+## 17. Summary
 
 Validated on the code of ADR 0006:
 - **Publication and availability.** 100 first publications in a network of
@@ -749,8 +846,9 @@ Validated on the code of ADR 0006:
 
 Measured costs and limits:
 - **A replica that restarts empty without a rotation** stays empty until a
-  republication: its neighbours do not notice a node that comes back within a
-  second. With records on disk it does not restart empty.
+  republication, once a day since `f183e76`: its neighbours do not notice a
+  node that comes back within a second. With records on disk it does not
+  restart empty.
 - **An attacker that reads the traffic** can answer for other nodes, with the
   power of a liar: it can hide a higher record from an empty replica, not
   refuse the current one.
@@ -758,8 +856,13 @@ Measured costs and limits:
   the answers to the replicas' checks.
 - **Tail under loss**: publications of 0.7 to 2.5 s in the slowest rounds
   under 0.5% loss.
+- **Memory and writes** (R1): a whole node takes about 6.2 MiB with no
+  record and 8 MiB with the records of DIDs only; a replica of 20 records on
+  disk writes 4 KiB a day, against 3.75 MiB before `f183e76`; a round of
+  republication costs about 167 KiB per record in the network, once a day
+  instead of every hour.
 
-## 17. How to reproduce
+## 18. How to reproduce
 
 Host limits, once per boot:
 
@@ -788,6 +891,13 @@ L3 is analysed with the two scripts of the 2026-11-11 campaign:
 ```bash
 python3 experiments/2026-11-11-owner-outage/reads/check_forged.py <run>.json <attacker-log>.txt
 python3 experiments/2026-11-11-owner-outage/reads/digest_reads.py <run>.json
+```
+
+R1 needs neither Docker nor the host limits; its work directory holds the
+copies of the repository, the builds and the data directories:
+
+```bash
+experiments/2026-11-25-memory-and-writes/run.sh <work dir outside the repository>
 ```
 
 The comparisons of 2026-11-11 are reproduced as their own README files say:

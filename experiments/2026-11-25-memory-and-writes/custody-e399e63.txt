@@ -1,0 +1,6 @@
+provision_wchar 13357 provision_device 20480
+file lock bytes 0 blocks 0
+file secrets bytes 4134 blocks 8192
+file state bytes 7089 blocks 8192
+file tree bytes 2134 blocks 4096
+open_heap 11435 open_peak_extra 32662
