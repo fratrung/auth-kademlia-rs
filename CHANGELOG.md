@@ -31,7 +31,9 @@ application.
     `Store`;
   - `StoreResult` adds `Stale`;
   - `FindHashHit` carries the position of the record held;
-  - message ids are drawn at random for each request.
+  - message ids are drawn at random for each request;
+  - `ListKeys` and `KeyList`, at the end of the messages, for the
+    synchronization of a node that starts.
 - **Rust API:**
   - `Server::set` and `Server::set_detailed` publish any position;
     `Server::update` is removed, and `Server::update_status_list(value)`
@@ -80,6 +82,15 @@ application.
   records sends them to the nodes it meets only once the lookup of its own id
   is over, so that a restarted replica does not give a superseded record to
   nodes outside the `k` closest.
+- Synchronization at start: each time a node starts listening, once it has
+  looked up its own id, it asks half of its `k` closest neighbours, spread
+  across the tree of ids and one per IP address, for the keys it should hold
+  with the position and SHA-256 of each record (`ListKeys`, one datagram
+  per page), and fetches the records it lacks or holds at a lower position,
+  each verified as any replica verifies it, within 30 s. A node restarted
+  empty, or from its data directory after missing rotations, holds its
+  records again without waiting for the daily republication. A node answers
+  one page at a time.
 - The marker of an expired DID record: its position is remembered for one
   more TTL, also across restarts, so that a replay of a lower position is
   refused even when no node answers the check, and a GET or a repair returns

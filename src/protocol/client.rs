@@ -9,7 +9,7 @@ use async_trait::async_trait;
 
 use crate::crawling::{FindPayload, RawResponse, SpiderProtocol};
 use crate::node::Node;
-use crate::protocol::messages::{Frame, RpcMessage, StoreStatus, RECORD_HASH_LEN};
+use crate::protocol::messages::{Frame, KeyEntry, RpcMessage, StoreStatus, RECORD_HASH_LEN};
 use crate::utils::ID_LEN;
 
 use super::KademliaProtocol;
@@ -166,6 +166,37 @@ impl KademliaProtocol {
             },
         };
         self.send_frame(sock_addr, &frame).await;
+    }
+
+    /// Ask `peer` for one page of the keys this node should hold, from the
+    /// key after `after`: the entries and whether more follow. `None` if it
+    /// did not answer.
+    pub(crate) async fn call_list_keys(
+        &self,
+        peer: &Node,
+        after: Option<[u8; ID_LEN]>,
+    ) -> Option<(Vec<KeyEntry>, bool)> {
+        let sock_addr = socket_addr_of(peer)?;
+        match self
+            .call(
+                sock_addr,
+                RpcMessage::ListKeys {
+                    sender_id: self.source_node.id,
+                    after,
+                },
+            )
+            .await
+        {
+            Some(RpcMessage::KeyList { entries, more }) => {
+                self.note_alive(peer).await;
+                Some((entries, more))
+            }
+            _ => {
+                log::warn!("no list from {}", peer);
+                self.note_failure(peer).await;
+                None
+            }
+        }
     }
 
     /// Ask `peer` whether it holds a record for `target`, receiving its

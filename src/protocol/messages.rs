@@ -100,6 +100,30 @@ pub enum RpcMessage {
     /// arrived and is being handled, so the sender does not send it again yet.
     /// Sent again for each copy that arrives meanwhile.
     Received,
+    /// The records the sender should hold, asked by a node that has just
+    /// started: the keys of the records this node holds of which the sender
+    /// is one of the `k` closest nodes it knows, in key order, from the key
+    /// after `after` (from the first if `None`). Answered by one page
+    /// (`KeyList`), or not at all while this node builds a page for another.
+    ListKeys {
+        sender_id: [u8; ID_LEN],
+        after: Option<[u8; ID_LEN]>,
+    },
+    /// One page of keys, in one datagram, each with the position and SHA-256
+    /// of its record; `more` when others follow the last one.
+    KeyList {
+        entries: Vec<KeyEntry>,
+        more: bool,
+    },
+}
+
+/// A key a node lists (`KeyList`): the position of its record, 0 for the
+/// Status List, as `FindHash` answers it, and the SHA-256 of the record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyEntry {
+    pub key: [u8; ID_LEN],
+    pub seq: u64,
+    pub hash: [u8; RECORD_HASH_LEN],
 }
 
 /// Length of `record_hash`.
@@ -148,6 +172,7 @@ pub(super) enum ExpectedResponse {
     FindNodeResult,
     FindValueResult,
     FindHashResult,
+    KeyList,
     NoResponse,
 }
 
@@ -160,6 +185,7 @@ impl ExpectedResponse {
             RpcMessage::FindNode { .. } => Self::FindNodeResult,
             RpcMessage::FindValue { .. } => Self::FindValueResult,
             RpcMessage::FindHash { .. } => Self::FindHashResult,
+            RpcMessage::ListKeys { .. } => Self::KeyList,
             RpcMessage::Leave { .. } => Self::NoResponse,
             // Answers are not requests; listed so that a new message type
             // does not compile until its expected answer is chosen here.
@@ -170,7 +196,8 @@ impl ExpectedResponse {
             | RpcMessage::FindValueNodes { .. }
             | RpcMessage::FindValueHit { .. }
             | RpcMessage::FindHashHit { .. }
-            | RpcMessage::Received => Self::NoResponse,
+            | RpcMessage::Received
+            | RpcMessage::KeyList { .. } => Self::NoResponse,
         }
     }
 
@@ -190,6 +217,7 @@ impl ExpectedResponse {
                 message,
                 RpcMessage::FindHashHit { .. } | RpcMessage::FindValueNodes { .. }
             ),
+            Self::KeyList => matches!(message, RpcMessage::KeyList { .. }),
             Self::NoResponse => false,
         }
     }
@@ -207,6 +235,7 @@ impl ExpectedResponse {
             Self::FindNodeResult => "FindNodeResult",
             Self::FindValueResult => "FindValueHit|FindValueNodes",
             Self::FindHashResult => "FindHashHit|FindValueNodes",
+            Self::KeyList => "KeyList",
             Self::NoResponse => "no response",
         }
     }
@@ -229,6 +258,8 @@ pub(super) fn rpc_message_name(message: &RpcMessage) -> &'static str {
         RpcMessage::FindHash { .. } => "FindHash",
         RpcMessage::FindHashHit { .. } => "FindHashHit",
         RpcMessage::Received => "Received",
+        RpcMessage::ListKeys { .. } => "ListKeys",
+        RpcMessage::KeyList { .. } => "KeyList",
     }
 }
 
@@ -249,7 +280,9 @@ pub(super) fn carried_record(message: &RpcMessage) -> Option<&[u8]> {
         | RpcMessage::Leave { .. }
         | RpcMessage::FindHash { .. }
         | RpcMessage::FindHashHit { .. }
-        | RpcMessage::Received => None,
+        | RpcMessage::Received
+        | RpcMessage::ListKeys { .. }
+        | RpcMessage::KeyList { .. } => None,
     }
 }
 

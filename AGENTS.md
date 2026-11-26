@@ -21,9 +21,9 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 372 tests
-cargo test --features counters       # 375: also the counters' own tests
-cargo test --features testbed        # 376: also the testbed's FindHash lie switch
+cargo test                           # all 396 tests
+cargo test --features counters       # 399: also the counters' own tests
+cargo test --features testbed        # 400: also the testbed's FindHash lie switch
 cargo test <name>                    # single test, e.g. test_key_rotation_is_published_with_set
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -100,7 +100,9 @@ maturin develop --features python
   the records it holds in that directory and serves them again after a
   restart (`ForgetfulStorage::persistent`); renewed expiries reach the disk
   every `flush_secs`, all in one file. `RuntimeError` if the directory cannot be created or
-  read. Without it, records live in memory only.
+  read. Without it, records live in memory only. Either way, each time it
+  starts the node asks its neighbours for the records it should hold, and
+  takes those it lacks or holds at a lower position (`src/protocol/sync.rs`).
 
 ## Tokio runtime — caller responsibility
 
@@ -139,13 +141,14 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/protocol/republish.rs` | Republication of a held record (`republish`, `republish_to`), and the repair of the holder from a replica that refuses it as stale (`take_higher`) |
 | `src/protocol/contacts.rs` | Failing and returning contacts, pings of failing contacts, refresh ids |
 | `src/protocol/welcome.rs` | Nodes met through a message: inline routing insert, bounded replication queue |
+| `src/protocol/sync.rs` | The synchronization of a node that starts (ADR 0007): the pages of keys a neighbour lists (`rpc_list_keys`, one page at a time), the neighbours asked (`spread`), and the records taken (`start_synchronization`, `synchronize`, `write_pulled`) |
 | `src/protocol/test_support.rs` | Helpers shared by the protocol tests |
 | `src/network/mod.rs` | Public `Server` API: the struct, `new`, `listen`, `stop`, `bootstrap`; the other files of `network/` each hold one operation |
 | `src/network/publish.rs` | SET of a record at any position (`set`, `set_detailed`): a node lookup, the STOREs, the records of the replicas that refused, checked against the record published (`prove`), and its report (`SetReport`, `SetOutcome`) |
 | `src/network/read.rs` | GET |
 | `src/network/repair.rs` | Repair of a served record that failed the caller's check (`repair`): a bounded lookup for the expected position and key, written by the rules of a replica (`install`) |
 | `src/network/status_list.rs` | UPDATE of the Status List (`update_status_list`): the issuer's new list to the replicas, accepted on a strict majority of at most `alpha` |
-| `src/network/maintenance.rs` | Hourly refresh of lonely buckets and daily republication (`schedule_republish`, through `KademliaProtocol::republish`), recovery tick, stats (`ServerStats`), saved state |
+| `src/network/maintenance.rs` | Hourly refresh of lonely buckets and daily republication (`schedule_republish`, through `KademliaProtocol::republish`), recovery tick (which also starts the synchronization of a node with no seeds), stats (`ServerStats`), saved state |
 | `src/crawling.rs` | Iterative lookup — `NodeSpiderCrawl` (find nodes) + `ValueSpiderCrawl` (find value; `search` with a deadline tells `NotFound` from `Incomplete`) |
 | `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `find_neighbors` returns the exact local top-k across known primary contacts, skipping failing ones (see Concurrency model); `touch_last_updated()` is called only for the bucket containing the lookup target — bucket staleness reflects lookup activity, not node additions |
 | `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day TTL and configurable byte budget (default 512 MiB), with lazy expiry on read; times in Unix milliseconds; `insert_if_absent` and `replace_if` (compare and swap under the entry); optionally persistent (`persistent`; `flush_renewals` writes the renewed expiries, not the records); the marker of an expired DID record (`marker`, `record_or_marker`) |
@@ -248,6 +251,7 @@ fragment as full again: the receiver then dropped messages of 261 801 to
 | `FindValue` / `FindValueHit` / `FindValueNodes` | req/resp | Kademlia FIND_VALUE |
 | `FindHash` / `FindHashHit` / `FindValueNodes` | req/resp | `seq` and SHA-256 of the stored record (`record_hash`), asked by an empty replica before a STORE; one datagram. Added after `Leave`, so older nodes cannot decode it |
 | `Received` | resp | Receipt for a request carrying a record (`Store`, `UpdateStatusList`), sent before the answer and again for each copy that arrives while the request is handled. Added after `FindHashHit` |
+| `ListKeys` / `KeyList` | req/resp | A node that starts asks a neighbour for the keys it should hold, after a given key; one page of `KeyEntry` (key, `seq`, SHA-256), at most 19, in one datagram, and whether more follow. Added after `Received` |
 | `Leave` | fire-and-forget | Graceful departure, removes node from routing table |
 
 All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_request: bool, message)` envelope. Responses are correlated via `msg_id` through a `PendingMap`.
@@ -262,6 +266,38 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 - All RPC handlers use `self: &Arc<Self>` receiver to enable `tokio::spawn` without cloning the full struct.
 - **Futurelock** (Oxide RFD 609): the router is a fair `tokio::sync::RwLock`, so a waiting writer blocks later readers. Never keep futures that may wait for the router in a set the task stops polling while it awaits something else that takes the router (a `FuturesUnordered` pulled with `next()` and an await in the loop body, a `&mut future` in `select!`). `ValueSpiderCrawl::search` reads the router between answers (`failing_among`) and writes it at its deadline (`note_no_answer`), while its requests may wait to write it (`schedule_welcome_if_new` adds a node met in an answer): it therefore spawns them in a `JoinSet`. With a `FuturesUnordered` a node of the 127-node testbed stopped answering two seconds after the first publication, and `a_lookup_keeps_polling_a_request_that_waits_for_the_routing_table` hung. `join_all` (`find_round`) keeps polling every future and is safe.
 - **Nodes met through a message** (`schedule_welcome_if_new`): the sender enters the routing table inline, before the handler answers (Kademlia §2.2); only sending it its records is deferred. That replication scans the whole storage, so it runs one node at a time (`WELCOME_CONCURRENCY`), at most `MAX_WELCOME_QUEUE` (256) nodes wait for it, deduplicated by id, and a node beyond that gets its records from the daily republication. A node that starts with records (`joined` false: a replica restarted from its data directory, or `listen` again after `stop`) queues nobody until a lookup of its own id is over (`note_joined`: at the end of `Server::bootstrap` from a seed that answered, or in the maintenance tick once a contact answers); the nodes it meets meanwhile still enter its table. Do not drop this: with a sparse table a node takes itself for one of the closest nodes to any key, and in the testbed a restarted replica gave superseded records to nodes outside the `k` closest, which served them to their own reads until their own republication repaired them (461 of 2520 reads after a rotation). The scan takes the routing table's read lock per `WELCOME_SCAN_CHUNK` (256) records, because the inline insert needs the write lock. A full bucket's oldest contact is pinged at most once at a time (`oldest_pings_in_flight`). Do not put the insert back behind the replication bound: with one permit and new nodes dropped on contention, 30 nodes after one bootstrap pass knew a median of 20-22 of the 29 others (26-27 now), and quorum GET tests failed about 1 run in 16 because a reader never learned the node holding the valid copy.
+- **Synchronization at start** (`sync.rs`, ADR 0007): nodes met through a
+  message are sent their records only if new, or back after a neighbour
+  failed to reach them (`note_alive` gives the silence since the first
+  failure, `RETURNED_AFTER`): a node whose absence nobody noticed, and a node
+  restarted from its data directory, got nothing until a republication. So
+  every node, once per `listen`, after a lookup of its own id
+  (`Server::bootstrap` from a seed that answered, or the maintenance tick for
+  a node with no seeds once a contact answers), runs `start_synchronization`
+  on the nodes that answered: `spread` picks `max(alpha, ceil(k / 2))` of
+  the `k` closest, the closest first, then each time the farthest by XOR
+  from the nearest already chosen, one per IP address (in a simulation this
+  missed 0–0.05% of a node's keys, against 0.5–0.85% for as many closest).
+  Each answers `ListKeys` with pages of `PAGE_ENTRIES` (19) `KeyEntry` in one
+  datagram, in key order after the cursor, of the keys for which the
+  requester is among the `k` closest it knows (`should_hold`: fewer than `k`
+  contacts also count); it builds one page at a time (`building_page`), and
+  a request that comes meanwhile gets no answer. The requester takes at most
+  `MAX_PAGES` (64) per neighbour, drops a page out of order or too long,
+  and fetches, per key, the highest position listed only if it lacks the key,
+  holds a lower position, or remembers one not above it (`would_take`), the
+  keys listed by more neighbours first (`merge`), four at once and two per
+  neighbour. A record counts only if it hashes to the entry, has the form
+  for the key at that position and its signature verifies; it is written by
+  the rules of a replica without the network check (`write_pulled`, as
+  `install` in a repair). It stops at `SYNC_DEADLINE` (30 s), at the storage
+  budget, or on a write that cannot be made durable. There is no allowance
+  of pages per address: `FindValue` already returns a whole record to any
+  address, and UDP source addresses can be forged. A neighbour's
+  synchronization can take a record from the publisher's own copy before
+  the publisher's STORE reaches it, which then answers `AlreadyStored`: a
+  test of a publication counts `acknowledged_replicas`, not
+  `stored_replicas` alone.
 - UDP receive loop dispatches via round-robin to `available_parallelism()` fixed workers, each with a dedicated `mpsc::channel(256)`. `try_send` is attempted on each worker in order; if all channels are full the receive loop awaits the base worker (backpressure without drops). Zero allocations per datagram beyond the payload copy.
 - Blocking thread pool (`spawn_blocking`) is bounded at the runtime level via `max_blocking_threads(available_parallelism())` in `scripts/dht_node.rs`. This caps concurrent ML-DSA verifications to the number of physical cores, covering all call sites uniformly (`verify_for_key`, `verify_value`). `KademliaProtocol` carries no application-level semaphore.
 - `SignatureCache` is keyed on `SHA-256(record_bytes)`. TTL 1 h, capacity 4096 (moka TinyLFU). Eviction = cache miss = full re-verification (never a security bypass). On a cache miss the SHA-256 key is computed once via `compute_key()` and reused for both `get_by_key` and `insert_by_key` — never twice.
@@ -480,7 +516,8 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/quorum_tests.rs` | 16 | Real-UDP DID GET without a vote, multi-hop lookup, local fast-path, Status List quorum and update, retry of a publication, a rotation that fills empty replicas, and the network check of a STORE to an empty replica |
 | `tests/repair_tests.rs` | 3 | Repair over real UDP: the expected record found, stored and served locally; no match without it; no answer |
 | `tests/chain_tests.rs` | 8 | Positions of one DID over real UDP: a rotation that reaches every replica, the owner restoring empty replicas, refusals of `set` that count only once shown, forged and old genuine records at empty replicas |
-| `src/**` (inline) | 254 | Module-level `#[test]` blocks (incl. the custody's acceptance cases and calendar, persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
+| `tests/sync_tests.rs` | 3 | The synchronization at start over real UDP, each node at its own loopback address: a node restarted empty at once, one restarted from its data directory after a rotation it missed, a seed that never bootstraps |
+| `src/**` (inline) | 275 | Module-level `#[test]` blocks (incl. the custody's acceptance cases and calendar, persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, the synchronization at start in `sync.rs`, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 
@@ -521,8 +558,9 @@ All tests are network-clean (loopback only) and run in parallel without interfer
 | 16031–16039 | repair of a served record (`tests/repair_tests.rs`) |
 | 16040–16041 | GET below a remembered position (`src/network/read.rs`) |
 | 16042–16048 | persistent replica (`tests/persistence_tests.rs`) |
+| 16049–16057 | synchronization at start (`tests/sync_tests.rs`), on 127.0.0.1 to 127.0.0.3 |
 
-When adding a new integration test use ports **16049+** and document them here (15900 is reserved below).
+When adding a new integration test use ports **16058+** and document them here (15900 is reserved below).
 
 | 15900 | resilience test: Node A victim (host-exposed UDP, Docker only) |
 

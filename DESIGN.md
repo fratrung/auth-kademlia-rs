@@ -560,14 +560,18 @@ any list the issuer signed, an older one included.
   this rule, 461 of 2520 reads after a rotation returned an older position.
   The nodes it meets meanwhile still enter its table, and get their records
   from the republication.
-- **Returning nodes**, silent for at least 2.5 s, are treated as new and
-  refilled the same way. A node that crashes and restarts within about a second
-  is not noticed by its neighbours, and stays empty until a republication.
+- **Returning nodes** are treated as new and refilled the same way when a
+  neighbour failed to reach them while they were down, at least 2.5 s before
+  they came back. A node whose absence nobody noticed, because it restarted
+  within about a second or because no neighbour sent it anything meanwhile,
+  stays in their tables as if it had never left, and none of them sends it
+  anything: it asks for its records itself (synchronization, below).
 - **Republication:** once a day each node sends the records that no other
   node sent it during the day to the `k` closest nodes; buckets that no
   lookup touched are still refreshed every hour. A day, well within the TTL
-  of 14, costs each record one round a day rather than one an hour, and a
-  replica that restarted empty unnoticed waits for it up to a day. An empty replica stores what it is sent unless a node
+  of 14, costs each record one round a day rather than one an hour; a node
+  that restarts does not wait for it, since it asks its neighbours for its
+  records (synchronization, below). An empty replica stores what it is sent unless a node
   shows it a higher position, and a replica behind takes any higher position,
   so the holders alone refill the replicas that came back empty and move on
   those left behind. A replica that refuses a republication as `Stale` may
@@ -585,6 +589,37 @@ any list the issuer signed, an older one included.
 ![Sequence diagram of a holder's republication: stored by a replica that restarted empty, refused as stale by one holding a higher position, whose record the holder then takes, and the owner's republication when no holder is left](docs/design/repair.png)
 
 *Source: [`docs/design/repair.mmd`](docs/design/repair.mmd).*
+
+- **Synchronization at start** (ADR 0007): every node, each time it starts
+  listening, once a lookup of its own id is over (the one of `bootstrap`, or
+  for a node with no seeds the one the recovery runs once a contact
+  answers), asks its neighbours for the records it should hold. Of the
+  closest nodes that answered, at most `k`, it asks `max(alpha, ceil(k/2))`:
+  the closest first, then each time the one farthest, by XOR, from the
+  nearest of those already chosen, one per IP address. Nodes far from each
+  other are close to different keys: in a simulation with random ids and
+  `k = 20`, the 10 closest held no copy of 0.5% to 0.85% of the keys a node
+  should hold, 10 spread in this way of 0.05% or none, as all 20 do. Each
+  lists the keys of the records it holds of which the node is one of the `k`
+  closest it knows, the test of the replication to new nodes, with the
+  position and SHA-256 of each record, in key order, one datagram of 19
+  keys per page; the next request names the last key received. The node
+  takes, per key, the highest position listed, only if it lacks the key or
+  holds a lower position, the keys listed by more neighbours first: a key it
+  should hold is listed by most of them, a key one neighbour made up by that
+  one alone. It fetches the record from a neighbour that listed it
+  (`FindValue`), and writes it by the rules of a replica, as a repair does,
+  only if it hashes to the entry, is in the tree at that position, and its
+  signature verifies; otherwise it goes on to the next neighbour that listed
+  it, then to a lower position. A node restarted from its data directory
+  thus takes the rotations and the records published while it was down, and
+  one that missed nothing spends the lists only, about 14 KB with DID records
+  and `k = 20`. A neighbour that lists a key it does not show refuses
+  nothing, and the key comes with a republication.
+
+![Sequence diagram of the synchronization of a node that starts: lists of keys from the neighbours it asks, page after page, then the records it lacks or holds at a lower position, fetched from a neighbour that listed them and written once they verify](docs/design/sync.png)
+
+*Source: [`docs/design/sync.mmd`](docs/design/sync.mmd).*
 
 - **Expiry:** records expire 14 days after they were written or last
   renewed. There is no delete. An application that needs a record to stay
@@ -612,7 +647,8 @@ any list the issuer signed, an older one included.
   the device flipped, is not loaded: the replica would otherwise serve a
   record whose signature no longer verifies, keep it against the valid one,
   and return it from a repair. Without a data directory a replica restarts
-  empty, as before.
+  empty, and takes its records back from its neighbours (synchronization,
+  above).
 
 ## 12. Concurrency and resource bounds
 
@@ -631,6 +667,18 @@ any list the issuer signed, an older one included.
   device under the lock of its entry, so that memory and disk never
   disagree. Such writes are rare, a first copy or a rotation; renewals,
   expiries and the daily flush run on the blocking pool.
+- A node that starts asks its neighbours for its records once per start
+  (section 11): at most 64 pages from each, four records fetched at once and
+  two from one neighbour, which has at most 8 messages in reassembly here,
+  and it stops after 30 s, at its storage budget, or when a write cannot be
+  made durable; what is left comes with a republication. The deadline is
+  for a neighbour that lists keys it never shows, each costing a fetch until
+  the timeout of a request. A neighbour builds one page at a time, whoever
+  asks: a request that comes meanwhile gets no answer, which bounds its scans
+  of the storage however many addresses ask. There is no allowance per
+  address: a `FindValue` already brings back a whole record from any
+  address, and a sender over UDP can write another source address in each
+  request.
 - Sending new nodes their records (section 11) scans the whole storage, so one
   scan runs at a time and at most 256 nodes wait for it. The bound is on the
   records, not on the routing table: a node met beyond it is still added. The
@@ -655,7 +703,8 @@ any list the issuer signed, an older one included.
   higher position answers its check in time, because there is none among the
   nodes it knows, because made-up nodes pushed it out of the lookup, or
   because of a partition, it stores the authentic but older record it is
-  sent. It serves it until a higher one reaches it, from a holder's
+  sent. A node that synchronizes at start does the same when every
+  neighbour it asks lists that older position, or hides the key. It serves it until a higher one reaches it, from a holder's
   republication or the owner's, which it then takes. Meanwhile readers rely
   on the credential check of section 8, and repair their copy.
 - **Made-up ids cannot forge, but they cost.** A node answering under many

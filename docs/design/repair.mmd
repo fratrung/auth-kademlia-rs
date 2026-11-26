@@ -5,7 +5,7 @@ sequenceDiagram
     participant R as Replica holding N+1
     participant C as Nodes closest<br/>to the DID
     participant O as Owner
-    Note over H: hourly republication of records older than an hour
+    Note over H: daily republication of the records no other node sent it that day
     par to each of the k closest
         H->>E: STORE(position N)
         E->>C: FindHash(key)

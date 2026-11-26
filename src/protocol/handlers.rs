@@ -98,6 +98,9 @@ impl KademliaProtocol {
             RpcMessage::FindHash { sender_id, key } => {
                 Some(self.rpc_find_hash(sender_id, sender_addr, key).await)
             }
+            RpcMessage::ListKeys { sender_id, after } => {
+                self.rpc_list_keys(sender_id, sender_addr, after).await
+            }
             RpcMessage::Leave { sender_id } => {
                 self.rpc_leave(sender_id, sender_addr).await;
                 None
@@ -109,7 +112,8 @@ impl KademliaProtocol {
             | RpcMessage::FindValueNodes { .. }
             | RpcMessage::FindValueHit { .. }
             | RpcMessage::FindHashHit { .. }
-            | RpcMessage::Received => {
+            | RpcMessage::Received
+            | RpcMessage::KeyList { .. } => {
                 log::warn!("Received unexpected message type");
                 None
             }

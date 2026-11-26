@@ -277,6 +277,16 @@ impl ForgetfulStorage {
         self.data.is_empty()
     }
 
+    /// The keys of the live records, without copying the records.
+    pub fn live_keys(&self) -> Vec<Vec<u8>> {
+        let now = self.now();
+        self.data
+            .iter()
+            .filter(|entry| self.live_value(entry.value(), now).is_some())
+            .map(|entry| entry.key().clone())
+            .collect()
+    }
+
     /// The highest position accepted for `key` whose record has expired,
     /// while it is remembered: one more TTL after the record's expiry.
     /// `None` while the record is live, as `get` returns it.

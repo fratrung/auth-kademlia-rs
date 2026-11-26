@@ -1,0 +1,27 @@
+sequenceDiagram
+    autonumber
+    participant B as Node that starts,<br/>empty or from its disk
+    participant N as Neighbours it asks
+    participant L as A neighbour that listed<br/>the highest position
+    Note over B: lookup of its own id over: of the closest nodes<br/>that answered, k/2 spread across the tree,<br/>one per IP address
+    par to each neighbour asked
+        loop page after page, while more follow
+            B->>N: ListKeys(after the last key received)
+            N-->>B: KeyList: key, position, SHA-256 of the keys<br/>B should hold, one datagram
+        end
+    end
+    Note over N: one page at a time, whoever asks:<br/>a request that comes meanwhile gets no answer
+    Note over B: per key, the highest position listed,<br/>only if B lacks it or holds a lower one,<br/>the keys listed by more neighbours first
+    loop at most 4 at once, 2 per neighbour, within 30 s
+        B->>L: FindValue(key)
+        L-->>B: its record, or nothing
+        alt it hashes to the entry, is in the tree at that position<br/>and its signature verifies
+            rect rgba(47, 143, 78, 0.10)
+            Note over B: written by the rules of a replica
+            end
+        else not shown, or not the record listed
+            rect rgba(201, 138, 27, 0.10)
+            Note over B: the next neighbour that listed it,<br/>then a lower position, else a republication brings it
+            end
+        end
+    end

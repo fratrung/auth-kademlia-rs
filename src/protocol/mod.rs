@@ -9,7 +9,9 @@
 //! - `store_check.rs`: STORE and the network check of an empty replica;
 //! - `client.rs`: the requests this node sends;
 //! - `contacts.rs`: failing and returning contacts, refresh ids;
-//! - `welcome.rs`: nodes met through a message, and their records.
+//! - `welcome.rs`: nodes met through a message, and their records;
+//! - `sync.rs`: what a node that has just started asks its neighbours, and
+//!   the lists they answer.
 
 #[cfg(test)]
 mod acceptance_tests;
@@ -19,6 +21,7 @@ mod handlers;
 mod messages;
 mod republish;
 mod store_check;
+mod sync;
 #[cfg(test)]
 mod test_support;
 mod transport;
@@ -71,6 +74,13 @@ pub struct KademliaProtocol {
     /// while it was down, to nodes outside the `k` closest, which keep them.
     /// The nodes it meets meanwhile enter its table but are sent nothing.
     joined: AtomicBool,
+    /// Set once this node has started asking its neighbours for the records
+    /// it should hold, after a lookup of its own id (`start_synchronization`):
+    /// once per `listen`.
+    synchronized: AtomicBool,
+    /// Set while this node builds a page of keys for a neighbour that asked
+    /// (`rpc_list_keys`): one at a time.
+    building_page: AtomicBool,
     /// Nodes waiting for, or receiving, the records they should hold.
     welcome_in_flight: DashMap<[u8; ID_LEN], ()>,
     /// Bounds whole-storage scans caused by newly discovered peers.
@@ -140,6 +150,8 @@ impl KademliaProtocol {
             store_lookups: Arc::new(AtomicUsize::new(0)),
             sig_cache,
             joined,
+            synchronized: AtomicBool::new(false),
+            building_page: AtomicBool::new(false),
             welcome_in_flight: DashMap::new(),
             welcome_permits: Arc::new(Semaphore::new(WELCOME_CONCURRENCY)),
             oldest_pings_in_flight: DashMap::new(),

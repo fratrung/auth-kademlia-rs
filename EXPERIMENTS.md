@@ -845,10 +845,13 @@ Validated on the code of ADR 0006:
   publication complete, every reader served while a holder remains.
 
 Measured costs and limits:
-- **A replica that restarts empty without a rotation** stays empty until a
-  republication, once a day since `f183e76`: its neighbours do not notice a
-  node that comes back within a second. With records on disk it does not
-  restart empty.
+- **A replica that restarts empty without a rotation** stayed empty until a
+  republication when these runs were made (the empty column of the
+  persistent attacker's table): its neighbours do not notice a node that
+  comes back within a second. Since the synchronization at start (ADR 0007)
+  it asks them for its records once it has looked itself up; the scenario
+  has not been run again since. With records on disk it does not restart
+  empty.
 - **An attacker that reads the traffic** can answer for other nodes, with the
   power of a liar: it can hide a higher record from an empty replica, not
   refuse the current one.

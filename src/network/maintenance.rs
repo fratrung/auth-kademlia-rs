@@ -192,8 +192,10 @@ impl Server {
 
     /// Probe failing contacts and, while no contact is responding, retry the
     /// bootstrap seeds. Once a contact answers again, or first answers a node
-    /// that started with records and has not looked up its own id, look it
-    /// up. Does no network work while the routing table is healthy.
+    /// that started with records and has not looked up its own id, or a node
+    /// with no seeds that has not synchronized, look it up, then synchronize
+    /// once per start. Does no network work while the routing table is
+    /// healthy.
     pub(super) fn schedule_maintenance(&self) {
         let Some(owner) = &self.protocol else {
             return;
@@ -215,14 +217,17 @@ impl Server {
                     seed_delay = MAINTENANCE_TICK;
                     // A node that started with records and was contacted
                     // before it looked up its own id, such as a seed with
-                    // no seeds of its own, joins here.
-                    if isolated || !proto.has_joined() {
+                    // no seeds of its own, joins here; and a node with no
+                    // seeds, which never bootstraps, asks its neighbours
+                    // for its records once it has looked itself up.
+                    let unsynchronized = !proto.has_synchronized() && proto.seeds().is_empty();
+                    if isolated || !proto.has_joined() || unsynchronized {
                         if isolated {
                             log::info!("Reconnected, refreshing the routing table");
                         }
                         isolated = false;
                         let neighbors = proto.router.read().await.find_neighbors(&node, None);
-                        NodeSpiderCrawl::new(
+                        let closest = NodeSpiderCrawl::new(
                             Arc::clone(&proto),
                             node.clone(),
                             neighbors,
@@ -232,6 +237,7 @@ impl Server {
                         .find()
                         .await;
                         proto.note_joined();
+                        proto.start_synchronization(&closest);
                     }
                     continue;
                 }

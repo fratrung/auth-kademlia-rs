@@ -592,7 +592,10 @@ async fn test_set_ignores_a_dead_peer_that_others_keep_reporting() {
     let first = writer.set_detailed(&key, record).await;
     assert!(matches!(first, SetOutcome::Complete(_)), "{first:?}");
     assert_eq!(first.report().expected_replicas, 3);
-    assert_eq!(first.report().stored_replicas, 3);
+    // A peer that synchronizes once the writer has met it may take the
+    // record from the writer's own copy before the STORE reaches it, and
+    // answer `AlreadyStored`.
+    assert_eq!(first.report().acknowledged_replicas(), 3);
     assert_eq!(
         first.report().unavailable_nodes,
         1,

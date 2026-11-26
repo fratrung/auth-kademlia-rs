@@ -53,8 +53,12 @@ async def start(port: int, seeds: list[tuple[str, int]]) -> authkademlia_py.Serv
   any other node answers. A new record is on disk before the node
   acknowledges it; renewed expiries are written every `flush_secs` (86400,
   one day, by default), all in one file: a record file is written only when
-  its record changes. Without `data_dir` a restarted node is empty until other nodes
-  send it its records. On a device, prefer a persistent directory.
+  its record changes. Without `data_dir` a restarted node starts empty.
+  Either way, once it has joined, the node asks its neighbours for the
+  records it should hold and takes those it lacks or holds at a lower
+  position, such as a rotation published while it was down. On a device,
+  prefer a persistent directory: it serves its records before any other node
+  answers.
 - `issuer_path` is needed only on nodes that verify the Status List
   ([section 10](#10-the-status-list)).
 - Signature verification releases the GIL and runs on every core.
@@ -465,9 +469,10 @@ send the published record again with the saved bytes:
 await node.set_detailed(custody.did, custody.published())
 ```
 
-Replicas holding the record republish it every day, and an empty replica
-stores a verified record unless a node shows it a higher one, so replicas
-that lose their copy get it back from the others. The owner's republication
+Replicas holding the record republish it every day, a node that restarts
+asks its neighbours for its records at once, and an empty replica stores a
+verified record unless a node shows it a higher one, so replicas that lose
+their copy get it back from the others. The owner's republication
 restores the copies when no replica is left to send them. A copy that nobody
 sends again expires after 14 days.
 

@@ -25,7 +25,7 @@ const MAX_WELCOME_QUEUE: usize = 256;
 
 /// Records whose neighbours are computed under one read lock of the routing
 /// table, while scanning the storage for a new node.
-const WELCOME_SCAN_CHUNK: usize = 256;
+pub(super) const WELCOME_SCAN_CHUNK: usize = 256;
 
 const REPLICATION_CONCURRENCY: usize = 4;
 

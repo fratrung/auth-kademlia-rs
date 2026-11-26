@@ -106,7 +106,11 @@ a lower position than the one that exists.
    at position 0, as `FindHash` answers it, and written by its own rule:
    signed by the issuer, first writer wins.
 5. **Bounds.** The requester runs one synchronization per start, asks the
-   neighbours of point 2 and no other, fetches at most four records at once
+   neighbours of point 2 and no other, takes at most 64 pages from each,
+   about 1,200 keys, so that a neighbour listing made-up keys page after
+   page fills no more of its memory before the deadline (DID records take
+   one or two), drops a page longer than one datagram or whose keys do not
+   follow the last one received, fetches at most four records at once
    and at most two from one neighbour (each neighbour has at most 8
    messages in reassembly), verifies on the blocking pool capped at the
    number of cores, and stops at its storage budget and 30 s after it

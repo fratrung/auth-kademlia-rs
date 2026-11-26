@@ -205,7 +205,9 @@ impl Server {
     /// the routing table. Returns the k-closest nodes discovered. Once that
     /// lookup is over, from at least one address that answered, a node that
     /// started with records sends new nodes the records they should hold
-    /// (`KademliaProtocol::note_joined`).
+    /// (`KademliaProtocol::note_joined`), and the node asks some of the
+    /// closest ones for the records it should hold itself
+    /// (`KademliaProtocol::start_synchronization`).
     pub async fn bootstrap(&self, addrs: Vec<(String, u16)>) -> Vec<Node> {
         log::debug!("Bootstrapping with {} initial contacts", addrs.len());
         if let Some(proto) = &self.protocol {
@@ -235,6 +237,7 @@ impl Server {
                 .await;
                 if reached {
                     proto.note_joined();
+                    proto.start_synchronization(&closest);
                 }
                 closest
             }

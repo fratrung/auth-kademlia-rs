@@ -19,7 +19,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 /// Message types, as `rpc_message_name` names them.
-pub const MESSAGE_TYPES: [&str; 15] = [
+pub const MESSAGE_TYPES: [&str; 17] = [
     "Ping",
     "Pong",
     "Store",
@@ -35,6 +35,8 @@ pub const MESSAGE_TYPES: [&str; 15] = [
     "FindHash",
     "FindHashHit",
     "Received",
+    "ListKeys",
+    "KeyList",
 ];
 
 /// Lookups of the check by rounds: 1, 2, 3, 4, 5 or more.
