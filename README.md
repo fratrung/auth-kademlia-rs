@@ -18,7 +18,7 @@ central authority.
 7. [Documentation](#documentation)
 8. [Related projects](#related-projects)
 9. [Citation](#citation)
-10. [AI-assisted development disclosure](#ai-assisted-development-disclosure)
+10. [AI assistance](#ai-assistance)
 11. [License](#license)
 
 ## Overview
@@ -240,25 +240,9 @@ AuthKademlia was introduced in:
 > Self-Sovereign Identity", *Journal of Information Security and Applications*
 > 94 (2025) 104199. https://doi.org/10.1016/j.jisa.2025.104199
 
-## AI-assisted development disclosure
+## AI assistance
 
-This project was developed with technical support from **GPT-5.6 SOL** and
-**FABLE 5**. These AI agents supported design discussions, implementation, and
-test development; they were not the originators or generators of the project's
-ideas, goals, or core architectural direction. Those originated with the human
-maintainer. Architectural and protocol alternatives were discussed with AI,
-but every design decision was made and accepted by the human maintainer, who
-retains full responsibility for the result.
-
-The maintainer also uses **Opus 5.5** and **GPT Astra 6.2** to discuss
-protocol changes, compare security and reliability tradeoffs, implement
-agreed fixes, and write regression tests.
-
-The resulting code was reviewed at the functional and architectural level.
-Line-by-line human review was focused on critical paths, including protocol
-consistency, cryptographic verification, authenticated mutations, and storage
-behaviour. AI assistance and automated tests support the review process but do
-not constitute a guarantee of correctness or security.
+Developed with the assistance of Opus 5.5 (xhigh) and GPT Astra 6.2.
 
 ## License
 
