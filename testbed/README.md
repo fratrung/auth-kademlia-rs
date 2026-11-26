@@ -162,7 +162,7 @@ default; Y.1541 bounds delay variation at 50 ms for classes 0 and 1.
 | `ctl NODE republish` | Send the current record again with the saved bytes, as the owner does at least every 24 hours |
 | `ctl NODE discard` | Drop a rotation that was not confirmed; the next `update` signs the same position again, which replicas that took the first refuse as a conflict |
 | `ctl NODE push DID` | Send the record this node holds for a DID to the `k` nodes closest to its key, as the hourly republication does, and count the answers; `repaired` says whether a replica that refused it as stale showed a higher record this node took |
-| `ctl NODE lie on` / `lie v0` / `lie off` | Answer every `FindHash` with a made-up position far ahead, or with position 0 under a made-up hash, neither of which it can show, or stop (testbed builds only) |
+| `ctl NODE lie on` / `lie v0` / `lie list` / `lie off` | Answer every `FindHash` with a made-up position far ahead, or with position 0 under a made-up hash, neither of which it can show; or answer `ListKeys` with the keys it holds far ahead under made-up hashes, then made-up keys page after page; or stop (testbed builds only) |
 | `ctl NODE get DID` | Read a DID; `get TARGET --from NODE` also takes a node name |
 | `ctl NODE storage` | Records this node holds, with their signing key |
 | `ctl NODE routing` | This node's closest contacts |
@@ -416,6 +416,21 @@ testbed/testbed.py up --nodes 130 --k 20 --alpha 3 --profile wan-eu
 testbed/attack.py start --mode persist --period 500 --did-ttl 120
 testbed/measure.py outage --lost 8 12 16 20 --rounds 5 --reads --joiners 3 [--owner-returns]
 ```
+
+```
+testbed/measure.py sync --rounds 20 [--liars 5] [--counters]
+```
+
+`measure.py sync` measures the synchronization of a node that starts. Each
+round the owner publishes a new DID and rotates `--rotations` times (1);
+then a replica holding the current position crashes and comes back empty,
+with no rotation after it, so that nobody sends it the record: it asks its
+neighbours once it has looked itself up. With `--liars L` the `L` nodes
+closest to it, never the owner, lie in `ListKeys` (`ctl <node> lie list`)
+for the round. It prints, from when the replica answers again, how long it
+takes to hold the current position (it polls its storage every 100 ms, up
+to `--wait`, 35 s, beyond the 30 s of a synchronization), and how many
+records it holds then: a made-up key is never shown, so never stored.
 
 `--reads` adds what readers get at that moment: every node but the owner
 reads the DID once while the owner is offline, after the holders'

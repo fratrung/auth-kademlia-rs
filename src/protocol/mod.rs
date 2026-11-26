@@ -125,6 +125,10 @@ pub enum Lie {
     /// Position 0 and a made-up hash, for any key, with no record to show
     /// for it.
     OtherVersionZero = 2,
+    /// Honest in `FindHash`; in `ListKeys`, the keys it holds at a position
+    /// far ahead under made-up hashes, then made-up keys, page after page,
+    /// always saying more follow, with no record to show for any of them.
+    MadeUpKeys = 3,
 }
 
 impl KademliaProtocol {
@@ -226,7 +230,9 @@ impl KademliaProtocol {
     /// Testbed only: from now on, answer every `FindHash`, for any key, with
     /// `lie`: a position far ahead, or position 0, under a made-up hash this
     /// node never serves, to measure what nodes that lie in `FindHash` can
-    /// block. Records are stored and served as usual.
+    /// block; or answer `ListKeys` with keys it cannot show
+    /// (`Lie::MadeUpKeys`), to measure what they can keep from a node that
+    /// starts. Records are stored and served as usual.
     #[cfg(feature = "testbed")]
     pub fn set_lying(&self, lie: Lie) {
         self.lie
@@ -238,6 +244,7 @@ impl KademliaProtocol {
         match self.lie.load(std::sync::atomic::Ordering::Relaxed) {
             1 => Lie::LaterVersion,
             2 => Lie::OtherVersionZero,
+            3 => Lie::MadeUpKeys,
             _ => Lie::Honest,
         }
     }

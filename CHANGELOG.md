@@ -126,7 +126,10 @@ application.
   lost while the owner is offline (`outage`, with the `push` command), with
   what readers in the network and joining readers get then (`--reads`,
   `--joiners`); `up --data-dir`, which keeps every node's records on disk
-  across its restarts.
+  across its restarts; a switch that makes a node list, in `ListKeys`, the
+  keys it holds far ahead and made-up keys page after page (`lie list`), and
+  a measurement mode for a replica restarted empty with such liars around it
+  (`measure.py sync`).
 - Counters for the outcomes of the network check (`accepted`,
   `accepted_with_silence`, `superseded`) and for the claims of a higher
   position dropped because they were not shown (`unshown_claims`).

@@ -23,7 +23,7 @@ cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
 cargo test                           # all 396 tests
 cargo test --features counters       # 399: also the counters' own tests
-cargo test --features testbed        # 400: also the testbed's FindHash lie switch
+cargo test --features testbed        # 402: also the testbed's lie switches
 cargo test <name>                    # single test, e.g. test_key_rotation_is_published_with_set
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -177,7 +177,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `testbed/node.rs` | Testbed node (`testbed_node` binary): one DHT node per container, driven through a control socket inside the container; keeps its DID's tree and published record |
 | `testbed/testbed.py` | Testbed driver: generates the Docker network, applies `tc netem` profiles, sends commands to nodes |
 | `testbed/attack.py` | Testbed attack mode: starts the attacker (`race`, `burst`, `successor`, `spoof`, `persist`) and runs the `race` and `restart` scenarios on a running network |
-| `testbed/measure.py` | Testbed measurement mode: publication time and availability (`publish`), rotations with restarted replicas and liars (`update`), copies over time under churn (`churn`), replicas lost while the owner is offline (`outage`) |
+| `testbed/measure.py` | Testbed measurement mode: publication time and availability (`publish`), rotations with restarted replicas and liars (`update`), copies over time under churn (`churn`), replicas lost while the owner is offline (`outage`), a replica restarted empty with liars in `ListKeys` around it (`sync`) |
 | `testbed/attacker.rs` | Testbed attacker (`testbed_attacker` binary): sniffs the host's packets, sends forged records as STOREs and spoofed `FindHash` answers |
 | `testbed/did.rs` | DID records shared by the two testbed binaries: a new DID's tree, the record of a position, forged records |
 
@@ -517,7 +517,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/repair_tests.rs` | 3 | Repair over real UDP: the expected record found, stored and served locally; no match without it; no answer |
 | `tests/chain_tests.rs` | 8 | Positions of one DID over real UDP: a rotation that reaches every replica, the owner restoring empty replicas, refusals of `set` that count only once shown, forged and old genuine records at empty replicas |
 | `tests/sync_tests.rs` | 3 | The synchronization at start over real UDP, each node at its own loopback address: a node restarted empty at once, one restarted from its data directory after a rotation it missed, a seed that never bootstraps |
-| `src/**` (inline) | 275 | Module-level `#[test]` blocks (incl. the custody's acceptance cases and calendar, persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, the synchronization at start in `sync.rs`, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 1 more (the `FindHash` lie switch) |
+| `src/**` (inline) | 275 | Module-level `#[test]` blocks (incl. the custody's acceptance cases and calendar, persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, the synchronization at start in `sync.rs`, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 3 more (the `FindHash` and `ListKeys` lie switches) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 
@@ -637,7 +637,7 @@ N nodes in Docker with configurable `k`, `alpha`, seeds and `tc netem` profiles
 (LAN, WAN Europe, WAN Trans-Atlantic, from Verizon's published latencies).
 ```
 testbed/testbed.py up --nodes 10 --k 3 --profile wan-eu   # --data-dir: records on disk across restarts
-testbed/testbed.py ctl node-3 publish        # also: update, republish, push, get, lie on|v0|off, storage, routing
+testbed/testbed.py ctl node-3 publish        # also: update, republish, push, get, lie on|v0|list|off, storage, routing
 testbed/testbed.py get node-3 --from node-5
 testbed/testbed.py pause node-10             # also: netem, stop, start, logs
 testbed/testbed.py down
@@ -656,7 +656,10 @@ A node keeps its DID's tree and published record: `publish` sends position
 `republish` sends the published record again with the saved bytes. `lie on`
 (testbed builds only, `KademliaProtocol::set_lying`) makes it answer every
 `FindHash` with a made-up position far ahead, `lie v0` with position 0 under
-a made-up hash (`measure.py update|churn --lie v0`). `testbed/attack.py` adds
+a made-up hash (`measure.py update|churn --lie v0`), and `lie list` makes it
+answer `ListKeys` with the keys it holds far ahead under made-up hashes,
+then made-up keys page after page (`measure.py sync --liars N`: a replica
+restarted empty with the `N` nodes closest to it lying). `testbed/attack.py` adds
 an attacker that reads the traffic and sends forged records (the owner's DID
 and the public proof it read, its own key): `start --mode
 race|burst|successor|spoof|persist`, then the `race` or `restart` scenario.

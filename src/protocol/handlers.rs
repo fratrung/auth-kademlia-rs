@@ -226,7 +226,7 @@ impl KademliaProtocol {
         let found = self.rpc_find_value(sender_id, sender_addr, key).await;
         #[cfg(feature = "testbed")]
         match self.lie() {
-            super::Lie::Honest => {}
+            super::Lie::Honest | super::Lie::MadeUpKeys => {}
             super::Lie::LaterVersion => {
                 return RpcMessage::FindHashHit {
                     seq: crate::auth_handler::did::MAX_INTEGER,

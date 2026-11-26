@@ -12,6 +12,7 @@ Built on testbed.py: start a network with it first.
     testbed/measure.py update --rounds 20 --restart 1 --liars 1      # one replica lies in FindHash
     testbed/measure.py churn --duration 600 --liars 1                # copies over time while nodes crash
     testbed/measure.py outage --lost 4 8 12 --rounds 5               # owner offline, replicas lost at once
+    testbed/measure.py sync --rounds 20 --liars 5                    # a replica restarted empty, liars in ListKeys
 
 See testbed/README.md, section "Measurement mode".
 """
@@ -33,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from testbed import (  # noqa: E402
     GENERATED, IMAGE, check_node, container, ctl, fail, load_config, on_disk, run,
 )
-from attack import keys_of, wait_answering  # noqa: E402
+from attack import keys_of, record_key, wait_answering  # noqa: E402
 
 
 def summary(values):
@@ -78,6 +79,18 @@ def counters_delta(before, after):
                 total["checks"][key] = total["checks"].get(key, 0) + value - first["checks"][key]
     total["sent"] = {kind: sent for kind, sent in total["sent"].items() if sent["datagrams"]}
     return total
+
+
+def zeroed(value):
+    """A snapshot of counters with every count at zero: what a node that
+    restarted counted from."""
+    if isinstance(value, dict):
+        return {key: zeroed(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [zeroed(item) for item in value]
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return 0
+    return value
 
 
 def print_counters(rounds, per="publication"):
@@ -278,9 +291,10 @@ def store_quorum(k):
 
 
 def set_liars(liars, lying, lie="on"):
-    """Make `liars` lie in FindHash, or stop: `lie` is `on` (a position far
+    """Make `liars` lie, or stop: in FindHash, `lie` is `on` (a position far
     ahead) or `v0` (position 0 under a made-up hash), neither of which they
-    can show."""
+    can show; in ListKeys, `list` (the keys they hold far ahead, then made-up
+    keys page after page)."""
     for liar in liars:
         ctl(liar, "lie", lie if lying else "off", check=lying)
 
@@ -682,6 +696,104 @@ def cmd_outage(args):
     print(f"  details: {out}")
 
 
+def cmd_sync(args):
+    """Each round: the owner creates and publishes a new DID and rotates its
+    key `--rotations` times; then a replica holding the current version
+    crashes and comes back empty, with no rotation after it, while the
+    `--liars` nodes closest to it (never the owner) lie in ListKeys: they list
+    the keys they hold far ahead under made-up hashes, then made-up keys page
+    after page. Nobody sends the restarted replica its records: it asks its
+    neighbours for them once it has looked itself up. How long until it
+    holds the current version again, and what it holds after `--wait`."""
+    config = load_config()
+    check_node(args.owner, config)
+    nodes = [f"node-{i}" for i in range(1, config["nodes"] + 1)]
+    rounds = []
+    print(
+        f"sync: {args.rounds} rounds, {args.rotations} rotation(s) each, {args.liars} liar(s) in ListKeys "
+        f"around the restarted replica, owner {args.owner}, {config['nodes']} nodes, k={config['k']}, "
+        f"profile {config['profile']}, image {config.get('image', IMAGE)}{on_disk(config)}"
+    )
+    print(f"{'round':>5}  {'victim':<9} {'holds':<8} {'refilled':>10}  records held")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:
+        for number in range(1, args.rounds + 1):
+            did = ctl(args.owner, "new")["did"]
+            published = ctl(args.owner, "publish")
+            versions = [published["record"]["signing_key"]]
+            for _ in range(args.rotations):
+                time.sleep(args.settle)
+                update = ctl(args.owner, "update")
+                if update.get("to_key") and update["to_key"] != versions[-1]:
+                    versions.append(update["to_key"])
+            time.sleep(args.settle)
+            replicas = [n for n in closest(nodes, dht_key(did), config["k"]) if n != args.owner]
+            held = keys_of(replicas, did)
+            holders = [n for n in replicas if held[n] == versions[-1]]
+            if not holders:
+                print(f"{number:>5}  no replica holds the current version: skipped")
+                continue
+            victim = holders[(number - 1) % len(holders)]
+            # The nodes closest to the victim: those it asks first.
+            others = [n for n in nodes if n not in (args.owner, victim)]
+            liars = closest(others, node_id(victim), args.liars)
+            set_liars(liars, True, "list")
+            before = all_counters(pool, nodes) if args.counters else None
+            # A crash: no Leave, and the node comes back with its id and no records.
+            run(["docker", "kill", container(victim)], capture=True)
+            run(["docker", "start", container(victim)], capture=True)
+            if not wait_answering(victim):
+                fail(f"{victim} did not come back")
+            answering = time.monotonic()
+            refilled_ms = None
+            while time.monotonic() - answering < args.wait:
+                if record_key(victim, did) == versions[-1]:
+                    refilled_ms = (time.monotonic() - answering) * 1000
+                    break
+                time.sleep(0.1)
+            counters = None
+            if before is not None:
+                time.sleep(args.settle)
+                after = all_counters(pool, nodes)
+                # The restarted replica counts again from zero.
+                if after.get(victim):
+                    before[victim] = zeroed(after[victim])
+                counters = counters_delta(before, after)
+            set_liars(liars, False)
+            label = version_label(versions)
+            storage = ctl(victim, "storage", check=False) or {}
+            entry = {
+                "did": did,
+                "victim": victim,
+                "liars": liars,
+                "versions": versions,
+                "holds": label(record_key(victim, did)),
+                "refilled_ms": refilled_ms,
+                "records_held": len(storage.get("records", [])),
+            }
+            if counters is not None:
+                entry["counters"] = counters
+            rounds.append(entry)
+            refilled = f"{refilled_ms:.0f} ms" if refilled_ms is not None else "-"
+            print(f"{number:>5}  {victim:<9} {entry['holds']:<8} {refilled:>10}  {entry['records_held']}")
+
+    if not rounds:
+        fail("no round ran")
+    print("\nsummary")
+    if args.liars:
+        print(f"  liars in ListKeys: the {args.liars} node(s) closest to the restarted replica, every round")
+    held = {name: sum(1 for r in rounds if r["holds"] == name) for name in ("current", "older", "other", "none")}
+    print(f"  restarted replica after {args.wait:g} s: current {held['current']}/{len(rounds)}, "
+          f"older {held['older']}, other {held['other']}, none {held['none']}")
+    print(f"  time to hold the current version, from when it answers again: "
+          f"{summary([r['refilled_ms'] for r in rounds if r['refilled_ms'] is not None])}")
+    print(f"  records held by the restarted replica: {summary_counts([r['records_held'] for r in rounds])}")
+    print_counters(rounds, per="restart")
+    GENERATED.mkdir(exist_ok=True)
+    out = GENERATED / f"sync-{config['profile']}-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    out.write_text(json.dumps({"config": config, "args": vars(args) | {"func": None}, "rounds": rounds}, indent=2) + "\n")
+    print(f"  details: {out}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -744,6 +856,20 @@ def main():
     ou.add_argument("--settle", type=float, default=0.3, help="seconds after the publication and each rotation")
     ou.add_argument("--wait", type=float, default=1.0, help="seconds after the republications before counting")
     ou.set_defaults(func=cmd_outage)
+    sy = sub.add_parser("sync", help="a replica restarted empty, with liars in ListKeys around it")
+    sy.add_argument("--owner", default="node-1")
+    sy.add_argument("--rounds", type=int, default=20)
+    sy.add_argument("--rotations", type=int, default=1, help="rotations after the publication, before the restart")
+    sy.add_argument("--liars", type=int, default=0,
+                    help="nodes closest to the restarted replica that lie in ListKeys during the round")
+    sy.add_argument("--counters", action="store_true",
+                    help="read every node's counters before the restart and after the wait (image with counters)")
+    sy.add_argument("--settle", type=float, default=0.3,
+                    help="seconds after the publication and each rotation, and before reading the counters")
+    sy.add_argument("--wait", type=float, default=35,
+                    help="seconds the restarted replica has to hold the current version again "
+                         "(the synchronization stops after 30)")
+    sy.set_defaults(func=cmd_sync)
     args = parser.parse_args()
     args.func(args)
 

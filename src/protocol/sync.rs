@@ -78,6 +78,13 @@ impl KademliaProtocol {
             return None;
         };
         let (entries, more) = self.page_for(&source, after).await;
+        #[cfg(feature = "testbed")]
+        if self.lie() == super::Lie::MadeUpKeys {
+            return Some(RpcMessage::KeyList {
+                entries: made_up_page(after, &entries),
+                more: true,
+            });
+        }
         Some(RpcMessage::KeyList { entries, more })
     }
 
@@ -352,6 +359,38 @@ impl Drop for Building<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
     }
+}
+
+/// Testbed only: the page a node that lies in `ListKeys` sends after
+/// `after`: the keys of `honest`, the page it would send, at a position far
+/// ahead under made-up hashes, then made-up keys after them up to a full
+/// page, in key order. Made-up keys follow each other closely, so that pages
+/// never run out.
+#[cfg(feature = "testbed")]
+fn made_up_page(after: Option<[u8; ID_LEN]>, honest: &[KeyEntry]) -> Vec<KeyEntry> {
+    use crate::auth_handler::did::MAX_INTEGER;
+    let lie = |key| KeyEntry {
+        key,
+        seq: MAX_INTEGER,
+        hash: rand::random(),
+    };
+    let mut entries: Vec<KeyEntry> = honest.iter().map(|entry| lie(entry.key)).collect();
+    let mut last = match (honest.last(), after) {
+        (Some(entry), _) => U256::from_big_endian(&entry.key),
+        (None, Some(after)) => U256::from_big_endian(&after),
+        (None, None) => U256::from_big_endian(&rand::random::<[u8; ID_LEN]>()) >> 1,
+    };
+    while entries.len() < PAGE_ENTRIES {
+        let step = (U256::one() << 200) + U256::from(rand::random::<u64>());
+        let Some(next) = last.checked_add(step) else {
+            break;
+        };
+        last = next;
+        let mut key = [0; ID_LEN];
+        next.to_big_endian(&mut key);
+        entries.push(lie(key));
+    }
+    entries
 }
 
 /// Whether `node` should hold `key` by the contacts of `router`: one of the
@@ -1066,6 +1105,62 @@ mod tests {
 
         assert!(node.list_of(&liar).await.is_empty());
         assert_eq!(pages.load(Ordering::Relaxed), 1);
+    }
+
+    /// A node that lies in `ListKeys` lists the key it holds at a position
+    /// far ahead under another hash, then made-up keys up to a full page, in
+    /// order, saying more follow; the next page holds made-up keys only.
+    #[cfg(feature = "testbed")]
+    #[tokio::test]
+    async fn a_lying_node_lists_its_keys_far_ahead_and_made_up_keys_after_them() {
+        use crate::auth_handler::did::MAX_INTEGER;
+        let key = [0x55; ID_LEN];
+        let storage = Arc::new(ForgetfulStorage::new(-1));
+        storage.set(key.to_vec(), b"record".to_vec());
+        let protocol =
+            test_protocol_with_storage(Arc::new(TestHandler::new(true, true)), false, storage)
+                .await;
+        protocol.set_lying(super::super::Lie::MadeUpKeys);
+        let page =
+            |after| protocol.rpc_list_keys([0x80; ID_LEN], ("127.0.0.1".into(), 9100), after);
+
+        let Some(RpcMessage::KeyList { entries, more }) = page(None).await else {
+            panic!("no page");
+        };
+        assert!(more);
+        assert_eq!(entries.len(), PAGE_ENTRIES);
+        assert!(follows(None, &entries));
+        assert_eq!(entries[0].key, key);
+        assert_ne!(entries[0].hash, record_hash(b"record"));
+        assert!(entries.iter().all(|entry| entry.seq == MAX_INTEGER));
+
+        let last = entries.last().map(|entry| entry.key);
+        let Some(RpcMessage::KeyList { entries, more }) = page(last).await else {
+            panic!("no page");
+        };
+        assert!(more);
+        assert_eq!(entries.len(), PAGE_ENTRIES);
+        assert!(follows(last, &entries));
+        assert!(entries.iter().all(|entry| entry.key != key));
+    }
+
+    /// Past a neighbour that lists its key far ahead and made-up keys page
+    /// after page, a node that starts takes the record an honest neighbour
+    /// lists, and stores nothing made up.
+    #[cfg(feature = "testbed")]
+    #[tokio::test]
+    async fn a_node_takes_its_records_past_a_neighbour_lying_in_list_keys() {
+        let owner = TreeOwner::new(1);
+        let v5 = owner.record(5, Some(b"4"));
+        let liar = node([0x40; ID_LEN], &[(owner.key, v5.clone())]).await;
+        liar.set_lying(super::super::Lie::MadeUpKeys);
+        let honest = node([0x20; ID_LEN], &[(owner.key, v5.clone())]).await;
+        let empty = node([0x10; ID_LEN], &[]).await;
+
+        let neighbours = [liar.source_node.clone(), honest.source_node.clone()];
+        assert_eq!(synchronize(&empty, &neighbours).await, 1);
+        assert_eq!(empty.storage.get(&owner.key), Some(v5));
+        assert_eq!(empty.storage.live_keys().len(), 1);
     }
 
     /// The Status List is taken when none is held, and only then: first

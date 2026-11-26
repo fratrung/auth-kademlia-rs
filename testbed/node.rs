@@ -16,7 +16,7 @@
 //! RUST_LOG    log filter (default `warn,testbed_node=info`)
 //!
 //! Commands: `info`, `new`, `publish`, `update`, `republish`, `discard`,
-//! `forget`, `get <did>`, `watch <did> <ms>`, `push <did>`, `lie on|v0|off`,
+//! `forget`, `get <did>`, `watch <did> <ms>`, `push <did>`, `lie on|v0|list|off`,
 //! `stats`, `storage`, `routing`. A DID may be given as its suffix, without
 //! `did:iiot:`.
 //! Each answers with one JSON line. Times named `*_unix_ms` are wall-clock
@@ -127,8 +127,9 @@ async fn handle(node: &Node, line: &str) -> Value {
         "lie" => match words.next() {
             Some("on") => lie(node, Lie::LaterVersion).await,
             Some("v0") => lie(node, Lie::OtherVersionZero).await,
+            Some("list") => lie(node, Lie::MadeUpKeys).await,
             Some("off") => lie(node, Lie::Honest).await,
-            _ => json!({ "error": "usage: lie on|v0|off" }),
+            _ => json!({ "error": "usage: lie on|v0|list|off" }),
         },
         "stats" => stats(node).await,
         "counters" => counters(node).await,
@@ -137,7 +138,7 @@ async fn handle(node: &Node, line: &str) -> Value {
         other => json!({
             "error": format!("unknown command '{other}'"),
             "commands": ["info", "new", "publish", "update", "republish", "discard", "forget",
-                         "get <did>", "watch <did> <ms>", "push <did>", "lie on|v0|off", "stats",
+                         "get <did>", "watch <did> <ms>", "push <did>", "lie on|v0|list|off", "stats",
                          "counters",
                          "storage", "routing"],
         }),
@@ -371,11 +372,13 @@ async fn push(node: &Node, target: &str) -> Value {
 }
 
 /// Testbed only: make this node answer every `FindHash` with a made-up
-/// position far ahead (`on`), position 0 under a made-up hash (`v0`), or
-/// honestly again (`off`). A node that restarts answers honestly again.
+/// position far ahead (`on`) or position 0 under a made-up hash (`v0`);
+/// or answer `ListKeys` with the keys it holds far ahead under made-up
+/// hashes and made-up keys page after page (`list`); or answer honestly
+/// again (`off`). A node that restarts answers honestly again.
 async fn lie(node: &Node, lie: Lie) -> Value {
     let listening = node.server.read().await.set_lying(lie);
-    log::info!("FindHash answers: {lie:?}");
+    log::info!("Lying: {lie:?}");
     json!({ "lying": lie != Lie::Honest, "lie": format!("{lie:?}"), "listening": listening })
 }
 
