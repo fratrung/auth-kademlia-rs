@@ -58,6 +58,17 @@ const FETCHES: usize = 4;
 /// `MAX_REASSEMBLY_ENTRIES_PER_PEER` (8) messages in reassembly here.
 const FETCHES_PER_NEIGHBOUR: usize = 2;
 
+/// Neighbours asked at least, whatever `k`. With a small `k` the other
+/// holders of a key are few and all close to this node: in a simulation
+/// with `k` = 3, the 3 closest held no copy of 4% to 6% of the keys a node
+/// should hold, the 10 closest of none.
+const MIN_ASKED: usize = 10;
+
+/// Records a neighbour may answer it does not hold, of those it listed,
+/// before it is asked for no more: a neighbour that lists keys it does not
+/// hold would otherwise cost a fetch for each of them.
+const NOT_HELD_LIMIT: usize = 2;
+
 impl KademliaProtocol {
     /// Answer `ListKeys`: the next page of the keys of the records this node
     /// holds of which the sender is one of the `k` closest nodes it knows,
@@ -145,13 +156,14 @@ impl KademliaProtocol {
         self.synchronized.load(Ordering::Acquire)
     }
 
-    /// Start, once per `listen`, the synchronization with neighbours chosen
-    /// among `answered`, the nodes closest to this one that answered a lookup
-    /// of its own id (`spread`). Nothing when none of them can be asked: a
-    /// later lookup starts it.
-    pub(crate) fn start_synchronization(self: &Arc<Self>, answered: &[Node]) {
-        let count = self.alpha.max(self.ksize.div_ceil(2));
-        let neighbours = spread(&self.source_node, answered, self.ksize, count);
+    /// Start, once per `listen`, the synchronization with the neighbours
+    /// `to_ask` chooses. Nothing when none of them can be asked: a later
+    /// lookup starts it.
+    pub(crate) async fn start_synchronization(self: &Arc<Self>, answered: &[Node]) {
+        if self.has_synchronized() {
+            return;
+        }
+        let neighbours = self.to_ask(answered).await;
         if neighbours.is_empty() || self.synchronized.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -177,6 +189,27 @@ impl KademliaProtocol {
         });
     }
 
+    /// The neighbours a synchronization asks:
+    /// `max(alpha, ceil(k / 2), MIN_ASKED)`, chosen by `spread` among the
+    /// `max(k, that number)` closest to this node of `answered`, the nodes
+    /// that answered a lookup of its own id, and of its contacts that are not
+    /// failing. With `k` = 20, 10 of the 20 closest; with `k` below 10, the
+    /// 10 closest, more than a lookup returns.
+    async fn to_ask(&self, answered: &[Node]) -> Vec<Node> {
+        let count = self.alpha.max(self.ksize.div_ceil(2)).max(MIN_ASKED);
+        let among = self.ksize.max(count);
+        // Those that answered first: of one id known twice, the address it
+        // answered from is kept.
+        let mut known = answered.to_vec();
+        known.extend(
+            self.router
+                .read()
+                .await
+                .healthy_closest(&self.source_node, among),
+        );
+        spread(&self.source_node, &known, among, count)
+    }
+
     /// Ask `neighbours` for the keys this node should hold, and take the
     /// records it lacks or holds at a lower position, the keys listed by more
     /// neighbours first. Stops when the storage budget is reached or a write
@@ -187,19 +220,16 @@ impl KademliaProtocol {
                 .await;
         let wanted = merge(&lists);
         progress.listed.store(wanted.len(), Ordering::Relaxed);
-        let permits: Vec<Semaphore> = neighbours
-            .iter()
-            .map(|_| Semaphore::new(FETCHES_PER_NEIGHBOUR))
-            .collect();
+        let sources: Vec<Source> = neighbours.iter().map(Source::new).collect();
         let stopped = AtomicBool::new(false);
         stream::iter(&wanted)
             .for_each_concurrent(FETCHES, |wanted| {
-                let (permits, stopped) = (&permits, &stopped);
+                let (sources, stopped) = (&sources, &stopped);
                 async move {
                     if stopped.load(Ordering::Relaxed) {
                         return;
                     }
-                    match self.take(wanted, neighbours, permits).await {
+                    match self.take(wanted, sources).await {
                         Taken::Written => {
                             progress.taken.fetch_add(1, Ordering::Relaxed);
                         }
@@ -244,37 +274,60 @@ impl KademliaProtocol {
     /// Fetch and write a record of `wanted`: the highest position listed
     /// that this node would take, from a neighbour that listed it. Past a
     /// neighbour that does not show it, or shows something else, the next
-    /// one that listed it, then a lower position.
-    async fn take(
-        self: &Arc<Self>,
-        wanted: &Wanted,
-        neighbours: &[Node],
-        permits: &[Semaphore],
-    ) -> Taken {
+    /// one that listed it, then a lower position. A neighbour that has said
+    /// `NOT_HELD_LIMIT` times it does not hold a record it listed is passed
+    /// over.
+    async fn take(self: &Arc<Self>, wanted: &Wanted, sources: &[Source<'_>]) -> Taken {
         let key = wanted.key;
         for claim in &wanted.claims {
             if !self.would_take(&key, claim.seq) {
                 continue;
             }
             for &index in &claim.listers {
-                let record = {
-                    let Ok(_permit) = permits[index].acquire().await else {
+                let source = &sources[index];
+                let fetched = {
+                    let Ok(_permit) = source.permits.acquire().await else {
                         continue;
                     };
-                    self.fetch(&neighbours[index], key).await
+                    if !source.still_asked() {
+                        continue;
+                    }
+                    let fetched = self.fetch(source.node, key).await;
+                    // Counted before the permit is released, so that the
+                    // next fetch from it sees the count.
+                    if matches!(fetched, Fetched::NotHeld)
+                        && source.not_held.fetch_add(1, Ordering::Relaxed) + 1 == NOT_HELD_LIMIT
+                    {
+                        log::warn!(
+                            "{} listed records it does not hold: no more are asked of it",
+                            source.node
+                        );
+                    }
+                    fetched
                 };
-                let Some(record) = record else {
-                    log::debug!(
-                        "{} did not show the record of {} it listed",
-                        neighbours[index],
-                        hex::encode(key)
-                    );
-                    continue;
+                let record = match fetched {
+                    Fetched::Record(record) => record,
+                    Fetched::NotHeld => {
+                        log::debug!(
+                            "{} does not hold the record of {} it listed",
+                            source.node,
+                            hex::encode(key)
+                        );
+                        continue;
+                    }
+                    Fetched::Silent => {
+                        log::debug!(
+                            "{} did not answer for the record of {} it listed",
+                            source.node,
+                            hex::encode(key)
+                        );
+                        continue;
+                    }
                 };
                 if !shows_entry(&key, claim, &record) || !self.verify_for_key(&key, &record).await {
                     log::warn!(
                         "{} showed for {} a record other than the one it listed, or invalid",
-                        neighbours[index],
+                        source.node,
                         hex::encode(key)
                     );
                     continue;
@@ -301,11 +354,17 @@ impl KademliaProtocol {
         }
     }
 
-    async fn fetch(self: &Arc<Self>, peer: &Node, key: [u8; ID_LEN]) -> Option<Vec<u8>> {
-        let answer = Arc::clone(self)
-            .call_find_value(peer.clone(), Node::from_id(key))
-            .await;
-        RPCFindResponse::new(answer).get_value()
+    async fn fetch(self: &Arc<Self>, peer: &Node, key: [u8; ID_LEN]) -> Fetched {
+        let answer = RPCFindResponse::new(
+            Arc::clone(self)
+                .call_find_value(peer.clone(), Node::from_id(key))
+                .await,
+        );
+        match answer.get_value() {
+            Some(record) => Fetched::Record(record),
+            None if answer.happened() => Fetched::NotHeld,
+            None => Fetched::Silent,
+        }
     }
 
     /// Write `record`, verified, by the rules of a replica, as a repair does:
@@ -415,7 +474,7 @@ fn follows(after: Option<[u8; ID_LEN]>, page: &[KeyEntry]) -> bool {
     })
 }
 
-/// `count` of `answered`, among the `k` closest to `own`, spread across the
+/// `count` of `known`, among the `among` closest to `own`, spread across the
 /// tree of ids: the closest first, then each time the one farthest, by XOR,
 /// from the nearest of those already chosen, passing over a node at an IP
 /// address already chosen. Nodes far from each other are close to different
@@ -423,14 +482,15 @@ fn follows(after: Option<[u8; ID_LEN]>, page: &[KeyEntry]) -> bool {
 /// nodes next to each other do; made-up ids close to this node share one
 /// branch, from which few are taken, and one address gets one place however
 /// many ids answer from it.
-pub(super) fn spread(own: &Node, answered: &[Node], k: usize, count: usize) -> Vec<Node> {
-    let mut candidates: Vec<&Node> = answered
+pub(super) fn spread(own: &Node, known: &[Node], among: usize, count: usize) -> Vec<Node> {
+    let mut candidates: Vec<&Node> = known
         .iter()
         .filter(|node| node.id != own.id && node.address().is_some())
         .collect();
+    // Stable: of one id known twice, the first is kept.
     candidates.sort_by_key(|node| node.distance_to(own));
     candidates.dedup_by_key(|node| node.id);
-    candidates.truncate(k);
+    candidates.truncate(among);
 
     let mut chosen: Vec<&Node> = Vec::with_capacity(count);
     let mut addresses: HashSet<&str> = HashSet::new();
@@ -532,6 +592,41 @@ fn shows_entry(key: &[u8; ID_LEN], claim: &Claim, record: &[u8]) -> bool {
     record_hash(record) == claim.hash
         && (*key == digest(STATUS_LIST_KEY)
             || tree_form(key, record).is_ok_and(|form| form.seq == claim.seq))
+}
+
+/// A neighbour records are fetched from: the fetches it may have in flight,
+/// and how many records it listed and then said it does not hold.
+struct Source<'a> {
+    node: &'a Node,
+    permits: Semaphore,
+    not_held: AtomicUsize,
+}
+
+impl<'a> Source<'a> {
+    fn new(node: &'a Node) -> Self {
+        Self {
+            node,
+            permits: Semaphore::new(FETCHES_PER_NEIGHBOUR),
+            not_held: AtomicUsize::new(0),
+        }
+    }
+
+    /// Whether it is still asked for records: it has said fewer than
+    /// `NOT_HELD_LIMIT` times that it does not hold one it listed. A record
+    /// other than the one listed does not count, since it may have taken a
+    /// higher position after its list.
+    fn still_asked(&self) -> bool {
+        self.not_held.load(Ordering::Relaxed) < NOT_HELD_LIMIT
+    }
+}
+
+/// The answer to the fetch of a record listed.
+enum Fetched {
+    Record(Vec<u8>),
+    /// It answered with nodes: it holds no record of the key.
+    NotHeld,
+    /// No answer.
+    Silent,
 }
 
 /// How the synchronization of one key ended.
@@ -828,6 +923,60 @@ mod tests {
         assert_eq!(chosen, vec![a.id, b.id]);
     }
 
+    /// A node with `k` that knows `known` contacts: one per distance from
+    /// it, the closest last, each at its own address and in its own bucket.
+    async fn knowing(k: usize, known: usize) -> (KademliaProtocol, Vec<Node>) {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let port = socket.local_addr().unwrap().port();
+        let protocol = KademliaProtocol::new(
+            contact_at([0; ID_LEN], port),
+            socket,
+            Arc::new(ForgetfulStorage::new(-1)),
+            k,
+            3,
+            Arc::new(CountingDidHandler::new()),
+            None,
+        );
+        let contacts: Vec<Node> = (0..known)
+            .map(|bit| {
+                let mut id = [0; ID_LEN];
+                id[bit / 8] = 0x80 >> (bit % 8);
+                let ip = format!("10.0.{}.{}", bit / 200, bit % 200 + 1);
+                Node::new(id, Some(ip), Some(9000))
+            })
+            .collect();
+        for contact in &contacts {
+            protocol.router.write().await.add_contact(contact.clone());
+        }
+        (protocol, contacts)
+    }
+
+    fn sorted_ids(nodes: &[Node]) -> Vec<[u8; ID_LEN]> {
+        let mut ids: Vec<_> = nodes.iter().map(|node| node.id).collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// With `k` = 3 the lookup returns the 3 closest; the node asks the 10
+    /// closest it knows.
+    #[tokio::test]
+    async fn with_a_small_k_the_ten_closest_it_knows_are_asked() {
+        let (protocol, contacts) = knowing(3, 12).await;
+        let answered = &contacts[9..];
+        let asked = protocol.to_ask(answered).await;
+        assert_eq!(sorted_ids(&asked), sorted_ids(&contacts[2..]));
+    }
+
+    /// With `k` = 20 the node asks 10, all among the 20 closest.
+    #[tokio::test]
+    async fn with_k_20_ten_of_the_twenty_closest_are_asked() {
+        let (protocol, contacts) = knowing(20, 25).await;
+        let asked = protocol.to_ask(&contacts[5..]).await;
+        assert_eq!(asked.len(), 10);
+        let closest = sorted_ids(&contacts[5..]);
+        assert!(asked.iter().all(|node| closest.contains(&node.id)));
+    }
+
     #[test]
     fn keys_listed_by_more_neighbours_come_first_the_highest_position_first() {
         let (k1, k2, k3) = ([1; ID_LEN], [2; ID_LEN], [3; ID_LEN]);
@@ -931,6 +1080,58 @@ mod tests {
         assert_eq!(synchronize(&empty, &neighbours).await, 1);
         assert_eq!(empty.storage.get(&owner.key), Some(v6));
         assert_eq!(fetches.load(Ordering::Relaxed), 1);
+    }
+
+    /// A neighbour lists ten keys and says it holds none: after two such
+    /// answers it is asked for no more, and the record another lists is
+    /// written. A fetch already in flight may still end.
+    #[tokio::test]
+    async fn a_neighbour_that_twice_does_not_hold_what_it_listed_is_asked_no_more() {
+        let owner = TreeOwner::new(1);
+        let v0 = owner.record(0, None);
+        let (socket, liar) = raw_peer([0x40; ID_LEN]).await;
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let made_up = (1..=10u8)
+            .map(|tag| entry([tag; ID_LEN], 0, b"made up"))
+            .collect();
+        scripted_neighbour(socket, made_up, HashMap::new(), Arc::clone(&fetches));
+        let honest = node([0x20; ID_LEN], &[(owner.key, v0.clone())]).await;
+        let empty = node([0x10; ID_LEN], &[]).await;
+
+        let neighbours = [liar, honest.source_node.clone()];
+        assert_eq!(synchronize(&empty, &neighbours).await, 1);
+        assert_eq!(empty.storage.get(&owner.key), Some(v0));
+        let fetched = fetches.load(Ordering::Relaxed);
+        assert!(
+            (NOT_HELD_LIMIT..NOT_HELD_LIMIT + FETCHES_PER_NEIGHBOUR).contains(&fetched),
+            "{fetched} fetches"
+        );
+    }
+
+    /// A neighbour that shows records other than those it listed is still
+    /// asked for each key it listed: its list may predate a rotation.
+    #[tokio::test]
+    async fn a_neighbour_showing_records_other_than_listed_is_still_asked() {
+        let owners = [TreeOwner::new(1), TreeOwner::new(2), TreeOwner::new(3)];
+        let (socket, neighbour) = raw_peer([0x40; ID_LEN]).await;
+        let fetches = Arc::new(AtomicUsize::new(0));
+        scripted_neighbour(
+            socket,
+            owners
+                .iter()
+                .map(|owner| entry(owner.key, 0, b"another record"))
+                .collect(),
+            owners
+                .iter()
+                .map(|owner| (owner.key, owner.record(0, None)))
+                .collect(),
+            Arc::clone(&fetches),
+        );
+        let empty = node([0x10; ID_LEN], &[]).await;
+
+        assert_eq!(synchronize(&empty, &[neighbour]).await, 0);
+        assert_eq!(fetches.load(Ordering::Relaxed), owners.len());
+        assert!(empty.storage.is_empty());
     }
 
     /// A record whose key is not the tree's at its position, or whose

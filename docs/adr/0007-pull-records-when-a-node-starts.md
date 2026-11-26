@@ -54,20 +54,28 @@ a lower position than the one that exists.
    take spends the lists only. Without a data directory a node cannot tell
    a first start from a restart, and on the first start of a network the
    lists are empty.
-2. **Whom.** Of the nodes that answered that lookup, at most the `k`
-   closest to its own id, it asks `max(alpha, ceil(k / 2))`, or all of them
-   if fewer answered, spread across the tree of ids: first the closest, then
-   each time the one farthest, by XOR, from the nearest of those already
-   chosen, passing over a node at an IP address already chosen. The
-   replicas of the keys it should hold are close to those keys, hence close
-   to it: they are the nodes that hold its records. Nodes far from each
-   other are close to different keys. In a simulation with random ids,
-   honest nodes and complete tables (`k` = 20), the 10 closest nodes held no
-   copy of 0.85% of the keys a node should hold with 127 nodes, and of 0.5%
-   with 1000; 10 nodes spread in this way missed 0.05% and none, as all 20
-   do, and listed each key about 7.8 times instead of 9. Made-up ids close
-   to the node share one branch, from which a spread choice takes few, and
-   one IP address gets one place.
+2. **Whom.** It asks `max(alpha, ceil(k / 2), 10)` nodes, or all it knows
+   if it knows fewer, chosen among the `max(k, that number)` closest to its
+   own id of those it knows, the nodes that answered that lookup and the
+   contacts of its routing table, spread across the tree of ids: first the
+   closest, then each time the one farthest, by XOR, from the nearest of
+   those already chosen, passing over a node at an IP address already
+   chosen. With `k` = 20 that is 10 of the 20 closest; with `k` below 10,
+   the 10 closest. The replicas of the keys it should hold are close to
+   those keys, hence close to it: they are the nodes that hold its records.
+   Nodes far from each other are close to different keys. In a simulation
+   with random ids, honest nodes and complete tables (`k` = 20), the 10
+   closest nodes held no copy of 0.85% of the keys a node should hold with
+   127 nodes, and of 0.5% with 1000; 10 nodes spread in this way missed
+   0.05% and none, and listed each key about 7.8 times instead of 9. With a
+   small `k` the other holders of a key are few and all close to the node,
+   and a spread choice reaches nodes that hold none of its keys: with `k` =
+   3, the 3 closest held no copy of 3.9% to 6.0% of the keys with 10 to 127
+   nodes, 10 spread among the 20 closest of 4.9% to 5.5%, and the 10
+   closest of none. With `k` = 16, 10 spread among the 16 closest missed
+   0.25%, the 10 closest 0.75% to 0.94%. Made-up ids close to the node
+   share one branch, from which a spread choice takes few, and one IP
+   address gets one place.
 3. **What it asks.** A new request asks a neighbour for the records it holds
    of which the requester is one of the `k` closest nodes it knows: the
    test the welcome replication already makes (`new_node_close`), so a node
@@ -101,8 +109,12 @@ a lower position than the one that exists.
    and a higher position the owner published reaches every replica, so all
    of them would have to hide it. A node that does not show its entry is
    passed over for the next node that listed the same, then for the next
-   lower position listed. An entry nobody shows refuses nothing, and the
-   key comes back with the next republication. The Status List is listed
+   lower position listed. A neighbour that answers twice that it holds no
+   record of a key it listed (`FindValueNodes`) is asked for no record
+   after that: it lists keys it does not hold, and each would cost a fetch.
+   A record other than the one listed does not count against it, since it
+   may have taken a higher position after its list. An entry nobody shows
+   refuses nothing, and the key comes back with the next republication. The Status List is listed
    at position 0, as `FindHash` answers it, and written by its own rule:
    signed by the issuer, first writer wins.
 5. **Bounds.** The requester runs one synchronization per start, asks the
@@ -112,7 +124,8 @@ a lower position than the one that exists.
    one or two), drops a page longer than one datagram or whose keys do not
    follow the last one received, fetches at most four records at once
    and at most two from one neighbour (each neighbour has at most 8
-   messages in reassembly), verifies on the blocking pool capped at the
+   messages in reassembly), none from a neighbour after two it said it
+   does not hold, verifies on the blocking pool capped at the
    number of cores, and stops at its storage budget and 30 s after it
    sends its first list request: what it wrote stays, and the rest waits
    for a republication. With neighbours that answer, an empty node takes
@@ -138,8 +151,8 @@ directory takes at once the rotations and the records published while it
 was down. The daily republication stays safe for availability, and a node
 with no data directory becomes a full replica again as soon as it has
 looked itself up. With DID records only a node holds about `k` records, so
-a synchronization is one page from each of `k / 2` neighbours, about 14 KB
-with `k` = 20, plus the records it fetches: about twenty, 140 KB, for an
+a synchronization is one page from each of ten neighbours with `k` = 20,
+about 14 KB, plus the records it fetches: about twenty, 140 KB, for an
 empty node, and none for a node that missed nothing. Each record travels
 once, whatever the number of neighbours that list it. An empty node's
 synchronization costs about what one republication of one record costs,
@@ -180,6 +193,13 @@ synchronization costs it the lists only.
 to each other in the tree hold much the same keys: in the simulation of
 point 2, the 3 closest held no copy of 1.0% of the keys with 127 nodes and
 of 2.3% with 1000, which then wait up to a day for a republication.
+
+**All `k` closest neighbours.** In the simulation of point 2 (`k` = 20),
+on the same networks and keys, all 20 missed the same keys as 10 spread:
+none of 9,529 with 127 nodes, 2 of 2,443 with 1000. Those keys are held by
+none of the 20 nodes closest to the node, so asking more of them does not
+reach them. All 20 listed each key 15.5 times instead of 7.7: twice the
+lists, for no key more.
 
 **Disjoint lookups.** S/Kademlia uses "parallel lookups over multiple
 disjoint paths" ([S/KADEMLIA], abstract), so that nodes on one path cannot
@@ -262,12 +282,15 @@ tests choose.
 | A node restarts from its data directory and nothing changed | It fetches no record |
 | A neighbour lists the position the node holds, under another hash | Nothing is fetched; the record held stays |
 | Twenty nodes answered its lookup | It asks ten: the closest first, then each time the farthest from those chosen |
+| `k` = 3: three nodes answered its lookup, its table holds more | It asks the ten closest it knows |
 | Several of the nodes that answered share one IP address | At most one of them is asked |
-| Fewer than `max(alpha, ceil(k / 2))` nodes answered | It asks all of them |
+| It knows fewer than `max(alpha, ceil(k / 2), 10)` nodes | It asks all of them |
 | A neighbour lists 5, another 6 | 6 is written |
 | A neighbour lists 7 and does not show it, another shows 6 | 6 is written; the claim of 7 refuses nothing |
 | A neighbour lists and shows a forged record | Nothing is written for that key |
-| A neighbour lists hundreds of keys nobody else lists and shows none | The keys the others list are written first; the synchronization ends at its deadline |
+| A neighbour lists hundreds of keys nobody else lists and says it holds none | The keys the others list are written first; after two such answers it is asked for no more records |
+| A neighbour lists hundreds of keys nobody else lists and never answers a fetch | The keys the others list are written first; the synchronization ends at its deadline |
+| A neighbour shows a record other than the one it listed | It is still asked for the other keys it listed |
 | No neighbour answers | Nothing is written; the records come with a republication |
 | The storage budget is reached | The synchronization stops; nothing held is evicted |
 | A neighbour lists more keys than fit one datagram | The requester gets them all, page after page, each page one datagram |

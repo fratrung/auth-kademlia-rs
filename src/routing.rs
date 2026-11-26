@@ -455,10 +455,27 @@ impl RoutingTable {
         self.closest(target, exclude, |node| !self.is_stale(&node.id))
     }
 
+    /// The `count` known primary contacts closest to `target`, failing ones
+    /// left out; `count` may exceed `k`. A node that starts asks some of
+    /// them for its records, and with a small `k` more than `k`.
+    pub fn healthy_closest(&self, target: &Node, count: usize) -> Vec<Node> {
+        self.closest_up_to(target, None, count, |node| !self.has_failures(&node.id))
+    }
+
     fn closest(
         &self,
         target: &Node,
         exclude: Option<&Node>,
+        keep: impl Fn(&Node) -> bool,
+    ) -> Vec<Node> {
+        self.closest_up_to(target, exclude, self.ksize, keep)
+    }
+
+    fn closest_up_to(
+        &self,
+        target: &Node,
+        exclude: Option<&Node>,
+        count: usize,
         keep: impl Fn(&Node) -> bool,
     ) -> Vec<Node> {
         let target_bucket = self.bucket_index_for(target.long_id);
@@ -479,7 +496,7 @@ impl RoutingTable {
             .collect();
 
         nodes.sort_unstable_by_key(|(dist, _)| *dist);
-        nodes.truncate(self.ksize);
+        nodes.truncate(count);
         nodes.into_iter().map(|(_, n)| n).collect()
     }
 

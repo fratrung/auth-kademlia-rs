@@ -594,12 +594,16 @@ any list the issuer signed, an older one included.
   listening, once a lookup of its own id is over (the one of `bootstrap`, or
   for a node with no seeds the one the recovery runs once a contact
   answers), asks its neighbours for the records it should hold. Of the
-  closest nodes that answered, at most `k`, it asks `max(alpha, ceil(k/2))`:
-  the closest first, then each time the one farthest, by XOR, from the
-  nearest of those already chosen, one per IP address. Nodes far from each
-  other are close to different keys: in a simulation with random ids and
-  `k = 20`, the 10 closest held no copy of 0.5% to 0.85% of the keys a node
-  should hold, 10 spread in this way of 0.05% or none, as all 20 do. Each
+  nodes it knows, those that answered and its contacts that are not
+  failing, it asks `max(alpha, ceil(k/2), 10)` among the `max(k, that
+  number)` closest: the closest first, then each time the one farthest, by
+  XOR, from the nearest of those already chosen, one per IP address. Nodes
+  far from each other are close to different keys: in a simulation with
+  random ids and `k = 20`, the 10 closest held no copy of 0.5% to 0.85% of
+  the keys a node should hold, 10 spread in this way of 0.05% or none, as
+  all 20 do. With a small `k` the other holders of a key are few and all
+  close to the node, so it asks the 10 closest: with `k = 3`, the 3 closest
+  held no copy of 4% to 6% of the keys, the 10 closest of none. Each
   lists the keys of the records it holds of which the node is one of the `k`
   closest it knows, the test of the replication to new nodes, with the
   position and SHA-256 of each record, in key order, one datagram of 19
@@ -615,7 +619,10 @@ any list the issuer signed, an older one included.
   thus takes the rotations and the records published while it was down, and
   one that missed nothing spends the lists only, about 14 KB with DID records
   and `k = 20`. A neighbour that lists a key it does not show refuses
-  nothing, and the key comes with a republication.
+  nothing, and the key comes with a republication. A neighbour that answers
+  twice that it holds no record of a key it listed is asked for no more
+  records; one that shows a record other than the one listed is still
+  asked, since its list may predate a rotation.
 
 ![Sequence diagram of the synchronization of a node that starts: lists of keys from the neighbours it asks, page after page, then the records it lacks or holds at a lower position, fetched from a neighbour that listed them and written once they verify](docs/design/sync.png)
 

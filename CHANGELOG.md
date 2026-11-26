@@ -83,14 +83,16 @@ application.
   is over, so that a restarted replica does not give a superseded record to
   nodes outside the `k` closest.
 - Synchronization at start: each time a node starts listening, once it has
-  looked up its own id, it asks half of its `k` closest neighbours, spread
+  looked up its own id, it asks half of its `k` closest neighbours, and at
+  least ten (the ten closest it knows when `k` is small), spread
   across the tree of ids and one per IP address, for the keys it should hold
   with the position and SHA-256 of each record (`ListKeys`, one datagram
   per page), and fetches the records it lacks or holds at a lower position,
   each verified as any replica verifies it, within 30 s. A node restarted
   empty, or from its data directory after missing rotations, holds its
   records again without waiting for the daily republication. A node answers
-  one page at a time.
+  one page at a time. A neighbour that twice answers it holds no record of a
+  key it listed is asked for no more records.
 - The marker of an expired DID record: its position is remembered for one
   more TTL, also across restarts, so that a replay of a lower position is
   refused even when no node answers the check, and a GET or a repair returns

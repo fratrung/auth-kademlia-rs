@@ -21,9 +21,9 @@ Application-layer logic (provisioning, REST APIs, orchestration) remains in Pyth
 ```
 cargo build                          # library + dht_node binary
 cargo build --bin dht_node           # only the Docker entry point
-cargo test                           # all 396 tests
-cargo test --features counters       # 399: also the counters' own tests
-cargo test --features testbed        # 402: also the testbed's lie switches
+cargo test                           # all 400 tests
+cargo test --features counters       # 403: also the counters' own tests
+cargo test --features testbed        # 406: also the testbed's lie switches
 cargo test <name>                    # single test, e.g. test_key_rotation_is_published_with_set
 RUST_LOG=debug cargo test -- --nocapture   # verbose output
 ```
@@ -150,7 +150,7 @@ default cap of 512 blocking threads, which thrashes the CPU on low-core SoCs.
 | `src/network/status_list.rs` | UPDATE of the Status List (`update_status_list`): the issuer's new list to the replicas, accepted on a strict majority of at most `alpha` |
 | `src/network/maintenance.rs` | Hourly refresh of lonely buckets and daily republication (`schedule_republish`, through `KademliaProtocol::republish`), recovery tick (which also starts the synchronization of a node with no seeds), stats (`ServerStats`), saved state |
 | `src/crawling.rs` | Iterative lookup — `NodeSpiderCrawl` (find nodes) + `ValueSpiderCrawl` (find value; `search` with a deadline tells `NotFound` from `Incomplete`) |
-| `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `find_neighbors` returns the exact local top-k across known primary contacts, skipping failing ones (see Concurrency model); `touch_last_updated()` is called only for the bucket containing the lookup target — bucket staleness reflects lookup activity, not node additions |
+| `src/routing.rs` | Kademlia routing table + k-buckets (XOR distance, bucket splits); `KBucket` holds a primary LRU list + `replacement_nodes` overflow (§4.1); `find_neighbors` returns the exact local top-k across known primary contacts, skipping failing ones (see Concurrency model), and `healthy_closest` the closest up to any count, for the synchronization at start; `touch_last_updated()` is called only for the bucket containing the lookup target — bucket staleness reflects lookup activity, not node additions |
 | `src/storage.rs` | `ForgetfulStorage` — sharded concurrent TTL KV store (`DashMap`); 14-day TTL and configurable byte budget (default 512 MiB), with lazy expiry on read; times in Unix milliseconds; `insert_if_absent` and `replace_if` (compare and swap under the entry); optionally persistent (`persistent`; `flush_renewals` writes the renewed expiries, not the records); the marker of an expired DID record (`marker`, `record_or_marker`) |
 | `src/durable.rs` | The files of a persistent store, one per key: a record and the expiry it was written with, or a marker, followed by the SHA-256 of those bytes (a file that does not match is not loaded); `renewals`, one file of the later expiries renewals gave, each with the SHA-256 of the record it renews (`write_renewals`, applied by `load` only to that exact record); atomic replacement (`write_durably`: temporary file, fsync, rename, fsync of the directory, also used by the custody) and loading |
 | `src/custody/mod.rs` | The owner's custody of a DID: the `Custody` trait, the `Calendar` (`floor((now - T) / D)`), `Activation` (highest activated, skipped positions, `due`, `next_early`), `ActivationVerifier`, and the template the application writes (`draft_of`, `template_of`) |
@@ -274,10 +274,14 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
   every node, once per `listen`, after a lookup of its own id
   (`Server::bootstrap` from a seed that answered, or the maintenance tick for
   a node with no seeds once a contact answers), runs `start_synchronization`
-  on the nodes that answered: `spread` picks `max(alpha, ceil(k / 2))` of
-  the `k` closest, the closest first, then each time the farthest by XOR
-  from the nearest already chosen, one per IP address (in a simulation this
-  missed 0–0.05% of a node's keys, against 0.5–0.85% for as many closest).
+  on the nodes that answered and its contacts that are not failing
+  (`to_ask`, `RoutingTable::healthy_closest`): `spread` picks
+  `max(alpha, ceil(k / 2), MIN_ASKED)` (`MIN_ASKED` = 10) of the
+  `max(k, that number)` closest, the closest first, then each time the
+  farthest by XOR from the nearest already chosen, one per IP address (in a
+  simulation with `k` = 20 this missed 0–0.05% of a node's keys, against
+  0.5–0.85% for as many closest, and as many as all 20; with `k` = 3 it is
+  the 10 closest, which missed none, against 4–6% for the 3 closest).
   Each answers `ListKeys` with pages of `PAGE_ENTRIES` (19) `KeyEntry` in one
   datagram, in key order after the cursor, of the keys for which the
   requester is among the `k` closest it knows (`should_hold`: fewer than `k`
@@ -287,7 +291,10 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
   and fetches, per key, the highest position listed only if it lacks the key,
   holds a lower position, or remembers one not above it (`would_take`), the
   keys listed by more neighbours first (`merge`), four at once and two per
-  neighbour. A record counts only if it hashes to the entry, has the form
+  neighbour, and no more from a neighbour that has answered
+  `NOT_HELD_LIMIT` (2) times that it does not hold a key it listed
+  (`FindValueNodes`; a record other than the one listed does not count,
+  since a list may predate a rotation). A record counts only if it hashes to the entry, has the form
   for the key at that position and its signature verifies; it is written by
   the rules of a replica without the network check (`write_pulled`, as
   `install` in a repair). It stops at `SYNC_DEADLINE` (30 s), at the storage
@@ -517,7 +524,7 @@ All RPCs are serialised with `bincode` and framed with a `(msg_id: u32, is_reque
 | `tests/repair_tests.rs` | 3 | Repair over real UDP: the expected record found, stored and served locally; no match without it; no answer |
 | `tests/chain_tests.rs` | 8 | Positions of one DID over real UDP: a rotation that reaches every replica, the owner restoring empty replicas, refusals of `set` that count only once shown, forged and old genuine records at empty replicas |
 | `tests/sync_tests.rs` | 3 | The synchronization at start over real UDP, each node at its own loopback address: a node restarted empty at once, one restarted from its data directory after a rotation it missed, a seed that never bootstraps |
-| `src/**` (inline) | 275 | Module-level `#[test]` blocks (incl. the custody's acceptance cases and calendar, persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, the synchronization at start in `sync.rs`, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 3 more (the `FindHash` and `ListKeys` lie switches) |
+| `src/**` (inline) | 279 | Module-level `#[test]` blocks (incl. the custody's acceptance cases and calendar, persistence and markers in `storage.rs` and `durable.rs`, Kademlia convergence, strict-quorum selection, XOR-metric regression, the 256-bit key space, fragmentation, the DID suffix and canonical JSON, the Merkle tree and genesis with a Python test vector, the owner's tree, the STORE rules, the holder's repair after `Stale`, the write of a repair, random message ids, the synchronization at start in `sync.rs`, and the protocol tests of `acceptance_tests.rs`); with `--features counters` 3 more, with `--features testbed` 3 more (the `FindHash` and `ListKeys` lie switches) |
 
 All tests are network-clean (loopback only) and run in parallel without interference when port ranges are respected.
 

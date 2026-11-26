@@ -237,7 +237,7 @@ impl Server {
                 .await;
                 if reached {
                     proto.note_joined();
-                    proto.start_synchronization(&closest);
+                    proto.start_synchronization(&closest).await;
                 }
                 closest
             }

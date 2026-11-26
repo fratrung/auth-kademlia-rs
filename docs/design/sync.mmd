@@ -3,7 +3,7 @@ sequenceDiagram
     participant B as Node that starts,<br/>empty or from its disk
     participant N as Neighbours it asks
     participant L as A neighbour that listed<br/>the highest position
-    Note over B: lookup of its own id over: of the closest nodes<br/>that answered, k/2 spread across the tree,<br/>one per IP address
+    Note over B: lookup of its own id over: of the closest nodes it knows,<br/>max(k/2, 10) spread across the tree,<br/>one per IP address
     par to each neighbour asked
         loop page after page, while more follow
             B->>N: ListKeys(after the last key received)
@@ -22,6 +22,7 @@ sequenceDiagram
         else not shown, or not the record listed
             rect rgba(201, 138, 27, 0.10)
             Note over B: the next neighbour that listed it,<br/>then a lower position, else a republication brings it
+            Note over B: a neighbour that twice holds nothing<br/>for a key it listed is asked for no more records
             end
         end
     end
