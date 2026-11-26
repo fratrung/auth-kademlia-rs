@@ -17,3 +17,4 @@ still holds; superseded, that the later ADR replaces all of it.
 | [0004](0004-sha-256-ids-and-canonical-uuid.md) | SHA-256 keys, 256-bit ids, and the canonical UUID | Accepted, amended by [0005](0005-self-certifying-dids-and-pre-rotation.md) |
 | [0005](0005-self-certifying-dids-and-pre-rotation.md) | Self-certifying DIDs and a pre-rotated chain of versions | Accepted, amended by [0006](0006-merkle-committed-rotation-keys.md) |
 | [0006](0006-merkle-committed-rotation-keys.md) | Commit a DID's rotation keys in a Merkle tree | Accepted |
+| [0007](0007-pull-records-when-a-node-starts.md) | A node asks its neighbours for its records when it starts | Proposed |
